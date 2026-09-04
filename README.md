@@ -38,7 +38,7 @@ docker run --rm caddy:2 caddy hash-password --plaintext 'DEIN_PASSWORT'
 ```bash
 ./setup.sh            # einmalig: .env, Secret, Hash, Checks (braucht: ssh docker rclone python3 openssl; autossh via: brew install autossh)
 ./diagnose.sh         # Checks lokal + VPS (1x Passphrase)
-./run.sh              # rclone-Sync + Tunnel; Flags: --sync-only / --tunnel-only
+./run.sh              # OpenCode-Autostart + rclone-Sync + Tunnel; Flags: --sync-only / --tunnel-only
 ./diagnose.sh --quick # nur lokal
 # Am Mac alternativ Doppelklick auf start-tunnel.command (macht run.sh im Terminal auf)
 ```
