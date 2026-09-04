@@ -55,6 +55,10 @@ SSH läuft immer über **eine** Master-Connection (`ControlMaster auto`, `Contro
 
 Fragment `caddy/Caddyfile.fragment` in `/Users/florianreisinger/dev/caddyfile/Caddyfile` übernehmen, dann dort `./sync.sh` (validate + reload). Website-Sync: `rclone sync apps/web/dist reisinger.pictures:/code.all-the.rest` (macht `run.sh`). DNS: `code.all-the.rest` A-Record auf VPS.
 
+## OpenCode-Passwort (de facto deaktiviert)
+
+`opencode2 serve` erzwingt immer ein Serverpasswort (kein `--no-auth`, leeres Env generiert trotzdem eins — getestet). Darum: `run.sh` startet serve mit fixem `OPENCODE_PASSWORD` aus `.env` (generiert `setup.sh`), und Caddy injiziert es per `header_up Authorization` upstream — im Browser unsichtbar. Bei Rotation: neuen Wert in `.env` + Base64 (`echo -n "opencode:PASS" | base64`) ins Caddyfile, `./sync.sh`.
+
 ## Ports
 
 Fix statt random (random bräuchte Caddy-Reload je Start): VPS `127.0.0.1:18731` → Mac `127.0.0.1:8080`, änderbar via `REMOTE_PORT/LOCAL_PORT` in `.env`. Autostart-Beispiel: `scripts/com.code-tunnel.plist` nach `~/Library/LaunchAgents/` kopieren, Pfad anpassen, `launchctl load`.
