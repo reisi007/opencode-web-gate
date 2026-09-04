@@ -23,12 +23,20 @@ code.all-the.rest {
 		reverse_proxy code-auth:8081
 	}
 
+	# OpenCode-SW precacht ein nicht existentes Asset (bad-precaching-response)
+	# und serviert danach alte 404s aus dem Cache -> durch leeren Worker
+	# neutralisieren (exaktes Handle sticht das Catch-all unten aus).
+	handle /sw.js {
+		header Content-Type "application/javascript"
+		respond `/* service worker disabled */` 200
+	}
+
 	# alles andere: Cookie pruefen, dann SSH-Tunnel zum Mac.
 	# 401 vom Sidecar -> Redirect auf Login (handle_response: forward_auth
 	# reicht die 401-Antwort direkt durch, handle_errors greift dort nicht).
 	handle {
 		forward_auth code-auth:8081 {
-			uri /check
+			uri /check?
 			copy_headers Remote-User
 			@denied status 401
 			handle_response @denied {
