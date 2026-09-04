@@ -35,6 +35,8 @@ code.all-the.rest {
 				redir * /login.html 302
 			}
 		}
+		# Ziel = Docker-Bridge-Gateway (webnet .1): dort bindet der SSH-Forward;
+		# 127.0.0.1 saehe hier nur den Container-Loopback.
 		reverse_proxy 172.18.0.1:18731 {
 			# OpenCode-eigenes Passwort upstream injizieren (Browser sieht es nie)
 			header_up Authorization "Basic ***REMOVED***"
