@@ -24,6 +24,7 @@ button:disabled{opacity:.5;cursor:wait}
 <button type="submit" id="btn">Anmelden</button>
 </form>
 <div id="error">Zugangsdaten falsch!</div>
+<div id="tunnel">Login ok, aber der Mac-Tunnel ist offline. Bitte am Mac <code>start-tunnel.command</code> starten und dann erneut anmelden.</div>
 </div>
 <script>
 (async () => {
@@ -45,8 +46,16 @@ document.getElementById('f').addEventListener('submit', async (e) => {
       password: document.getElementById('password').value
     })
   });
-  if (res.ok) window.location.href = '/';
-  else { err.style.display = 'block'; btn.disabled = false; }
+  if (!res.ok) { err.style.display = 'block'; btn.disabled = false; return; }
+  // Login ok -> Tunnel pruefen (HEAD /): 502/503/504 oder Netzfehler = Mac offline
+  const tun = document.getElementById('tunnel');
+  try {
+    const h = await fetch('/', {method: 'HEAD', redirect: 'manual'});
+    if (h.status === 502 || h.status === 503 || h.status === 504) {
+      tun.style.display = 'block'; btn.disabled = false; return;
+    }
+  } catch { tun.style.display = 'block'; btn.disabled = false; return; }
+  window.location.href = '/';
 });
 </script>
 </body>

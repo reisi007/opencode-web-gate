@@ -24,8 +24,8 @@ code.all-the.rest {
 	}
 
 	# alles andere: Cookie pruefen, dann SSH-Tunnel zum Mac.
-	# 401 vom Sidecar -> Redirect auf Login (handle_response, NICHT handle_errors:
-	# forward_auth reicht die 401-Antwort direkt durch, handle_errors greift nicht).
+	# 401 vom Sidecar -> Redirect auf Login (handle_response: forward_auth
+	# reicht die 401-Antwort direkt durch, handle_errors greift dort nicht).
 	handle {
 		forward_auth code-auth:8081 {
 			uri /check
@@ -36,5 +36,16 @@ code.all-the.rest {
 			}
 		}
 		reverse_proxy 127.0.0.1:18731
+	}
+
+	# Tunnel tot (Dial-Fehler 502, Mac offline) -> eigene Offline-Seite.
+	# Feuert nur bei Proxy-Transportfehlern (forward_auth-401 laeuft nicht hierher).
+	handle_errors {
+		@gw expression `{err.status_code} == 502 || {err.status_code} == 503 || {err.status_code} == 504`
+		handle @gw {
+			root * /srv/websites/code.all-the.rest
+			rewrite * /tunnel-down.html
+			file_server
+		}
 	}
 }
