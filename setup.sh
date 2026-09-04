@@ -48,6 +48,17 @@ if [ -z "${AUTH_HASH:-}" ]; then
   unset P HASH
 fi
 
+if [ -z "${OPENCODE_PASSWORD:-}" ]; then
+  P=$(openssl rand -base64 24)
+  if grep -q '^OPENCODE_PASSWORD=$' .env; then
+    sed -i '' "s/^OPENCODE_PASSWORD=$/OPENCODE_PASSWORD=$P/" .env
+  else
+    echo "OPENCODE_PASSWORD=$P" >> .env
+  fi
+  echo "OPENCODE_PASSWORD generiert (fuer opencode2 serve; Caddy injiziert es per Header upstream)."
+  unset P
+fi
+
 echo "--- Checks ---"
 rclone listremotes | grep -q "^${RCLONE_REMOTE:-reisinger.pictures}:$" \
   && echo "rclone remote ok" || echo "WARN: rclone remote '${RCLONE_REMOTE:-reisinger.pictures}:' fehlt (rclone config)"

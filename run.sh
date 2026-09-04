@@ -18,6 +18,10 @@ DIST="${LOCAL_DIST:-apps/web/dist}"
 REMOTE_PATH="${RCLONE_REMOTE:-reisinger.pictures}:${RCLONE_PATH:-/code.all-the.rest}"
 
 MODE="${1:-all}"
+# OpenCode-eigenes Serverpasswort (Pflicht): serve erzwingt Auth, Caddy injiziert
+# es upstream per Header -> im Browser unsichtbar (de facto deaktiviert).
+[ -n "${OPENCODE_PASSWORD:-}" ] || { echo "FEHLER: OPENCODE_PASSWORD fehlt in .env -> ./setup.sh"; exit 1; }
+export OPENCODE_SERVER_PASSWORD="$OPENCODE_PASSWORD"
 if [ "$MODE" != "--tunnel-only" ]; then
   ./sync.sh
 fi

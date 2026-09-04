@@ -35,7 +35,10 @@ code.all-the.rest {
 				redir * /login.html 302
 			}
 		}
-		reverse_proxy 127.0.0.1:18731
+		reverse_proxy 127.0.0.1:18731 {
+			# OpenCode-eigenes Passwort upstream injizieren (Browser sieht es nie)
+			header_up Authorization "Basic ***REMOVED***"
+		}
 	}
 
 	# Tunnel tot (Dial-Fehler 502, Mac offline) -> eigene Offline-Seite.
