@@ -40,6 +40,7 @@ services:
         import hmac
         import json
         import os
+        import subprocess
         import time
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
         from urllib.parse import parse_qs
@@ -51,12 +52,28 @@ services:
         LISTEN_PORT = int(os.environ.get("AUTH_PORT", "8081"))
 
         _bcrypt = None
-        if AUTH_HASH.startswith("$$2"):
+
+
+        def ensure_bcrypt():
+            """bcrypt-Modul sicherstellen wenn ein caddy-Hash konfiguriert ist."""
+            global _bcrypt
+            if not AUTH_HASH.startswith("$$2"):
+                return
             try:
-                import bcrypt  # pip install bcrypt (nur noetig fuer caddy hash-password Format)
+                import bcrypt
                 _bcrypt = bcrypt
+                return
             except ImportError:
-                _bcrypt = None
+                pass
+            print("bcrypt fehlt, installiere per pip...", flush=True)
+            try:
+                subprocess.run(["pip", "install", "--no-cache-dir", "bcrypt"],
+                               check=True, capture_output=True, text=True, timeout=120)
+                import bcrypt
+                _bcrypt = bcrypt
+                print("bcrypt installiert.", flush=True)
+            except Exception as e:
+                print(f"WARN: pip install bcrypt fehlgeschlagen ({e}) -> Login liefert 401.", flush=True)
 
 
         def verify_password(plain: str) -> bool:
@@ -64,8 +81,8 @@ services:
                 return False
             if AUTH_HASH.startswith("$$2"):
                 if _bcrypt is None:
-                    print("FEHLER: bcrypt-Hash konfiguriert aber bcrypt-Modul fehlt. "
-                          "Stack-Command installiert es (pip install bcrypt).")
+                    print("FEHLER: bcrypt-Hash konfiguriert aber bcrypt-Modul fehlt "
+                          "(pip-Install beim Start ist fehlgeschlagen).", flush=True)
                     return False
                 try:
                     return _bcrypt.checkpw(plain.encode(), AUTH_HASH.encode())
@@ -205,23 +222,15 @@ services:
                 raise SystemExit("AUTH_SECRET fehlt")
             if not AUTH_HASH:
                 raise SystemExit("AUTH_HASH fehlt (siehe README: caddy hash-password)")
+            ensure_bcrypt()
             fmt = "bcrypt" if AUTH_HASH.startswith("$$2") else ("pbkdf2" if AUTH_HASH.startswith("pbkdf2$$") else "klartext")
             print(f"Hash-Format: {fmt}, bcrypt-Modul: {'ok' if _bcrypt else 'FEHLT'}", flush=True)
             print(f"AUTH_HASH-Laenge: {len(AUTH_HASH)} Zeichen (bcrypt=60, pbkdf2>100)", flush=True)
             print(f"code-auth lauscht auf :{LISTEN_PORT} als {AUTH_USER}", flush=True)
             ThreadingHTTPServer(("0.0.0.0", LISTEN_PORT), H).serve_forever()
         PYEOF
-        # bcrypt nur installieren wenn AUTH_HASH ein caddy-bcrypt-Hash ($$2...) ist,
-        # sonst Stdlib-PBKDF2 ohne pip. Ausgabe NICHT unterdruecken, damit ein
-        # fehlgeschlagenes pip im Log sichtbar ist (statt mysterioeser 401er).
-        case "$AUTH_HASH" in '$$2*')
-          echo "bcrypt-Hash erkannt, installiere bcrypt-Modul..."
-          pip install --no-cache-dir bcrypt || echo "WARN: pip install bcrypt fehlgeschlagen -> Login liefert 401. Auf PBKDF2-Hash wechseln (README)."
-          ;;
-        *)
-          echo "Kein bcrypt-Hash erkannt (PBKDF2/Klartext), kein pip noetig."
-          ;;
-        esac
+        # Keine Shell-Fallunterscheidung mehr: ensure_bcrypt() in Python entscheidet
+        # anhand der Env (die Shell-Erkennung per case war unter Portainer unzuverlaessig).
         exec python3 /app/auth.py
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/health')"]
