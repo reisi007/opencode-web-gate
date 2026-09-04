@@ -41,6 +41,16 @@ if [ "$MODE" != "--sync-only" ]; then
   echo "Tunnel: 127.0.0.1:$REMOTE (VPS) <- 127.0.0.1:$LOCAL (Mac) via $TARGET:$PORT"
   echo "Master-Connection oeffnen (1x Passphrase), dann Tunnel..."
   ssh $SSH_OPTS -fN -p "$PORT" "$TARGET"
+  echo "SSH verbunden, baue Tunnel auf..."
+  # Erfolgswachter: meldet sobald der Forward am VPS lauscht (via Master-Connection, keine neue Passphrase)
+  ( for _ in $(seq 1 30); do
+      if ssh $SSH_OPTS -p "$PORT" "$TARGET" "ss -tln 2>/dev/null | grep -q '127.0.0.1:$REMOTE'"; then
+        echo "Tunnel aktiv ($(date +%H:%M:%S)): VPS 127.0.0.1:$REMOTE -> Mac 127.0.0.1:$LOCAL — bereit: https://code.all-the.rest/"
+        exit 0
+      fi
+      sleep 2
+    done
+    echo "WARN: Forward nach 60s nicht auf VPS sichtbar — Log pruefen." ) &
   if command -v autossh >/dev/null 2>&1; then
     AUTOSSH_PORT=0 autossh -M 0 -N $SSH_OPTS -p "$PORT" \
       -R "127.0.0.1:$REMOTE:127.0.0.1:$LOCAL" "$TARGET"
