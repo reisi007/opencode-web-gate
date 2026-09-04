@@ -61,7 +61,7 @@ Fragment `caddy/Caddyfile.fragment` in `/Users/florianreisinger/dev/caddyfile/Ca
 
 ## Ports
 
-Fix statt random (random bräuchte Caddy-Reload je Start): VPS `127.0.0.1:18731` → Mac `127.0.0.1:8080`, änderbar via `REMOTE_PORT/LOCAL_PORT` in `.env`. Autostart-Beispiel: `scripts/com.code-tunnel.plist` nach `~/Library/LaunchAgents/` kopieren, Pfad anpassen, `launchctl load`.
+Fix statt random (random bräuchte Caddy-Reload je Start): VPS `172.18.0.1:18731` (Docker-Bridge, kein Loopback — Caddy läuft im Bridge-Netz!) → Mac `127.0.0.1:8080`, änderbar via `REMOTE_PORT/LOCAL_PORT/REMOTE_BIND` in `.env`. Einmalig serverseitig: `GatewayPorts clientspecified` in `/etc/ssh/sshd_config` + `systemctl reload sshd` (sonst verweigert sshd den Bridge-Bind). Autostart-Beispiel: `scripts/com.code-tunnel.plist` nach `~/Library/LaunchAgents/` kopieren, Pfad anpassen, `launchctl load`.
 
 ## Sicherheit
 

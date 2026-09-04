@@ -12,6 +12,10 @@ source .env
 SSH_OPTS="-o ControlMaster=auto -o ControlPath=/tmp/ssh-code-%r@%h:%p -o ControlPersist=60 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes"
 TARGET="${SSH_TARGET:-root@reisinger.pictures}"
 PORT="${SSH_PORT:-22}"
+# Bind-Adresse des Forwards AUF DEM VPS: Docker-Bridge-Gateway (webnet: 172.18.0.1),
+# damit der Caddy-Container (Bridge-Netz, eigener Loopback!) den Tunnel erreicht.
+# Braucht serverseitig: GatewayPorts clientspecified (siehe README).
+BIND="${REMOTE_BIND:-172.18.0.1}"
 REMOTE="${REMOTE_PORT:-18731}"
 LOCAL="${LOCAL_PORT:-8080}"
 DIST="${LOCAL_DIST:-apps/web/dist}"
@@ -42,14 +46,14 @@ if [ "$MODE" != "--sync-only" ]; then
   else
     echo "OpenCode-Web laeuft bereits auf :$LOCAL."
   fi
-  echo "Tunnel: 127.0.0.1:$REMOTE (VPS) <- 127.0.0.1:$LOCAL (Mac) via $TARGET:$PORT"
+  echo "Tunnel: $BIND:$REMOTE (VPS) <- 127.0.0.1:$LOCAL (Mac) via $TARGET:$PORT"
   echo "Master-Connection oeffnen (1x Passphrase), dann Tunnel..."
   ssh $SSH_OPTS -fN -p "$PORT" "$TARGET"
   echo "SSH verbunden, baue Tunnel auf..."
   # Erfolgswachter: meldet sobald der Forward am VPS lauscht (via Master-Connection, keine neue Passphrase)
   ( for _ in $(seq 1 30); do
-      if ssh $SSH_OPTS -p "$PORT" "$TARGET" "ss -tln 2>/dev/null | grep -q '127.0.0.1:$REMOTE'"; then
-        echo "Tunnel aktiv ($(date +%H:%M:%S)): VPS 127.0.0.1:$REMOTE -> Mac 127.0.0.1:$LOCAL — bereit: https://code.all-the.rest/"
+      if ssh $SSH_OPTS -p "$PORT" "$TARGET" "ss -tln 2>/dev/null | grep -q '$BIND:$REMOTE'"; then
+        echo "Tunnel aktiv ($(date +%H:%M:%S)): VPS $BIND:$REMOTE -> Mac 127.0.0.1:$LOCAL — bereit: https://code.all-the.rest/"
         exit 0
       fi
       sleep 2
@@ -57,9 +61,9 @@ if [ "$MODE" != "--sync-only" ]; then
     echo "WARN: Forward nach 60s nicht auf VPS sichtbar — Log pruefen." ) &
   if command -v autossh >/dev/null 2>&1; then
     AUTOSSH_PORT=0 autossh -M 0 -N $SSH_OPTS -p "$PORT" \
-      -R "127.0.0.1:$REMOTE:127.0.0.1:$LOCAL" "$TARGET"
+      -R "$BIND:$REMOTE:127.0.0.1:$LOCAL" "$TARGET"
   else
     echo "WARN: autossh fehlt (brew install autossh), nutze plain ssh."
-    ssh $SSH_OPTS -N -p "$PORT" -R "127.0.0.1:$REMOTE:127.0.0.1:$LOCAL" "$TARGET"
+    ssh $SSH_OPTS -N -p "$PORT" -R "$BIND:$REMOTE:127.0.0.1:$LOCAL" "$TARGET"
   fi
 fi

@@ -33,8 +33,8 @@ ssh $SSH_OPTS -p "$PORT" "$TARGET" \
   "REMOTE=$REMOTE" 'bash -s' <<'EOF'
 set -u
 echo "-- port --"
-ss -tlnp 2>/dev/null | grep -q "127.0.0.1:$REMOTE" && echo "OK   VPS 127.0.0.1:$REMOTE lauscht (Tunnel oben)" \
-  || echo "WARN VPS 127.0.0.1:$REMOTE fehlt -> run.sh (Tunnel)"
+ss -tlnp 2>/dev/null | grep -q ":$REMOTE" && echo "OK   VPS $REMOTE lauscht (Tunnel oben)" \
+  || echo "WARN VPS $REMOTE fehlt -> run.sh (Tunnel)"
 echo "-- container --"
 docker ps --format "{{.Names}} {{.Status}}" | grep -E "caddy|code-auth" || echo "WARN kein caddy/code-auth Container gefunden"
 echo "-- webnet --"
