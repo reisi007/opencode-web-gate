@@ -46,8 +46,11 @@ code.all-the.rest {
 		# Ziel = Docker-Bridge-Gateway (webnet .1): dort bindet der SSH-Forward;
 		# 127.0.0.1 saehe hier nur den Container-Loopback.
 		reverse_proxy 172.18.0.1:18731 {
-			# OpenCode-eigenes Passwort upstream injizieren (Browser sieht es nie)
-			header_up Authorization "Basic ***REMOVED***"
+			# OpenCode-eigenes Passwort upstream injizieren (Browser sieht es nie).
+			# PLATZHALTER — nie echten Wert committen! Lokal erzeugen:
+			#   ./finish-setup.sh  (liest OPENCODE_PASSWORD aus .env, schreibt /tmp/Caddyfile.code[.remote].snippet)
+			# und das generierte Snippet ins caddyfile-Repo uebernehmen.
+			header_up Authorization "__OPENCODE_BASIC__"
 		}
 	}
 

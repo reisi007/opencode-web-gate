@@ -1,0 +1,58 @@
+# Fragment ZWEITER Weg: remote-code.all-the.rest (VPS-nativ, Mac-Tunnel bleibt).
+# Ablage NUR als Vorlage hier — echte Secrets nie committen!
+# Generieren: ./finish-setup.sh (liest .env, schreibt /tmp/Caddyfile.remote.snippet).
+# Dann im caddyfile-Repo in Caddyfile uebernehmen + ./sync.sh (validate + reload).
+# Voraussetzung VPS: Stack `code-remote` laeuft (stack/docker-compose.remote.yml),
+# Caddy haengt zusaetzlich im externen Netz `code-remote` (siehe remote/README.md).
+remote-code.all-the.rest {
+	import security_headers
+	import compress
+
+	# statische Login-Seite (gleiche wie code.all-the.rest, rclone aus apps/web/dist)
+	handle /login.html {
+		root * /srv/websites/code.all-the.rest
+		file_server
+	}
+
+	# Login-API an isolierten Sidecar (nur code-remote-Netz, kein webnet)
+	handle /api/login {
+		reverse_proxy code-auth-remote:8081
+	}
+	handle /api/me {
+		reverse_proxy code-auth-remote:8081
+	}
+	handle /api/logout {
+		reverse_proxy code-auth-remote:8081
+	}
+
+	# OpenCode-SW precache-Bug neutralisieren (wie Mac-Fragment)
+	handle /sw.js {
+		header Content-Type "application/javascript"
+		respond `/* service worker disabled */` 200
+	}
+
+	# alles andere: Cookie pruefen, dann VPS-Container (kein SSH-Tunnel).
+	handle {
+		forward_auth code-auth-remote:8081 {
+			uri /check?
+			copy_headers Remote-User
+			@denied status 401
+			handle_response @denied {
+				redir * /login.html 302
+			}
+		}
+		reverse_proxy code-dev:8080 {
+			# PLATZHALTER — ./finish-setup.sh ersetzt __OPENCODE_BASIC__ lokal.
+			header_up Authorization "__OPENCODE_BASIC__"
+		}
+	}
+
+	handle_errors {
+		@gw expression `{err.status_code} == 502 || {err.status_code} == 503 || {err.status_code} == 504`
+		handle @gw {
+			root * /srv/websites/code.all-the.rest
+			rewrite * /tunnel-down.html
+			file_server
+		}
+	}
+}

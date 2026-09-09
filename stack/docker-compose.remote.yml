@@ -1,0 +1,298 @@
+# Portainer-Stack: code-remote — ZWEITER Weg neben Mac-Tunnel (code.all-the.rest bleibt).
+# Deploy: Portainer -> Stacks -> Add stack `code-remote` -> Web editor -> diese Datei pasten.
+# Isolation: code-dev + dind + code-auth-remote haengen NUR in `code-remote`.
+# KEIN webnet hier -> kein Zugriff auf Prod-Container per Name. Internet geht via NAT.
+# Caddy braucht zusaetzlich das Netz `code-remote` (siehe remote/README.md, caddyfile-Repo).
+#
+# Env in Portainer (oder Stack-Env):
+#   OPENCODE_PASSWORD   Pflicht (Serverpasswort, Caddy injiziert es upstream, Browser sieht es nie)
+#   AUTH_USER           default admin
+#   AUTH_HASH           Pflicht (bcrypt $2a$... 60 Zeichen ODER pbkdf2$... vom setup.sh)
+#   AUTH_SECRET         Pflicht (64 Hex, openssl rand -hex 32)
+#   SESSION_TTL         default 43200
+#   IMAGE               default ghcr.io/reisi007/opencode-web-dev-baseline:latest
+#
+# Erster Login danach: docker exec -it code-dev gh auth login
+# (gespeichert in Volume gh-config -> ueberlebt Image-Upgrades)
+services:
+  code-dev:
+    image: ${IMAGE:-ghcr.io/reisi007/opencode-web-dev-baseline:latest}
+    container_name: code-dev
+    restart: unless-stopped
+    environment:
+      - OPENCODE_SERVER_PASSWORD=${OPENCODE_PASSWORD}
+      - OPENCODE_PASSWORD=${OPENCODE_PASSWORD}
+      - DOCKER_HOST=tcp://dind:2375
+      - PORT=8080
+    volumes:
+      - code-remote-projects:/projects
+      - gh-config:/home/dev/.config/gh
+      - gh-ssh:/home/dev/.ssh
+      - opencode-data:/home/dev/.local/share/opencode
+      - opencode-config:/home/dev/.config/opencode
+    networks:
+      - code-remote
+    depends_on:
+      dind:
+        condition: service_started
+      code-auth-remote:
+        condition: service_started
+
+  # Isolierter Docker-Daemon NUR fuer code-dev (eigener Image-Cache, sieht Host/Prod nicht).
+  dind:
+    image: docker:29-dind
+    container_name: code-remote-dind
+    restart: unless-stopped
+    privileged: true
+    environment:
+      - DOCKER_TLS_CERTDIR=
+    command: ["dockerd", "--host=tcp://0.0.0.0:2375", "--host=unix:///var/run/docker.sock"]
+    volumes:
+      - code-remote-projects:/projects
+      - dind-data:/var/lib/docker
+    networks:
+      - code-remote
+
+  # Gleicher Sidecar-Code wie stack/docker-compose.yml (code-auth), aber als eigene
+  # Instanz NUR in code-remote -> kein webnet -> kein Prod-Sichtkontakt.
+  code-auth-remote:
+    image: python:3.12-slim
+    container_name: code-auth-remote
+    restart: unless-stopped
+    networks:
+      - code-remote
+    environment:
+      - AUTH_USER=${AUTH_USER:-admin}
+      - AUTH_HASH=${AUTH_HASH}
+      - AUTH_SECRET=${AUTH_SECRET}
+      - SESSION_TTL=${SESSION_TTL:-43200}
+      - AUTH_PORT=8081
+    command:
+      - sh
+      - -c
+      - |
+        mkdir -p /app
+        cat > /app/auth.py << "PYEOF"
+        """code-auth-remote: Single-User Cookie-Gate fuer Caddy forward_auth. Nur Stdlib + optional bcrypt.
+
+        Env: AUTH_USER, AUTH_HASH (bcrypt $$2a$$/$$2b$$ ODER pbkdf2$$iter$$salt$$hex), AUTH_SECRET, SESSION_TTL.
+        Routen:
+          GET  /check      -> 200/401 (Caddy forward_auth, uri /check)
+          GET  /api/me     -> 200 {"user":...} / 401 (Browser: schon eingeloggt?)
+          POST /login      -> JSON oder Form, setzt Cookie, 200/401
+          POST /api/login  -> dito (Caddy routet /api/login hierher)
+          POST /logout, /api/logout -> Cookie loeschen
+        Cookie: auth=user:exp:sig, sig=HMAC_SHA256(AUTH_SECRET, "user:exp"), HttpOnly, Secure, SameSite=Lax, Path /.
+        """
+
+        import hashlib
+        import hmac
+        import json
+        import os
+        import subprocess
+        import time
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        from urllib.parse import parse_qs
+
+        AUTH_USER = os.environ.get("AUTH_USER", "admin")
+        AUTH_HASH = os.environ.get("AUTH_HASH", "")
+        AUTH_SECRET = os.environ.get("AUTH_SECRET", "")
+        SESSION_TTL = int(os.environ.get("SESSION_TTL", "43200"))
+        LISTEN_PORT = int(os.environ.get("AUTH_PORT", "8081"))
+
+        _bcrypt = None
+
+
+        def ensure_bcrypt():
+            """bcrypt-Modul sicherstellen wenn ein caddy-Hash konfiguriert ist."""
+            global _bcrypt
+            if not AUTH_HASH.startswith("$$2"):
+                return
+            try:
+                import bcrypt
+                _bcrypt = bcrypt
+                return
+            except ImportError:
+                pass
+            print("bcrypt fehlt, installiere per pip...", flush=True)
+            try:
+                subprocess.run(["pip", "install", "--no-cache-dir", "bcrypt"],
+                               check=True, capture_output=True, text=True, timeout=120)
+                import bcrypt
+                _bcrypt = bcrypt
+                print("bcrypt installiert.", flush=True)
+            except Exception as e:
+                print(f"WARN: pip install bcrypt fehlgeschlagen ({e}) -> Login liefert 401.", flush=True)
+
+
+        def verify_password(plain: str) -> bool:
+            if not AUTH_HASH or not plain:
+                return False
+            if AUTH_HASH.startswith("$$2"):
+                if _bcrypt is None:
+                    print("FEHLER: bcrypt-Hash konfiguriert aber bcrypt-Modul fehlt "
+                          "(pip-Install beim Start ist fehlgeschlagen).", flush=True)
+                    return False
+                try:
+                    return _bcrypt.checkpw(plain.encode(), AUTH_HASH.encode())
+                except Exception:
+                    return False
+            if AUTH_HASH.startswith("pbkdf2$$"):
+                try:
+                    _, it, salt_hex, hash_hex = AUTH_HASH.split("$$")
+                    dk = hashlib.pbkdf2_hmac("sha256", plain.encode(),
+                                             bytes.fromhex(salt_hex), int(it))
+                    return hmac.compare_digest(dk.hex(), hash_hex)
+                except Exception:
+                    return False
+            # Klartext-Fallback (nicht empfohlen, nur Dev)
+            return hmac.compare_digest(plain, AUTH_HASH)
+
+
+        def sign(user: str, exp: int) -> str:
+            msg = f"{user}:{exp}".encode()
+            return hmac.new(AUTH_SECRET.encode(), msg, hashlib.sha256).hexdigest()
+
+
+        def make_cookie(user: str) -> str:
+            exp = int(time.time()) + SESSION_TTL
+            return f"{user}:{exp}:{sign(user, exp)}"
+
+
+        def check_cookie(header: str | None) -> str | None:
+            if not header:
+                return None
+            cookies = {}
+            for part in header.split(";"):
+                if "=" in part:
+                    k, v = part.strip().split("=", 1)
+                    cookies[k] = v
+            val = cookies.get("auth")
+            if not val:
+                return None
+            try:
+                user, exp_s, sig = val.split(":")
+            except ValueError:
+                return None
+            if user != AUTH_USER:
+                return None
+            try:
+                if int(exp_s) < int(time.time()):
+                    return None
+            except ValueError:
+                return None
+            if not hmac.compare_digest(sign(user, int(exp_s)), sig):
+                return None
+            return user
+
+
+        class H(BaseHTTPRequestHandler):
+            server_version = "code-auth-remote/1.0"
+
+            def log_message(self, *a):
+                pass
+
+            def _send(self, code: int, body: bytes = b"", ctype: str = "text/plain"):
+                self.send_response(code)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                if body:
+                    self.wfile.write(body)
+
+            def _user(self):
+                return check_cookie(self.headers.get("Cookie"))
+
+            def do_GET(self):
+                if self.path in ("/check", "/api/me"):
+                    user = self._user()
+                    if user:
+                        if self.path == "/api/me":
+                            self._send(200, json.dumps({"user": user}).encode(), "application/json")
+                        else:
+                            self._send(200, b"OK")
+                    else:
+                        self._send(401, b"Unauthorized")
+                elif self.path in ("/", "/health"):
+                    self._send(200, b"code-auth-remote ok")
+                else:
+                    self._send(404, b"not found")
+
+            def do_POST(self):
+                if self.path not in ("/login", "/api/login", "/logout", "/api/logout"):
+                    self._send(404, b"not found")
+                    return
+                if self.path.endswith("logout"):
+                    self.send_response(200)
+                    self.send_header("Set-Cookie",
+                                     "auth=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax")
+                    self.send_header("Content-Length", "2")
+                    self.end_headers()
+                    self.wfile.write(b"OK")
+                    return
+                length = int(self.headers.get("Content-Length", "0") or 0)
+                raw = self.rfile.read(length) if length else b""
+                ctype = self.headers.get("Content-Type", "")
+                username, password = "", ""
+                if "application/json" in ctype:
+                    try:
+                        data = json.loads(raw.decode() or "{}")
+                        username = data.get("username", "")
+                        password = data.get("password", "")
+                    except Exception:
+                        pass
+                else:
+                    form = parse_qs(raw.decode(errors="replace"))
+                    username = form.get("username", [""])[0] or form.get("user", [""])[0]
+                    password = form.get("password", [""])[0]
+                # Single-User: leeres username-Feld = AUTH_USER (nur Passwort-Formular)
+                if not username:
+                    username = AUTH_USER
+                if username == AUTH_USER and verify_password(password):
+                    cookie = make_cookie(username)
+                    body = json.dumps({"ok": True}).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Set-Cookie",
+                                     f"auth={cookie}; Path=/; Max-Age={SESSION_TTL}; "
+                                     f"HttpOnly; Secure; SameSite=Lax")
+                    self.end_headers()
+                    self.wfile.write(body)
+                else:
+                    time.sleep(0.5)  # minimales Rate-Limit gegen Brute-Force
+                    self._send(401, json.dumps({"ok": False}).encode(), "application/json")
+
+
+        if __name__ == "__main__":
+            if not AUTH_SECRET:
+                raise SystemExit("AUTH_SECRET fehlt")
+            if not AUTH_HASH:
+                raise SystemExit("AUTH_HASH fehlt (siehe README: caddy hash-password)")
+            ensure_bcrypt()
+            fmt = "bcrypt" if AUTH_HASH.startswith("$$2") else ("pbkdf2" if AUTH_HASH.startswith("pbkdf2$$") else "klartext")
+            print(f"Hash-Format: {fmt}, bcrypt-Modul: {'ok' if _bcrypt else 'FEHLT'}", flush=True)
+            print(f"AUTH_HASH-Laenge: {len(AUTH_HASH)} Zeichen (bcrypt=60, pbkdf2>100)", flush=True)
+            print(f"code-auth-remote lauscht auf :{LISTEN_PORT} als {AUTH_USER}", flush=True)
+            ThreadingHTTPServer(("0.0.0.0", LISTEN_PORT), H).serve_forever()
+        PYEOF
+        exec python3 /app/auth.py
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+networks:
+  code-remote:
+    driver: bridge
+
+volumes:
+  code-remote-projects:
+  gh-config:
+  gh-ssh:
+  opencode-data:
+  opencode-config:
+  dind-data:

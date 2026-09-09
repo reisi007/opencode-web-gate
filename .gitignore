@@ -1,5 +1,7 @@
 __pycache__/
 .DS_Store
 .env
+.bla
 .idea/
+.__caddy_check
 *.pyc
