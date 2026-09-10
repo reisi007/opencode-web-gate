@@ -1,6 +1,6 @@
 # Fragment ZWEITER Weg: __REMOTE_DOMAIN__ (VPS-nativ, Mac-Tunnel bleibt).
-# Ablage NUR als Vorlage hier — echte Secrets nie committen!
-# Generieren: ./finish-setup.sh (liest .env, schreibt /tmp/Caddyfile.remote.snippet).
+# Ablage NUR als Vorlage hier — echte Secrets nie committen, Platzhalter
+# manuell fuellen (siehe Root-README: Passwoerter & Caddy-Basic).
 # Dann im caddyfile-Repo in Caddyfile uebernehmen + ./sync.sh (validate + reload).
 # Voraussetzung VPS: Stack `code-remote` laeuft (stack/docker-compose.remote.yml),
 # Caddy haengt zusaetzlich im externen Netz `code-remote` (siehe remote/README.md).
@@ -42,7 +42,7 @@ __REMOTE_DOMAIN__ {
 			}
 		}
 		reverse_proxy code-dev:8080 {
-			# PLATZHALTER — ./finish-setup.sh ersetzt __OPENCODE_BASIC__ lokal.
+			# PLATZHALTER — manuell ersetzen (siehe Root-README).
 			header_up Authorization "__OPENCODE_BASIC__"
 		}
 	}

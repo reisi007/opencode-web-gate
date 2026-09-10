@@ -6,16 +6,16 @@
 * Stack `code-remote` (`docker-compose.yml` hier): `code-dev` + isolierter
   `dind`-Daemon + eigener `code-auth-remote`. Nur Netz `code-remote` — kein `webnet`,
   daher keine Prod-Container per Name erreichbar, Internet via NAT ok.
-  Secrets kommen als **globales Env** aus `.env.production` (gitignored, per
-  `../finish-setup.sh` aus Root-`.env` erzeugt) — nichts im Image.
+  Secrets kommen als **globales Env** aus `.env.production` (gitignored, MANUELL
+  aus Root-`.env` uebernommen: `AUTH_USER/AUTH_HASH/AUTH_SECRET/OPENCODE_PASSWORD/SESSION_TTL/IMAGE`) — nichts im Image.
 * `gh auth` + SSH-Keys + Projekte liegen in Named Volumes (`gh-config`, `gh-ssh`,
   `code-remote-projects`) und ueberleben Image-Upgrades. Einmalig:
   `docker exec -it code-dev gh auth login`.
 
 ## Deploy (alles ohne SSH, nur Portainer + 1x VPS-Handgriff)
 
-1. `../finish-setup.sh` im Repo-Root laufen lassen (liest nur `.env`, committet nichts).
-   Erzeugt: `.env.production` (hier, globales Portainer-Env) + Caddy-Snippets nach `/tmp`.
+1. Passwort/Hash in Root-`.env` setzen (siehe Root-README), `.env.production`
+   (hier) manuell angleichen, Caddy-Basic in globaler Caddyfile setzen.
 2. Image: Weekly-CI (`.github/workflows/build-baseline.yml`, montags 04:00 UTC,
    `ghcr.io/reisi007/opencode-web-dev-baseline:latest`) — oder einmalig per
    `workflow_dispatch`. Portainer-Stack mit `IMAGE` auf dieses Tag zeigen,

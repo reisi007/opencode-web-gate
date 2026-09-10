@@ -1,4 +1,6 @@
-# Fragment: in die globale Caddyfile einfuegen (Platzhalter via ./finish-setup.sh fuellen),
+# Fragment: in die globale Caddyfile einfuegen (Platzhalter MANUELL fuellen:
+# source .env && printf 'opencode:%s' "$OPENCODE_PASSWORD" | base64),
+# dann dort ./sync.sh (validate + reload). Nicht als eigenes Caddyfile nutzen.
 # dann dort ./sync.sh (validate + reload). Nicht als eigenes Caddyfile nutzen.
 # Voraussetzung: Portainer-Stack code-auth laeuft, SSH-Tunnel Mac -> VPS auf 172.18.0.1:18731.
 __CODE_DOMAIN__ {
@@ -46,9 +48,8 @@ __CODE_DOMAIN__ {
 		# 127.0.0.1 saehe hier nur den Container-Loopback.
 		reverse_proxy 172.18.0.1:18731 {
 			# OpenCode-eigenes Passwort upstream injizieren (Browser sieht es nie).
-			# PLATZHALTER — nie echten Wert committen! Lokal erzeugen:
-			#   ./finish-setup.sh  (liest OPENCODE_PASSWORD aus .env, schreibt /tmp/Caddyfile.code[.remote].snippet)
-			# und das generierte Snippet ins caddyfile-Repo uebernehmen.
+			# PLATZHALTER — nie echten Wert committen! Lokal erzeugen (siehe Root-README)
+			# und in die globale Caddyfile uebernehmen.
 			header_up Authorization "__OPENCODE_BASIC__"
 		}
 	}

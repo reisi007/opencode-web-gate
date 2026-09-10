@@ -33,4 +33,4 @@ SSH nutzt **eine** Master-Connection (`ControlMaster`, 1x Passphrase). Fixe Port
 
 ## Credentials
 
-Siehe Root-README + `../setup.sh` (PBKDF2 empfohlen, `AUTH_SECRET` via `openssl rand -hex 32`). OpenCode-Passwort (`OPENCODE_PASSWORD`) injiziert Caddy per `header_up Authorization` upstream — im Browser unsichtbar. Echte Werte nie committen (`../finish-setup.sh` prüft das).
+Siehe Root-README + `../setup.sh` (PBKDF2 empfohlen, `AUTH_SECRET` via `openssl rand -hex 32`). OpenCode-Passwort (`OPENCODE_PASSWORD`) injiziert Caddy per `header_up Authorization` upstream — im Browser unsichtbar (Basic siehe Root-README). Echte Werte nie committen.

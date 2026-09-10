@@ -14,16 +14,18 @@ Beide Wege teilen Auth-Prinzip (Caddy `forward_auth` → `code-auth`-Sidecar →
 ```
 .env / .env.example   zentrale Secrets + Domains (gitignored: .env)
 setup.sh              einmalig: .env erzeugen (Secrets, Hash)
-finish-setup.sh       Portainer-Env (remote/.env.production) + Caddy-Snippets (/tmp) erzeugen, Repo auf Leaks pruefen
 local/                Mac-Tunnel-Runtime (run.sh, Compose, Fragment, Login-Seite)
 remote/               VPS-Runtime (Dockerfile, Compose, Fragment, CI-Image)
+remote/.env.production  globales Portainer-Env (gitignored, MANUELL aus .env uebernehmen)
 ```
 
-## Start
+## Passwoerter & Caddy-Basic (alles Handarbeit)
 
 ```bash
-./setup.sh         # einmalig
-./finish-setup.sh  # vor jedem Portainer-Deploy / jeder Caddy-Aenderung
+openssl rand -base64 24                       # → OPENCODE_PASSWORD (in .env + Portainer-Env)
+source .env && printf 'opencode:%s' "$OPENCODE_PASSWORD" | base64
+# → header_up Authorization "Basic ..." (in globale Caddyfile, nie committen)
+docker run --rm caddy:2 caddy hash-password --plaintext 'PASSWORT'   # → AUTH_HASH (60 Zeichen)
 ```
 
 Echte Domains/Hosts stehen nur in `.env` (Beispiele mit `example.com` im Repo). Nach Public-Schalten Secrets rotiert halten (History aus privater Zeit).
