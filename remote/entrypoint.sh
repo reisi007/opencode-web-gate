@@ -30,6 +30,18 @@ if [ -z "$BIN" ]; then
   echo "FEHLER: kein opencode2-Binary gefunden"; exit 1
 fi
 
+# CodeGraph-MCP automatisch verdrahten (nur opencode, global) — einmalig,
+# danach Skip (Config liegt im Volume). Blockiert den Start nie.
+if command -v codegraph >/dev/null 2>&1; then
+  if grep -q codegraph "$HOME/.config/opencode/opencode.jsonc" 2>/dev/null; then
+    echo "codegraph MCP: bereits verdrahtet"
+  elif codegraph install --target opencode --location global --yes >/tmp/codegraph-install.log 2>&1; then
+    echo "codegraph MCP: opencode verdrahtet"
+  else
+    echo "WARN: codegraph install fehlgeschlagen (s. /tmp/codegraph-install.log) — Start geht weiter"
+  fi
+fi
+
 # opencode serve erzwingt Serverpasswort (wie Mac-Setup in run.sh).
 if [ -z "${OPENCODE_SERVER_PASSWORD:-${OPENCODE_PASSWORD:-}}" ]; then
   echo "FEHLER: OPENCODE_SERVER_PASSWORD (oder OPENCODE_PASSWORD) fehlt (Portainer-Env)"; exit 1
