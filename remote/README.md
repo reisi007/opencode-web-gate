@@ -33,6 +33,13 @@
    In OpenCode-Terminal: `gh auth login` (einmalig), dann
    `gh repo clone owner/repo` nach `/projects`, arbeiten, loeschen via `rm -rf`.
 
+## pnpm
+
+Das Image-pnpm (v12, CI-gepinnt) wird immer verwendet: Repo-Pins via
+`packageManager`/`devEngines` lösen keinen Versionsswitch aus
+(`PM_ON_FAIL=ignore`), damit `pnpm install` als `dev` nie ins
+root-owned Global-Dir schreiben will.
+
 ## Git-Verwaltung
 
 Checkout/Loeschen sind normale Verzeichnisse unter `/projects/<repo>`.

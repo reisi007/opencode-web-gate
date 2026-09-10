@@ -4,7 +4,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
     PNPM_HOME=/usr/local/pnpm-global \
-    PNPM_CONFIG_MANAGE_PACKAGE_MANAGER_VERSIONS=false
+    PNPM_CONFIG_PM_ON_FAIL=ignore
+# pmOnFail=ignore: Repo-Pins (packageManager/devEngines, z.B. pnpm@11) loesen
+# nie einen Versionsswitch ins root-owned $PNPM_HOME aus (dev kann dort nicht
+# schreiben). Image-pnpm (v12, per CI gepinnt) wird immer verwendet.
 ENV PATH=${PNPM_HOME}/bin:${PATH}
 
 # --- Basis + Repos (Node 26.x, PHP 8.5 via Sury, gh, Docker CLI) ---
