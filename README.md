@@ -4,15 +4,15 @@ OpenCode 2 im Browser — auf zwei Wegen, beide hinter derselben Cookie-Login-Se
 
 | Weg | Domain | OpenCode läuft … | Für … |
 |---|---|---|---|
-| **lokal** (Mac) | `code.all-the.rest` | auf deinem Mac, per SSH-Reverse-Tunnel zum VPS | Arbeiten mit lokalen Mac-Projekten von unterwegs |
-| **remote** (VPS) | `remote-code.all-the.rest` | im VPS-Container `code-dev` (eigenes Image) | Projekte, die direkt auf dem VPS leben (inkl. `git`/`gh`) |
+| **lokal** (Mac) | `code.example.com` | auf deinem Mac, per SSH-Reverse-Tunnel zum VPS | Arbeiten mit lokalen Mac-Projekten von unterwegs |
+| **remote** (VPS) | `remote-code.example.com` | im VPS-Container `code-dev` (eigenes Image) | Projekte, die direkt auf dem VPS leben (inkl. `git`/`gh`) |
 
 Beide Wege teilen sich das Auth-Prinzip: zentrales Caddy → `forward_auth` an einen `code-auth`-Sidecar (HMAC-Cookie) → erst dann zum OpenCode-Upstream. `401` wird nie als Browser-Popup sichtbar, sondern als Redirect auf `/login.html`.
 
 ## Weg 1: lokal (Mac via SSH-Tunnel)
 
 ```
-Browser -> code.all-the.rest (zentrales Caddy)
+Browser -> code.example.com (zentrales Caddy)
   /login.html, /api/* -> statisch / Sidecar code-auth:8081
   / (Rest) -> forward_auth code-auth:8081 (/check) -> 172.18.0.1:18731 (SSH-Tunnel -> Mac :8080)
   401 -> 302 /login.html
@@ -26,14 +26,14 @@ Browser -> code.all-the.rest (zentrales Caddy)
 # Am Mac alternativ Doppelklick auf start-tunnel.command (macht run.sh im Terminal auf)
 ```
 
-SSH läuft über **eine** Master-Connection (`ControlMaster auto`, `ControlPersist 60` zu `root@reisinger.pictures:22`), daher trotz passwortgeschütztem Key nur 1x Passphrase. Ports sind fix statt random (random bräuchte Caddy-Reload je Start): VPS `172.18.0.1:18731` (Docker-Bridge, kein Loopback — Caddy läuft im Bridge-Netz!) → Mac `127.0.0.1:8080`, änderbar via `REMOTE_PORT/LOCAL_PORT/REMOTE_BIND` in `.env`. Serverseitig einmalig: `GatewayPorts clientspecified` in `/etc/ssh/sshd_config` + `systemctl reload sshd`. Autostart-Beispiel: `scripts/com.code-tunnel.plist` nach `~/Library/LaunchAgents/` kopieren, Pfad anpassen, `launchctl load`.
+SSH läuft über **eine** Master-Connection (`ControlMaster auto`, `ControlPersist 60` zu `user@vps.example.com:22`), daher trotz passwortgeschütztem Key nur 1x Passphrase. Ports sind fix statt random (random bräuchte Caddy-Reload je Start): VPS `172.18.0.1:18731` (Docker-Bridge, kein Loopback — Caddy läuft im Bridge-Netz!) → Mac `127.0.0.1:8080`, änderbar via `REMOTE_PORT/LOCAL_PORT/REMOTE_BIND` in `.env`. Serverseitig einmalig: `GatewayPorts clientspecified` in `/etc/ssh/sshd_config` + `systemctl reload sshd`. Autostart-Beispiel: `scripts/com.code-tunnel.plist` nach `~/Library/LaunchAgents/` kopieren, Pfad anpassen, `launchctl load`.
 
 Infra dafür: Portainer-Stack `code-auth` aus `stack/docker-compose.yml` (Single File, externen `webnet`, Default `172.18.0.60` — vorher `docker network inspect webnet` prüfen, Block nach `.55` countdown / `.253` ftp). Login-Seite via `rclone` aus `apps/web/dist` (`./sync.sh`, macht `run.sh` mit).
 
 ## Weg 2: remote (VPS-nativ, isoliert)
 
 ```
-Browser -> remote-code.all-the.rest (zentrales Caddy, zusaetzlich im Netz code-remote)
+Browser -> remote-code.example.com (zentrales Caddy, zusaetzlich im Netz code-remote)
   /login.html, /api/* -> statisch / Sidecar code-auth-remote:8081 (nur code-remote-Netz)
   / (Rest) -> forward_auth code-auth-remote:8081 (/check) -> code-dev:8080
   401 -> 302 /login.html
@@ -50,7 +50,7 @@ Die echte `Caddyfile` liegt **nicht** in diesem Repo (nur Vorlagen mit Platzhalt
 
 * statische `/login.html` (per rclone synchronisiert), `/api/login|/me|/logout` → jeweiliger `code-auth*`-Sidecar, `/sw.js` als leerer Worker (neutralisiert einen OpenCode-Precaching-Bug), Rest hinter `forward_auth` (+ `handle_response` 401 → Redirect) zum Upstream.
 * Upstream lokal: `172.18.0.1:18731` (SSH-Tunnel) inkl. `header_up Authorization` mit dem OpenCode-Serverpasswort (Browser sieht es nie); Upstream remote: `code-dev:8080` ebenso.
-* Remote braucht zusätzlich: Netz `code-remote` anlegen, Caddy-Container dort einhängen, DNS `remote-code.all-the.rest` A-Record, `./sync.sh` (validate + reload) im caddyfile-Repo.
+* Remote braucht zusätzlich: Netz `code-remote` anlegen, Caddy-Container dort einhängen, DNS `remote-code.example.com` A-Record, `./sync.sh` (validate + reload) im caddyfile-Repo.
 * Echte Secrets stehen nie in den Fragmenten: Platzhalter `__OPENCODE_BASIC__`, `./finish-setup.sh` füllt ihn lokal aus `.env` (Ausgabe nur `/tmp`).
 
 Vorlagen: `caddy/Caddyfile.fragment` (lokal), `caddy/Caddyfile.remote.fragment` (remote).

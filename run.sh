@@ -10,7 +10,7 @@ export PATH="$HOME/.opencode/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 source .env
 
 SSH_OPTS="-o ControlMaster=auto -o ControlPath=/tmp/ssh-code-%r@%h:%p -o ControlPersist=60 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes"
-TARGET="${SSH_TARGET:-root@reisinger.pictures}"
+TARGET="${SSH_TARGET:-user@vps.example.com}"
 PORT="${SSH_PORT:-22}"
 # Bind-Adresse des Forwards AUF DEM VPS: Docker-Bridge-Gateway (webnet: 172.18.0.1),
 # damit der Caddy-Container (Bridge-Netz, eigener Loopback!) den Tunnel erreicht.
@@ -19,7 +19,7 @@ BIND="${REMOTE_BIND:-172.18.0.1}"
 REMOTE="${REMOTE_PORT:-18731}"
 LOCAL="${LOCAL_PORT:-8080}"
 DIST="${LOCAL_DIST:-apps/web/dist}"
-REMOTE_PATH="${RCLONE_REMOTE:-reisinger.pictures}:${RCLONE_PATH:-/code.all-the.rest}"
+REMOTE_PATH="${RCLONE_REMOTE:-vps.example.com}:${RCLONE_PATH:-/code.example.com}"
 
 MODE="${1:-all}"
 # OpenCode-eigenes Serverpasswort (Pflicht): serve erzwingt Auth, Caddy injiziert
@@ -53,7 +53,7 @@ if [ "$MODE" != "--sync-only" ]; then
   # Erfolgswachter: meldet sobald der Forward am VPS lauscht (via Master-Connection, keine neue Passphrase)
   ( for _ in $(seq 1 30); do
       if ssh $SSH_OPTS -p "$PORT" "$TARGET" "ss -tln 2>/dev/null | grep -q '$BIND:$REMOTE'"; then
-        echo "Tunnel aktiv ($(date +%H:%M:%S)): VPS $BIND:$REMOTE -> Mac 127.0.0.1:$LOCAL — bereit: https://code.all-the.rest/"
+        echo "Tunnel aktiv ($(date +%H:%M:%S)): VPS $BIND:$REMOTE -> Mac 127.0.0.1:$LOCAL — bereit: https://${CODE_DOMAIN:-code.example.com}/"
         exit 0
       fi
       sleep 2

@@ -1,4 +1,4 @@
-# Portainer-Stack: code-remote — ZWEITER Weg neben Mac-Tunnel (code.all-the.rest bleibt).
+# Portainer-Stack: code-remote — ZWEITER Weg neben Mac-Tunnel (CODE_DOMAIN bleibt).
 # Deploy: Portainer -> Stacks -> Add stack `code-remote` -> Web editor -> diese Datei pasten.
 # Isolation: code-dev + dind + code-auth-remote haengen NUR in `code-remote`.
 # KEIN webnet hier -> kein Zugriff auf Prod-Container per Name. Internet geht via NAT.

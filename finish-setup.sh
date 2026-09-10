@@ -18,6 +18,11 @@ AUTH_SECRET="$(strip_q "${AUTH_SECRET:-}")"
 OPENCODE_PASSWORD="$(strip_q "${OPENCODE_PASSWORD:-}")"
 SESSION_TTL="${SESSION_TTL:-43200}"
 IMAGE="${IMAGE:-ghcr.io/reisi007/opencode-web-dev-baseline:latest}"
+CODE_DOMAIN="$(strip_q "${CODE_DOMAIN:-code.example.com}")"
+REMOTE_DOMAIN="$(strip_q "${REMOTE_DOMAIN:-remote-code.example.com}")"
+CODE_SITE="$(strip_q "${CODE_SITE:-code.example.com}")"
+ADMIN_EMAIL="$(strip_q "${ADMIN_EMAIL:-admin@example.com}")"
+SSH_TARGET="$(strip_q "${SSH_TARGET:-user@vps.example.com}")"
 
 fail=0
 [ -n "$AUTH_HASH" ] || { echo "FEHLER: AUTH_HASH leer in .env"; fail=1; }
@@ -25,9 +30,12 @@ fail=0
 [ -n "$OPENCODE_PASSWORD" ] || { echo "FEHLER: OPENCODE_PASSWORD leer in .env"; fail=1; }
 [ "$fail" = 1 ] && exit 1
 
-# Repo auf eingecheckte Secrets pruefen (danach darf nichts mehr kommen)
+# Repo auf eingecheckte Secrets pruefen (Platzhalter sind ok, echte Werte nicht)
 if git grep -n 'header_up Authorization "Basic ' -- caddy stack remote 2>/dev/null | grep -v __OPENCODE_BASIC__; then
-  echo "FEHLER: echter Basic-Hash im Repo gefunden — vor Public entfernen."; exit 1
+  echo "FEHLER: echter Basic-Hash im Repo gefunden — entfernen."; exit 1
+fi
+if git grep -nE 'all-the\.rest|reisinger\.pictures' -- caddy stack remote setup.sh run.sh diagnose.sh sync.sh .env.example 2>/dev/null; then
+  echo "FEHLER: echte Prod-URL im Repo gefunden — scrubben."; exit 1
 fi
 if git ls-files --error-unmatch .bla >/dev/null 2>&1; then
   echo "FEHLER: .bla noch getrackt (git rm .bla)."; exit 1
@@ -36,14 +44,36 @@ fi
 BASIC=$(printf 'opencode:%s' "$OPENCODE_PASSWORD" | base64)
 export OPENCODE_BASIC="$BASIC"
 
-sed "s|__OPENCODE_BASIC__|${BASIC}|g" caddy/Caddyfile.fragment > /tmp/Caddyfile.code.snippet
-sed "s|__OPENCODE_BASIC__|${BASIC}|g" caddy/Caddyfile.remote.fragment > /tmp/Caddyfile.remote.snippet
+# .env.production: globales Env fuer Portainer (gitignored, nie committen).
+# Quelle: .env — Datei einfach 1:1 in Portainer (Stack -> Environment) pasten.
+{
+  echo "# Generiert von ./finish-setup.sh aus .env — gitignored, nur in Portainer pasten."
+  echo "AUTH_USER=$AUTH_USER"
+  echo "AUTH_HASH=$AUTH_HASH"
+  echo "AUTH_SECRET=$AUTH_SECRET"
+  echo "OPENCODE_PASSWORD=$OPENCODE_PASSWORD"
+  echo "SESSION_TTL=$SESSION_TTL"
+  echo "IMAGE=$IMAGE"
+} > .env.production
+chmod 600 .env.production
+echo ".env.production geschrieben (gitignored)."
+
+fill() { # $1=src $2=dst: alle Platzhalter aus .env ersetzen (Secrets nur nach /tmp)
+  sed -e "s|__OPENCODE_BASIC__|${BASIC}|g" \
+      -e "s|__CODE_DOMAIN__|${CODE_DOMAIN}|g" \
+      -e "s|__REMOTE_DOMAIN__|${REMOTE_DOMAIN}|g" \
+      -e "s|__CODE_SITE__|${CODE_SITE}|g" \
+      "$1" > "$2"
+}
+
+fill caddy/Caddyfile.fragment /tmp/Caddyfile.code.snippet
+fill caddy/Caddyfile.remote.fragment /tmp/Caddyfile.remote.snippet
 
 # Caddy-Syntax lokal pruefen (braucht nur docker, kein SSH).
 # Fragmente nutzen zentrale Snippets -> Stubs voranstellen.
 for f in /tmp/Caddyfile.code.snippet /tmp/Caddyfile.remote.snippet; do
   {
-    printf '{\n\temail florian@reisinger.pictures\n}\n\n(security_headers) {\n\theader X-Test test\n}\n(compress) {\n\tencode gzip\n}\n\n'
+    printf '{\n\temail %s\n}\n\n(security_headers) {\n\theader X-Test test\n}\n(compress) {\n\tencode gzip\n}\n\n' "$ADMIN_EMAIL"
     cat "$f"
   } > /tmp/Caddyfile.check
   # HINWEIS: Check-Datei liegt im Repo-Verz (Docker Desktop/ Rancher mountet /tmp vom Mac nicht).
@@ -56,27 +86,20 @@ done
 
 cat <<EOF
 ================================================================
-Portainer-Stack code-remote: Stacks -> Add stack -> Env (Copy-Paste):
+Portainer-Stack code-remote: .env.production wurde erzeugt
+(gitignored, globales Env 1:1 in Portainer pasten):
 ----------------------------------------------------------------
-AUTH_USER=$AUTH_USER
-AUTH_HASH=$AUTH_HASH
-AUTH_SECRET=$AUTH_SECRET
-OPENCODE_PASSWORD=$OPENCODE_PASSWORD
-SESSION_TTL=$SESSION_TTL
-IMAGE=$IMAGE
-================================================================
-ACHTUNG: obiger Block enthaelt Secrets — nur in Portainer einfuegen, nirgendwo posten.
 
-Caddy-Snippets (mit echtem Basic, nur lokal in /tmp):
-  /tmp/Caddyfile.code.snippet    -> code.all-the.rest (Mac-Tunnel)
-  /tmp/Caddyfile.remote.snippet  -> remote-code.all-the.rest (VPS-nativ)
+Caddy-Snippets (mit echten Werten, nur lokal in /tmp):
+  /tmp/Caddyfile.code.snippet    -> $CODE_DOMAIN (Mac-Tunnel)
+  /tmp/Caddyfile.remote.snippet  -> $REMOTE_DOMAIN (VPS-nativ)
 Jeweils ins caddyfile-Repo (Caddyfile) uebernehmen, dort ./sync.sh.
 
-VPS-Handgriffe (deine Shell, root@reisinger.pictures):
+VPS-Handgriffe (deine Shell, $SSH_TARGET):
   docker network create code-remote
   # deployment/docker-compose.yml: caddy zusaetzlich in code-remote haengen, redeployen
-  # DNS: remote-code.all-the.rest A-Record auf VPS
-Danach: https://remote-code.all-the.rest/login.html
+  # DNS: $REMOTE_DOMAIN A-Record auf VPS
+Danach: https://$REMOTE_DOMAIN/login.html
 Erster gh-Login: per Portainer-Console oder: docker exec -it code-dev gh auth login
 ================================================================
 EOF

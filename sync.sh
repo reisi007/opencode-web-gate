@@ -7,7 +7,7 @@ cd "$(dirname "$0")"
 source .env
 
 DIST="${LOCAL_DIST:-apps/web/dist}"
-REMOTE_PATH="${RCLONE_REMOTE:-reisinger.pictures}:${RCLONE_PATH:-/code.all-the.rest}"
+REMOTE_PATH="${RCLONE_REMOTE:-vps.example.com}:${RCLONE_PATH:-/code.example.com}"
 
 echo "Sync $DIST -> $REMOTE_PATH ..."
 rclone sync "$DIST" "$REMOTE_PATH" --transfers=20 --track-renames --progress

@@ -1,6 +1,7 @@
 __pycache__/
 .DS_Store
 .env
+.env.production
 .bla
 .idea/
 .__caddy_check

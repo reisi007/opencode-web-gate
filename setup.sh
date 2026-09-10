@@ -60,11 +60,11 @@ if [ -z "${OPENCODE_PASSWORD:-}" ]; then
 fi
 
 echo "--- Checks ---"
-rclone listremotes | grep -q "^${RCLONE_REMOTE:-reisinger.pictures}:$" \
-  && echo "rclone remote ok" || echo "WARN: rclone remote '${RCLONE_REMOTE:-reisinger.pictures}:' fehlt (rclone config)"
-if getent hosts "code.all-the.rest" >/dev/null 2>&1 || dscacheutil -q host -a name code.all-the.rest >/dev/null 2>&1; then
-  echo "DNS code.all-the.rest ok"
+rclone listremotes | grep -q "^${RCLONE_REMOTE:-vps.example.com}:$" \
+  && echo "rclone remote ok" || echo "WARN: rclone remote '${RCLONE_REMOTE:-vps.example.com}:' fehlt (rclone config)"
+if getent hosts "${CODE_DOMAIN:-code.example.com}" >/dev/null 2>&1 || dscacheutil -q host -a name "${CODE_DOMAIN:-code.example.com}" >/dev/null 2>&1; then
+  echo "DNS ${CODE_DOMAIN:-code.example.com} ok"
 else
-  echo "WARN: DNS code.all-the.rest loest nicht auf -> A-Record auf VPS setzen"
+  echo "WARN: DNS ${CODE_DOMAIN:-code.example.com} loest nicht auf -> A-Record auf VPS setzen"
 fi
 echo "Fertig. Naechste Schritte siehe README (Portainer-Stack + Caddyfile-Fragment + ./run.sh)."

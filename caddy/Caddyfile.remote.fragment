@@ -1,16 +1,16 @@
-# Fragment ZWEITER Weg: remote-code.all-the.rest (VPS-nativ, Mac-Tunnel bleibt).
+# Fragment ZWEITER Weg: __REMOTE_DOMAIN__ (VPS-nativ, Mac-Tunnel bleibt).
 # Ablage NUR als Vorlage hier — echte Secrets nie committen!
 # Generieren: ./finish-setup.sh (liest .env, schreibt /tmp/Caddyfile.remote.snippet).
 # Dann im caddyfile-Repo in Caddyfile uebernehmen + ./sync.sh (validate + reload).
 # Voraussetzung VPS: Stack `code-remote` laeuft (stack/docker-compose.remote.yml),
 # Caddy haengt zusaetzlich im externen Netz `code-remote` (siehe remote/README.md).
-remote-code.all-the.rest {
+__REMOTE_DOMAIN__ {
 	import security_headers
 	import compress
 
-	# statische Login-Seite (gleiche wie code.all-the.rest, rclone aus apps/web/dist)
+	# statische Login-Seite (gleiche wie __CODE_DOMAIN__, rclone aus apps/web/dist)
 	handle /login.html {
-		root * /srv/websites/code.all-the.rest
+		root * /srv/websites/__CODE_SITE__
 		file_server
 	}
 
@@ -50,7 +50,7 @@ remote-code.all-the.rest {
 	handle_errors {
 		@gw expression `{err.status_code} == 502 || {err.status_code} == 503 || {err.status_code} == 504`
 		handle @gw {
-			root * /srv/websites/code.all-the.rest
+			root * /srv/websites/__CODE_SITE__
 			rewrite * /tunnel-down.html
 			file_server
 		}

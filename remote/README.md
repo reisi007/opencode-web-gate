@@ -1,5 +1,5 @@
-# Zweiter Weg neben Mac-Tunnel: VPS-nativ auf remote-code.all-the.rest.
-# Mac (`code.all-the.rest` + run.sh) bleibt unveraendert.
+# Zweiter Weg neben Mac-Tunnel: VPS-nativ auf remote-code.example.com.
+# Mac (`code.example.com` + run.sh) bleibt unveraendert.
 
 ## Was das ist
 
@@ -28,8 +28,8 @@
    * `deployment/docker-compose.yml`: `networks: [webnet, code-remote]` am
      `caddy`-Service + beide als `external: true` deklarieren, Stack redeployen.
    * Snippet aus `/tmp/Caddyfile.remote.snippet` in `Caddyfile` uebernehmen,
-     DNS `remote-code.all-the.rest` A-Record auf VPS, dort `./sync.sh`.
-5. Test: `https://remote-code.all-the.rest/login.html` → Login → OpenCode.
+     DNS `remote-code.example.com` A-Record auf VPS, dort `./sync.sh`.
+5. Test: `https://remote-code.example.com/login.html` → Login → OpenCode.
    In OpenCode-Terminal: `gh auth login` (einmalig), dann
    `gh repo clone owner/repo` nach `/projects`, arbeiten, loeschen via `rm -rf`.
 

@@ -8,7 +8,7 @@ cd "$(dirname "$0")"
 source .env
 
 SSH_OPTS="-o ControlMaster=auto -o ControlPath=/tmp/ssh-code-%r@%h:%p -o ControlPersist=60"
-TARGET="${SSH_TARGET:-root@reisinger.pictures}"
+TARGET="${SSH_TARGET:-user@vps.example.com}"
 PORT="${SSH_PORT:-22}"
 REMOTE="${REMOTE_PORT:-18731}"
 LOCAL="${LOCAL_PORT:-8080}"
@@ -40,7 +40,7 @@ docker ps --format "{{.Names}} {{.Status}}" | grep -E "caddy|code-auth" || echo 
 echo "-- webnet --"
 docker network inspect webnet --format "{{range .Containers}}{{.Name}} {{.IPv4Address}} {{end}}" 2>/dev/null || echo "WARN webnet fehlt"
 echo "-- http --"
-curl -sk -o /dev/null -w "login.html %{http_code}\n" https://code.all-the.rest/login.html
-curl -sk -o /dev/null -w "root (ohne Cookie) %{http_code} (erwartet 302 auf /login.html)\n" https://code.all-the.rest/
+curl -sk -o /dev/null -w "login.html %{http_code}\n" https://"${CODE_DOMAIN:-code.example.com}"/login.html
+curl -sk -o /dev/null -w "root (ohne Cookie) %{http_code} (erwartet 302 auf /login.html)\n" https://"${CODE_DOMAIN:-code.example.com}"/
 EOF
 echo "Fertig."

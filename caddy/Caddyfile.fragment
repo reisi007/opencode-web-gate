@@ -1,14 +1,13 @@
-# Fragment: in /Users/florianreisinger/dev/caddyfile/Caddyfile einfuegen,
+# Fragment: in die globale Caddyfile einfuegen (Platzhalter via ./finish-setup.sh fuellen),
 # dann dort ./sync.sh (validate + reload). Nicht als eigenes Caddyfile nutzen.
-# Voraussetzung: Portainer-Stack code-auth laeuft (Name code-auth, :8081 im webnet),
-# SSH-Tunnel Mac -> VPS lauscht auf 127.0.0.1:18731 (siehe run.sh).
-code.all-the.rest {
+# Voraussetzung: Portainer-Stack code-auth laeuft, SSH-Tunnel Mac -> VPS auf 172.18.0.1:18731.
+__CODE_DOMAIN__ {
 	import security_headers
 	import compress
 
 	# statische Login-Seite (via rclone aus apps/web/dist synchronisiert)
 	handle /login.html {
-		root * /srv/websites/code.all-the.rest
+		root * /srv/websites/__CODE_SITE__
 		file_server
 	}
 
@@ -59,7 +58,7 @@ code.all-the.rest {
 	handle_errors {
 		@gw expression `{err.status_code} == 502 || {err.status_code} == 503 || {err.status_code} == 504`
 		handle @gw {
-			root * /srv/websites/code.all-the.rest
+			root * /srv/websites/__CODE_SITE__
 			rewrite * /tunnel-down.html
 			file_server
 		}
