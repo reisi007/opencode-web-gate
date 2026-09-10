@@ -4,5 +4,5 @@ __pycache__/
 .env.production
 .bla
 .idea/
-.__caddy_check
+.__caddycheck/
 *.pyc

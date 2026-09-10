@@ -77,11 +77,13 @@ for f in /tmp/Caddyfile.code.snippet /tmp/Caddyfile.remote.snippet; do
     printf '{\n\temail %s\n}\n\n(security_headers) {\n\theader X-Test test\n}\n(compress) {\n\tencode gzip\n}\n\n' "$ADMIN_EMAIL"
     cat "$f"
   } > /tmp/Caddyfile.check
-  # HINWEIS: Check-Datei liegt im Repo-Verz (Docker Desktop/ Rancher mountet /tmp vom Mac nicht).
-  cp /tmp/Caddyfile.check ./.__caddy_check
-  docker run --rm -v "$PWD/.__caddy_check:/etc/caddy/Caddyfile:ro" caddy:2 \
+  # HINWEIS: Verzeichnis-Mount statt File-Mount (Docker Desktop/Rancher verliert
+  # neu erstellte Files zwischen Durchlaeufen; Repo-Verz, da /tmp vom Mac nicht gemountet wird).
+  mkdir -p ./.__caddycheck
+  cp /tmp/Caddyfile.check ./.__caddycheck/Caddyfile
+  docker run --rm -v "$PWD/.__caddycheck:/etc/caddy:ro" caddy:2 \
     caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null
-  rm -f ./.__caddy_check
+  rm -rf ./.__caddycheck
   echo "Caddy-Check ok: $f"
 done
 
