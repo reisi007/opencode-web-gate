@@ -3,14 +3,15 @@ FROM debian:bookworm-slim
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
-    PNPM_HOME=/usr/local/pnpm-global
+    PNPM_HOME=/usr/local/pnpm-global \
+    PNPM_CONFIG_MANAGE_PACKAGE_MANAGER_VERSIONS=false
 ENV PATH=${PNPM_HOME}/bin:${PATH}
 
 # --- Basis + Repos (Node 26.x, PHP 8.5 via Sury, gh, Docker CLI) ---
 # Versionen floaten bewusst: woechentlicher CI-Rebuild holt jeweils latest.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl wget gnupg lsb-release apt-transport-https \
-      git openssh-client unzip zip sudo \
+      git openssh-client unzip zip sudo nano \
       ripgrep fd-find sqlite3 \
  && rm -rf /var/lib/apt/lists/*
 
@@ -66,13 +67,32 @@ RUN curl -fsSL https://download.docker.com/linux/debian/gpg \
 RUN pnpm add -g --allow-build=@opencode-ai/cli @opencode-ai/cli@beta \
  && opencode2 --version
 
+# CodeGraph CLI (systemweit; Agent-Wiring NICHT hier — `codegraph install`
+# ist interaktiv und wird pro Projekt von Hand gemacht, nur fuer opencode).
+RUN curl -fsSL https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh \
+      | CODEGRAPH_INSTALL_DIR=/opt/codegraph CODEGRAPH_BIN_DIR=/usr/local/bin sh \
+ && codegraph --version
+
+# Python + uv + markitdown (Office/PDF -> Markdown fuer LLMs).
+# pipx mit globalem Home, damit alle User die Binaries sehen.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3 python3-pip python3-venv \
+ && rm -rf /var/lib/apt/lists/* \
+ && python3 --version \
+ && curl -fsSL https://astral.sh/uv/install.sh | sh \
+ && mv /root/.local/bin/uv /usr/local/bin/uv \
+ && uv --version \
+ && python3 -m pip install --break-system-packages --no-cache-dir pipx \
+ && PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin pipx install 'markitdown[pdf,docx,pptx,xlsx,xls]' \
+ && markitdown --version
+
 # --- Non-root User: gh-Auth + Projekte leben in Volumes (ueberleben Image-Upgrades) ---
 ARG DEV_UID=1000
 ARG DEV_GID=1000
 RUN groupadd -g "$DEV_GID" dev 2>/dev/null || true \
  && useradd -m -u "$DEV_UID" -g "$DEV_GID" -s /bin/bash dev \
  && echo "dev ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/dev \
- && mkdir -p /projects /home/dev/.config/gh /home/dev/.ssh /home/dev/.local/share/opencode /home/dev/.config/opencode \
+ && mkdir -p /projects /home/dev/.config/gh /home/dev/.ssh /home/dev/.local/share/opencode /home/dev/.config/opencode /home/dev/.config/pnpm \
  && chown -R dev:dev /projects /home/dev
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh

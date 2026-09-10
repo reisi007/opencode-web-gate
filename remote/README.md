@@ -1,7 +1,8 @@
 # Remote-Weg / Prod (VPS-nativ)
 
 * Image `opencode-web-dev-baseline` (`Dockerfile` hier): Debian bookworm-slim +
-  Node 26.x + pnpm + PHP 8.5 (Sury) + Composer v2 + `gh` + Docker-CLI + **opencode2** (`@beta`).
+  Node 26.x + pnpm + PHP 8.5 (Sury) + Composer v2 + `gh` + Docker-CLI + **opencode2** (`@beta`)
+  + CodeGraph-CLI + Python/uv/markitdown + nano.
   Versionen floaten: Weekly-CI holt jeweils latest.
 * Stack `code-remote` (`docker-compose.yml` hier): `code-dev` + isolierter
   `dind`-Daemon + eigener `code-auth-remote`. Nur Netz `code-remote` — kein `webnet`,
@@ -37,3 +38,24 @@
 Checkout/Loeschen sind normale Verzeichnisse unter `/projects/<repo>`.
 `gh` ist als `dev`-User installiert, Auth in Volume. Bei Image-Upgrade
 Container recreaten — Volumes bleiben, kein Re-Login noetig.
+
+## Persistenz (Updates loggen nichts aus)
+
+| Inhalt | Ordner | Volume |
+|---|---|---|
+| `gh auth` | `/home/dev/.config/gh` | `gh-config` |
+| SSH-Keys | `/home/dev/.ssh` | `gh-ssh` |
+| Projekte | `/projects` | `code-remote-projects` |
+| opencode-Config (`opencode.json`, editierbar via `nano`) | `/home/dev/.config/opencode` | `opencode-config` |
+| opencode-Daten (Auth, Sessions) | `/home/dev/.local/share/opencode` | `opencode-data` |
+| opencode-State | `/home/dev/.local/state/opencode` | `opencode-state` |
+
+## CodeGraph pro Projekt (optional)
+
+CLI ist im Image. Einmalig je Projekt, im Projekt-Terminal (interaktiv,
+nur fuer opencode auswaehlen):
+
+```bash
+codegraph init      # Index anlegen (.codegraph/)
+codegraph install   # Agent-Wiring — nur opencode
+```

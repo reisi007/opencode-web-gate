@@ -8,7 +8,7 @@ if [ -n "${DOCKER_HOST:-}" ]; then
 fi
 
 # Sicherstellen, dass gemountete Volumes dem dev-User gehoeren (Portainer Named Volumes = root bei Erststart)
-for d in "$HOME/.config/gh" "$HOME/.ssh" "$HOME/.local/share/opencode" "$HOME/.config/opencode" /projects; do
+for d in "$HOME/.config/gh" "$HOME/.ssh" "$HOME/.local/share/opencode" "$HOME/.config/opencode" "$HOME/.local/state/opencode" /projects; do
   if [ -e "$d" ] && [ ! -O "$d" ] 2>/dev/null; then
     sudo chown -R "$(id -u):$(id -g)" "$d" 2>/dev/null || true
   fi

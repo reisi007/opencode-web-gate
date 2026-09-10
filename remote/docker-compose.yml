@@ -30,6 +30,7 @@ services:
       - gh-ssh:/home/dev/.ssh
       - opencode-data:/home/dev/.local/share/opencode
       - opencode-config:/home/dev/.config/opencode
+      - opencode-state:/home/dev/.local/state/opencode
     networks:
       - code-remote
     depends_on:
@@ -295,4 +296,5 @@ volumes:
   gh-ssh:
   opencode-data:
   opencode-config:
+  opencode-state:
   dind-data:
