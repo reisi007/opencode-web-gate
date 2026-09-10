@@ -7,7 +7,7 @@
   <key>Label</key><string>com.code-tunnel</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/florianreisinger/dev/opencode2-ssh-tunnel-web/run.sh</string>
+    <string>/Users/florianreisinger/dev/opencode2-ssh-tunnel-web/local/run.sh</string>
     <string>--tunnel-only</string>
   </array>
   <key>RunAtLoad</key><true/>

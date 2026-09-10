@@ -5,6 +5,7 @@
 # - Schreibt echte Secrets NUR nach /tmp (nie ins Repo).
 set -euo pipefail
 cd "$(dirname "$0")"
+ROOT="$PWD"
 
 [ -f .env ] || { echo ".env fehlt -> ./setup.sh"; exit 1; }
 # shellcheck disable=SC1091
@@ -30,11 +31,11 @@ fail=0
 [ -n "$OPENCODE_PASSWORD" ] || { echo "FEHLER: OPENCODE_PASSWORD leer in .env"; fail=1; }
 [ "$fail" = 1 ] && exit 1
 
-# Repo auf eingecheckte Secrets pruefen (Platzhalter sind ok, echte Werte nicht)
-if git grep -n 'header_up Authorization "Basic ' -- caddy stack remote 2>/dev/null | grep -v __OPENCODE_BASIC__; then
+# Repo auf eingecheckte Secrets/Prod-URLs pruefen (Platzhalter sind ok, echte Werte nicht)
+if git grep -n 'header_up Authorization "Basic ' -- local remote setup.sh finish-setup.sh 2>/dev/null | grep -v __OPENCODE_BASIC__; then
   echo "FEHLER: echter Basic-Hash im Repo gefunden — entfernen."; exit 1
 fi
-if git grep -nE 'all-the\.rest|reisinger\.pictures' -- caddy stack remote setup.sh run.sh diagnose.sh sync.sh .env.example 2>/dev/null; then
+if git grep -nE 'all-the\.rest|reisinger\.pictures' -- local remote setup.sh run.sh diagnose.sh sync.sh .env.example 2>/dev/null; then
   echo "FEHLER: echte Prod-URL im Repo gefunden — scrubben."; exit 1
 fi
 if git ls-files --error-unmatch .bla >/dev/null 2>&1; then
@@ -54,9 +55,9 @@ export OPENCODE_BASIC="$BASIC"
   echo "OPENCODE_PASSWORD=$OPENCODE_PASSWORD"
   echo "SESSION_TTL=$SESSION_TTL"
   echo "IMAGE=$IMAGE"
-} > .env.production
-chmod 600 .env.production
-echo ".env.production geschrieben (gitignored)."
+} > remote/.env.production
+chmod 600 remote/.env.production
+echo "remote/.env.production geschrieben (gitignored)."
 
 fill() { # $1=src $2=dst: alle Platzhalter aus .env ersetzen (Secrets nur nach /tmp)
   sed -e "s|__OPENCODE_BASIC__|${BASIC}|g" \
@@ -66,8 +67,8 @@ fill() { # $1=src $2=dst: alle Platzhalter aus .env ersetzen (Secrets nur nach /
       "$1" > "$2"
 }
 
-fill caddy/Caddyfile.fragment /tmp/Caddyfile.code.snippet
-fill caddy/Caddyfile.remote.fragment /tmp/Caddyfile.remote.snippet
+fill local/Caddyfile.fragment /tmp/Caddyfile.code.snippet
+fill remote/Caddyfile.fragment /tmp/Caddyfile.remote.snippet
 
 # Caddy-Syntax lokal pruefen (braucht nur docker, kein SSH).
 # Fragmente nutzen zentrale Snippets -> Stubs voranstellen.
@@ -86,7 +87,7 @@ done
 
 cat <<EOF
 ================================================================
-Portainer-Stack code-remote: .env.production wurde erzeugt
+Portainer-Stack code-remote: remote/.env.production wurde erzeugt
 (gitignored, globales Env 1:1 in Portainer pasten):
 ----------------------------------------------------------------
 

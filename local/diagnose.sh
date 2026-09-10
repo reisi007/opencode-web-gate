@@ -3,9 +3,15 @@
 # Usage: ./diagnose.sh [--quick]
 set -euo pipefail
 cd "$(dirname "$0")"
-[ -f .env ] || { echo ".env fehlt -> ./setup.sh"; exit 1; }
-# shellcheck disable=SC1091
-source .env
+if [ -f ../.env ]; then
+  # shellcheck disable=SC1091
+  source ../.env
+elif [ -f .env ]; then
+  # shellcheck disable=SC1091
+  source .env
+else
+  echo ".env fehlt -> ../setup.sh"; exit 1
+fi
 
 SSH_OPTS="-o ControlMaster=auto -o ControlPath=/tmp/ssh-code-%r@%h:%p -o ControlPersist=60"
 TARGET="${SSH_TARGET:-user@vps.example.com}"
@@ -21,7 +27,7 @@ echo "== lokal =="
 command -v autossh >/dev/null 2>&1 && ok "autossh vorhanden" || warn "autossh fehlt (brew install autossh)"
 (echo >/dev/tcp/127.0.0.1/"$LOCAL") >/dev/null 2>&1 && ok "localhost:$LOCAL lauscht (OpenCode?)" \
   || warn "localhost:$LOCAL nicht erreichbar -> OpenCode-Web starten?"
-sed -n '/cat > \/app\/auth.py << "PYEOF"/,/^        PYEOF$/p' stack/docker-compose.yml \
+sed -n '/cat > \/app\/auth.py << "PYEOF"/,/^        PYEOF$/p' docker-compose.yml \
   | sed '1d;$d' | sed 's/^        //' | sed 's/\$\$/\$/g' > /tmp/auth-inline-check.py
 python3 -c "import py_compile; py_compile.compile('/tmp/auth-inline-check.py', doraise=True)" \
   && ok "Inline-auth.py kompiliert"

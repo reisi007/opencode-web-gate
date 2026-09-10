@@ -5,9 +5,15 @@ set -euo pipefail
 cd "$(dirname "$0")"
 # Doppelklick (.command) startet mit minimalem PATH -> Werkzeuge auffindbar machen
 export PATH="$HOME/.opencode/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
-[ -f .env ] || { echo ".env fehlt -> ./setup.sh"; exit 1; }
-# shellcheck disable=SC1091
-source .env
+if [ -f ../.env ]; then
+  # shellcheck disable=SC1091
+  source ../.env
+elif [ -f .env ]; then
+  # shellcheck disable=SC1091
+  source .env
+else
+  echo ".env fehlt -> ../setup.sh"; exit 1
+fi
 
 SSH_OPTS="-o ControlMaster=auto -o ControlPath=/tmp/ssh-code-%r@%h:%p -o ControlPersist=60 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes"
 TARGET="${SSH_TARGET:-user@vps.example.com}"
