@@ -38,7 +38,7 @@ fi
 if [ "$MODE" != "--sync-only" ]; then
   # OpenCode-Web sicherstellen (Pflicht — nie manuell starten).
   # Ueber .env aenderbar: OPENCODE_CMD="..."
-  OPENCODE_CMD="${OPENCODE_CMD:-opencode2 serve --hostname 127.0.0.1 --port $LOCAL}"
+  OPENCODE_CMD="${OPENCODE_CMD:-opencode serve --hostname 127.0.0.1 --port $LOCAL}"
   if ! (echo >/dev/tcp/127.0.0.1/"$LOCAL") >/dev/null 2>&1; then
     echo "Starte OpenCode-Web: $OPENCODE_CMD"
     # shellcheck disable=SC2086

@@ -25,9 +25,9 @@ else
   fi
 fi
 
-BIN="$(command -v opencode2 || command -v opencode || command -v opencode-serve-bin || true)"
+BIN="$(command -v opencode || command -v opencode2 || command -v opencode-serve-bin || true)"
 if [ -z "$BIN" ]; then
-  echo "FEHLER: kein opencode2-Binary gefunden"; exit 1
+  echo "FEHLER: kein opencode-Binary gefunden"; exit 1
 fi
 
 # CodeGraph-MCP automatisch verdrahten (nur opencode, global) — einmalig,

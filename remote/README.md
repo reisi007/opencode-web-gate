@@ -1,7 +1,7 @@
 # Remote-Weg / Prod (VPS-nativ)
 
 * Image `opencode-web-dev-baseline` (`Dockerfile` hier): Debian bookworm-slim +
-  Node 26.x + pnpm + PHP 8.5 (Sury) + Composer v2 + `gh` + Docker-CLI + **opencode2** (`@beta`)
+  Node 26.x + pnpm + PHP 8.5 (Sury) + Composer v2 + `gh` + Docker-CLI + **opencode** (v2)
   + CodeGraph-CLI + Python/uv/markitdown + nano.
   Versionen floaten: Weekly-CI holt jeweils latest.
 * Stack `code-remote` (`docker-compose.yml` hier): `code-dev` + isolierter

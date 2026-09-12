@@ -1,6 +1,6 @@
 # Lokaler Weg (Mac via SSH-Tunnel)
 
-OpenCode läuft auf deinem Mac (`opencode2 serve :8080`), der VPS stellt nur Login + Reverse-Proxy. Domain: `CODE_DOMAIN` aus `.env`.
+OpenCode läuft auf deinem Mac (`opencode serve :8080`), der VPS stellt nur Login + Reverse-Proxy. Domain: `CODE_DOMAIN` aus `.env`.
 
 ```
 Browser -> CODE_DOMAIN (zentrales Caddy)

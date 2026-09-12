@@ -63,12 +63,13 @@ RUN curl -fsSL https://download.docker.com/linux/debian/gpg \
  && docker --version \
  && rm -rf /var/lib/apt/lists/*
 
-# OpenCode 2 (Beta, Binary heisst opencode2, parallel zu v1 möglich).
-# Doku: https://opencode.ai/v2 — Tag @beta ist die neueste Beta-Linie.
-# allow-build: Postinstall waehlt das native Binary pro Plattform.
-# Global nach $PNPM_HOME (alle User via PATH), kein User-Setup noetig.
-RUN pnpm add -g --allow-build=@opencode-ai/cli @opencode-ai/cli@beta \
- && opencode2 --version
+# OpenCode 2 (Binary heisst opencode, v2-Linie).
+# Doku: https://opencode.ai/v2/docs — offizielles Install-Skript.
+# Nach /usr/local/bin (alle User via PATH), kein User-Setup noetig.
+RUN curl -fsSL https://opencode.ai/v2/install | bash -s -- --no-modify-path \
+ && mv /root/.opencode/bin/opencode /usr/local/bin/opencode \
+ && ln -sf /usr/local/bin/opencode /usr/local/bin/opencode2 \
+ && opencode --version
 
 # CodeGraph CLI (systemweit; Agent-Wiring NICHT hier — `codegraph install`
 # ist interaktiv und wird pro Projekt von Hand gemacht, nur fuer opencode).
