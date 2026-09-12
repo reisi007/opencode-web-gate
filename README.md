@@ -1,4 +1,4 @@
-# opencode2-ssh-tunnel-web
+# opencode-web-gate
 
 OpenCode 2 im Browser — zwei Wege, ein Login (Cookie-Seite statt Browser-Popup):
 
