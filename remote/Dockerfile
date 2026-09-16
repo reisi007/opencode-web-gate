@@ -66,7 +66,13 @@ RUN curl -fsSL https://download.docker.com/linux/debian/gpg \
 # OpenCode 2 (Binary heisst opencode, v2-Linie).
 # Doku: https://opencode.ai/v2/docs — offizielles Install-Skript.
 # Nach /usr/local/bin (alle User via PATH), kein User-Setup noetig.
-RUN curl -fsSL https://opencode.ai/v2/install | bash -s -- --no-modify-path \
+# OPENCODE_CACHEBUST als ARG davor: bustet den Docker-Layer-Cache gezielt,
+# damit CI-Rebuilds wirklich das jeweils neueste Binary holen (ohne den ARG
+# wuerde ein unveraenderter RUN-Befehl aus dem Build-Cache bedient und die
+# alte opencode-Version ueberleben — relevant bei mehrmals taeglichen Releases).
+ARG OPENCODE_CACHEBUST=0
+RUN echo "opencode cachebust: $OPENCODE_CACHEBUST" \
+ && curl -fsSL https://opencode.ai/v2/install | bash -s -- --no-modify-path \
  && mv /root/.opencode/bin/opencode /usr/local/bin/opencode \
  && ln -sf /usr/local/bin/opencode /usr/local/bin/opencode2 \
  && opencode --version
