@@ -6,6 +6,16 @@
 #
 # Env in Portainer (oder Stack-Env):
 #   OPENCODE_PASSWORD   Pflicht (Serverpasswort, Caddy injiziert es upstream, Browser sieht es nie)
+#   OPENCODE_AUTOUPDATE   default true: holt beim Containerstart das neueste
+#                         opencode-Binary (V2 releast teils mehrmals taeglich);
+#                         mit false deaktivieren (Image-Stand + CI-Updates only)
+#   OPENCODE_UPDATE_INTERVAL default 1200: Watcher-Pruefintervall in Sekunden
+#                         (1200 = 3x/Stunde, 1800 = 2x/Stunde, Minimum 300)
+#   OPENCODE_UPDATE_HOURS default 5-21: Tagesfenster in Containerzeit (UTC,
+#                         5-21 UTC ~= 06-22 MEZ Wien); "" = rund um die Uhr
+#   OPENCODE_UPDATE_RESTART default idle: Container-Neustart bei Update nur
+#                         wenn keine Session aktiv ist (busy → vertagt);
+#                         mit always immer neustarten (kann Runs abbrechen)
 #   AUTH_USER           default admin
 #   AUTH_HASH           Pflicht (bcrypt $2a$... 60 Zeichen ODER pbkdf2$... vom setup.sh)
 #   AUTH_SECRET         Pflicht (64 Hex, openssl rand -hex 32)
@@ -22,6 +32,10 @@ services:
     environment:
       - OPENCODE_SERVER_PASSWORD=${OPENCODE_PASSWORD}
       - OPENCODE_PASSWORD=${OPENCODE_PASSWORD}
+      - OPENCODE_AUTOUPDATE=${OPENCODE_AUTOUPDATE:-true}
+      - OPENCODE_UPDATE_INTERVAL=${OPENCODE_UPDATE_INTERVAL:-1200}
+      - OPENCODE_UPDATE_HOURS=${OPENCODE_UPDATE_HOURS:-5-21}
+      - OPENCODE_UPDATE_RESTART=${OPENCODE_UPDATE_RESTART:-idle}
       - DOCKER_HOST=tcp://dind:2375
       - PORT=8080
     volumes:

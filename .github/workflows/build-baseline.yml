@@ -1,9 +1,11 @@
 name: build-baseline
 
-# Woechentlich frisches opencode-web-dev-baseline (Node 26 / PHP 8.5 / gh / Docker-CLI / OpenCode latest).
+# Taeglich frisches opencode-web-dev-baseline (Node 26 / PHP 8.5 / gh / Docker-CLI / OpenCode latest).
+# Taeglich statt woechentlich: opencode v2 releast teils mehrmals pro Tag, und
+# neue Abo-Modelle erscheinen im Katalog erst mit neuerem Binary.
 on:
   schedule:
-    - cron: "0 4 * * 1"
+    - cron: "0 4 * * *"
   workflow_dispatch:
   push:
     branches: [main]
@@ -51,5 +53,9 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Bustet gezielt den opencode-Layer (ARG OPENCODE_CACHEBUST im
+          # Dockerfile), damit wirklich das neueste Binary im Image landet.
+          build-args: |
+            OPENCODE_CACHEBUST=${{ github.run_id }}-${{ github.run_attempt }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
