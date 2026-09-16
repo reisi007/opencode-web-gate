@@ -116,7 +116,7 @@ USER dev
 WORKDIR /projects
 EXPOSE 8080
 
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-  CMD (command -v curl >/dev/null && curl -sf http://127.0.0.1:8080/ >/dev/null) || exit 1
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=120s \
+  CMD curl -sf -u "opencode:${OPENCODE_SERVER_PASSWORD:-$OPENCODE_PASSWORD}" http://127.0.0.1:${PORT:-8080}/ >/dev/null || exit 1
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
