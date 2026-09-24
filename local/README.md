@@ -31,6 +31,8 @@ Browser -> CODE_DOMAIN (zentrales Caddy)
 
 SSH nutzt **eine** Master-Connection (`ControlMaster`, 1x Passphrase). Fixe Ports statt random: VPS `172.18.0.1:18731` → Mac `127.0.0.1:8080` (`REMOTE_PORT/LOCAL_PORT/REMOTE_BIND` in `.env`). Serverseitig einmalig: `GatewayPorts clientspecified` in `/etc/ssh/sshd_config` + `systemctl reload sshd`.
 
+Im Caddy-Fragment bleibt Browser→Caddy HTTP/2-fähig; der Upstream Caddy→Mac/OpenCode wird wie im Remote-Stack auf HTTP/1.1 mit 4-Sekunden-Keepalive gesetzt. WebSockets/SSE laufen als aktive Streams.
+
 ## Credentials
 
 Siehe Root-README + `../setup.sh` (PBKDF2 empfohlen, `AUTH_SECRET` via `openssl rand -hex 32`). `AUTH_HASH` muss bcrypt oder PBKDF2 sein; Klartext wird nicht akzeptiert. OpenCode-Passwort (`OPENCODE_PASSWORD`) injiziert Caddy per `header_up Authorization` upstream — im Browser unsichtbar (Basic siehe Root-README). Echte Werte nie committen.
