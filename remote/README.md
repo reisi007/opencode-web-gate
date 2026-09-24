@@ -37,6 +37,80 @@
    In OpenCode-Terminal: `gh auth login` (einmalig), dann
    `gh repo clone owner/repo` nach `/projects`, arbeiten, loeschen via `rm -rf`.
 
+## Verbindung, WebSockets und Healthcheck
+
+Die Custom-Auth bleibt der einzige öffentliche Eingang: `code-dev` hat keine
+veröffentlichten Docker-Ports; der Browser erreicht den VPS nur über Caddy.
+Caddys `forward_auth` macht pro Request einen kurzen GET auf
+`code-auth-remote:/check` und proxyt danach den eigentlichen Request. Das ist
+auch für WebSocket-Upgrades gedacht — der Auth-Request ist kein dauerhafter
+zweiter Stream.
+
+HTTP/2 zwischen Browser und Caddy ist normal. Für den Upstream zu OpenCode wird
+im `Caddyfile.fragment` bewusst HTTP/1.1 verwendet: OpenCode antwortet mit
+`Keep-Alive: timeout=5`, während Cadys Default länger im Idle-Pool bleibt. Der
+gesetzte `keepalive 4s` verhindert, dass Caddy einen bereits geschlossenen
+Upstream-Socket wiederverwendet. SSE wird von Caddy automatisch ungepuffert
+weitergereicht; ein globales `flush_interval -1` bleibt bewusst weg, weil dabei
+Upstream-Requests bei Client-Abbruch schlechter abgeräumt werden können.
+
+### Schnelldiagnose auf dem VPS
+
+```bash
+# Alle beteiligten Container und ihre Health-Status
+# (Caddy-Containername ggf. anpassen)
+docker ps --format '{{.Names}}\t{{.Status}}' | grep -E 'code-dev|code-auth-remote|caddy'
+
+# Status, Neustarts und OOM-Kill getrennt betrachten
+docker inspect code-dev --format \
+  'status={{.State.Status}} health={{.State.Health.Status}} restarts={{.RestartCount}} oom={{.State.OOMKilled}} exit={{.State.ExitCode}}'
+
+# Letzte Healthcheck-Ausgaben (die curl-Zeile selbst bleibt passwortfrei)
+docker inspect code-dev --format \
+  '{{range .State.Health.Log}}{{.Start}} exit={{.ExitCode}} {{.Output}}{{"\n"}}{{end}}'
+
+# Direkter interner OpenCode-Test: umgeht Caddy und Custom-Auth absichtlich
+docker exec code-dev sh -lc \
+  'curl -fsS --http1.1 --connect-timeout 2 --max-time 4 -u "opencode:${OPENCODE_PASSWORD}" \
+   "http://127.0.0.1:${PORT:-8080}/api/info"'
+
+# Ressourcen/Prozess und OpenCode-Log
+docker stats --no-stream code-dev
+docker logs --since 30m --timestamps code-dev
+docker exec code-dev sh -lc 'tail -n 200 /home/dev/.local/share/opencode/log/opencode.log 2>/dev/null || true'
+
+# Caddy-Fehler/Upstream-Resets (bei zentralem Caddy-Container anpassen)
+docker logs --since 30m caddy 2>&1 | \
+  grep -Ei 'code-dev|error|reset|timeout|502|503|504' || true
+```
+
+OpenCode-Logs können Pfade, Prompts oder Session-Inhalte enthalten; vor dem
+Teilen von Ausgaben bitte redacten.
+
+Der Docker-Healthcheck spricht `127.0.0.1` direkt an und läuft **nicht** über
+Caddy. Ein internes `200` bei `/api/info` plus Fehler im öffentlichen Pfad
+deutet daher auf Caddy/Auth/Upstream-Transport (401/Redirect: insbesondere
+`__OPENCODE_BASIC__` bzw. Cookie-Gate prüfen); ein internes Timeout/401/5xx
+deutet auf OpenCode, Credentials oder Container-Ressourcen. Docker startet bei
+`restart: unless-stopped` wegen `unhealthy` allein nicht neu; entscheidend sind
+`RestartCount`, `OOMKilled` und der Exit-Code. Im Browser-DevTools
+bei Network mit „Preserve log“ prüfen: `/api/event` sollte `200` mit
+`text/event-stream` bleiben, der PTY-WebSocket sollte `101 Switching Protocols`
+liefern. Steigt `RestartCount` und zeigen die Logs `opencode watcher: neues
+Binary → Container-Neustart`, ist der Auto-Update-Watcher die Ursache; zum
+Testen vorübergehend `OPENCODE_AUTOUPDATE=false` setzen. `OOMKilled=true`
+hingegen spricht zuerst für das 4-GB-Limit (testweise `MEMORY_LIMIT=8g`), nicht
+für HTTP/2.
+
+Falls die Messung echte verwaiste WebSockets zeigt, kann `stream_timeout 24h`
+als Sicherheitsnetz ergänzt werden; ein kurzer Wert würde laufende PTY-Sessions
+unnötig beenden.
+
+Nach einer Änderung an `Caddyfile.fragment` den Block in die echte globale
+Caddyfile übernehmen und dort `./sync.sh` ausführen. Der Healthcheck in
+`Dockerfile` braucht dagegen einen Image-Neubau und ein Redeploy mit dem neuen
+`IMAGE`; ein bloßes Portainer-Recreate eines alten Images ändert ihn nicht.
+
 ## Abo-Modelle & Updates (nur remote)
 
 Wichtig vorweg: **Modelle werden nicht installiert.** Der Modellkatalog kommt
