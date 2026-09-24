@@ -44,6 +44,19 @@ __REMOTE_DOMAIN__ {
 		reverse_proxy code-dev:8080 {
 			# PLATZHALTER — manuell ersetzen (siehe Root-README).
 			header_up Authorization "__OPENCODE_BASIC__"
+
+			# Browser->Caddy darf HTTP/2 bleiben. Für Caddy->OpenCode nur HTTP/1.1:
+			# OpenCode antwortet mit Keep-Alive: timeout=5; Cadys 2m-Default kann
+			# abgelaufene Upstream-Sockets wiederverwenden (502/WS-Resets).
+			transport http {
+				versions 1.1
+				keepalive 4s
+				keepalive_interval 1s
+			}
+
+			# SSE und WebSockets streamt Caddy automatisch. Kein globales
+			# flush_interval -1: dadurch wuerde Caddy Upstream-Requests bei
+			# Client-Abbruch nicht sauber abbrechen.
 		}
 	}
 
