@@ -21,6 +21,8 @@
 #   AUTH_SECRET         Pflicht (64 Hex, openssl rand -hex 32)
 #   SESSION_TTL         default 43200
 #   IMAGE               default ghcr.io/reisi007/opencode-web-dev-baseline:latest
+#   CPU_CORES           default 3: maximale CPU-Kerne fuer code-dev
+#   MEMORY_LIMIT        default 4g: RAM-Limit fuer code-dev (z. B. 2g, 8g)
 #
 # Erster Login danach: docker exec -it code-dev gh auth login
 # (gespeichert in Volume gh-config -> ueberlebt Image-Upgrades)
@@ -29,6 +31,8 @@ services:
     image: ${IMAGE:-ghcr.io/reisi007/opencode-web-dev-baseline:latest}
     container_name: code-dev
     restart: unless-stopped
+    cpus: ${CPU_CORES:-3}
+    mem_limit: ${MEMORY_LIMIT:-4g}
     environment:
       - OPENCODE_SERVER_PASSWORD=${OPENCODE_PASSWORD}
       - OPENCODE_PASSWORD=${OPENCODE_PASSWORD}
