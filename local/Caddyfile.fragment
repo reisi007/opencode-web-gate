@@ -57,6 +57,19 @@ __CODE_DOMAIN__ {
 			# PLATZHALTER — nie echten Wert committen! Lokal erzeugen (siehe Root-README)
 			# und in die globale Caddyfile uebernehmen.
 			header_up Authorization "__OPENCODE_BASIC__"
+
+			# Gleicher Upstream-Transport wie im Remote-Stack: Browser->Caddy
+			# darf HTTP/2 bleiben; Caddy->OpenCode nutzt HTTP/1.1 und kurzes
+			# Keepalive, damit keine abgelaufenen Tunnel-Sockets wiederverwendet
+			# werden.
+			transport http {
+				versions 1.1
+				keepalive 4s
+				keepalive_interval 1s
+			}
+
+			# WebSockets/SSE nicht mit globalem flush_interval -1 behandeln;
+			# Caddy soll bei Client-Abbruch den Upstream sauber abbrechen.
 		}
 	}
 
