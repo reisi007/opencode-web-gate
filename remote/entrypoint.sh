@@ -87,9 +87,9 @@ in_update_window() {
 server_idle() {
   # Return 0 = keine aktive Session (Neustart ok), 1 = busy/unbekannt (vertagen).
   # Auth per Basic wie Caddy upstream (User opencode + Serverpasswort).
-  local pw="${OPENCODE_SERVER_PASSWORD:-${OPENCODE_PASSWORD:-}}"
+  local pw="${OPENCODE_PASSWORD:-${OPENCODE_SERVER_PASSWORD:-}}"
   local resp count
-  resp="$(curl -fsSL --max-time 10 -u "opencode:$pw" "http://127.0.0.1:${PORT:-8080}/api/session/active" 2>/dev/null || true)"
+  resp="$(curl -fsSL --http1.1 --max-time 10 -u "opencode:$pw" "http://127.0.0.1:${PORT:-8080}/api/session/active" 2>/dev/null || true)"
   if [ -z "$resp" ]; then echo "idle-check: API nicht erreichbar → vertagt"; return 1; fi
   count="$(printf '%s' "$resp" | python3 -c '
 import json,sys
@@ -98,7 +98,8 @@ try:
 except Exception:
   print("ERR"); sys.exit(0)
 data = d.get("data", d) if isinstance(d, dict) else d
-print(len(data) if isinstance(data, list) else "ERR")
+# V2 liefert eine Map Session-ID -> Status; aeltere Builds nutzen eine Liste.
+print(len(data) if isinstance(data, (dict, list)) else "ERR")
 ' 2>/dev/null || true)"
   if [ -z "$count" ] || [ "$count" = "ERR" ]; then echo "idle-check: Antwort unverstaendlich → vertagt"; return 1; fi
   if [ "$count" -gt 0 ]; then echo "idle-check: $count aktive Session(s) → vertagt"; return 1; fi

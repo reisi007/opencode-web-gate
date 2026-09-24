@@ -12,6 +12,8 @@
   `CPU_CORES` und `MEMORY_LIMIT` im Stack-Environment anpassbar.
   Secrets kommen als **globales Env** aus `.env.production` (gitignored, MANUELL
   aus Root-`.env` uebernommen: `AUTH_USER/AUTH_HASH/AUTH_SECRET/OPENCODE_PASSWORD/SESSION_TTL/IMAGE`) — nichts im Image.
+  `AUTH_HASH` muss bcrypt oder PBKDF2 sein; ein Klartext-Fallback wird absichtlich
+  nicht akzeptiert.
 * `gh auth` + SSH-Keys + Projekte liegen in Named Volumes (`gh-config`, `gh-ssh`,
   `code-remote-projects`) und ueberleben Image-Upgrades. Einmalig:
   `docker exec -it code-dev gh auth login`.
@@ -50,9 +52,11 @@ HTTP/2 zwischen Browser und Caddy ist normal. Für den Upstream zu OpenCode wird
 im `Caddyfile.fragment` bewusst HTTP/1.1 verwendet: OpenCode antwortet mit
 `Keep-Alive: timeout=5`, während Cadys Default länger im Idle-Pool bleibt. Der
 gesetzte `keepalive 4s` verhindert, dass Caddy einen bereits geschlossenen
-Upstream-Socket wiederverwendet. SSE wird von Caddy automatisch ungepuffert
-weitergereicht; ein globales `flush_interval -1` bleibt bewusst weg, weil dabei
-Upstream-Requests bei Client-Abbruch schlechter abgeräumt werden können.
+Upstream-Socket wiederverwendet. Für den kurzen `forward_auth`-Preflight ist
+Cadys Keepalive explizit aus; der Python-Sidecar arbeitet als HTTP/1.0-Service
+ohne Idle-Pool. SSE wird von Caddy automatisch ungepuffert weitergereicht; ein
+globales `flush_interval -1` bleibt bewusst weg, weil dabei Upstream-Requests
+bei Client-Abbruch schlechter abgeräumt werden können.
 
 ### Schnelldiagnose auf dem VPS
 
@@ -86,6 +90,12 @@ docker logs --since 30m caddy 2>&1 | \
 
 OpenCode-Logs können Pfade, Prompts oder Session-Inhalte enthalten; vor dem
 Teilen von Ausgaben bitte redacten.
+
+`BrokenPipeError`/`ConnectionResetError` im Auth-Log sind bei einem
+abgebrochenen `forward_auth`-Preflight normal: Caddy kann die Verbindung
+schließen, wenn der Browser den Request reloadt oder Caddy selbst neu lädt.
+Der aktuelle Sidecar behandelt diese Disconnect-Fälle ohne Traceback; wenn sie
+weiterhin erscheinen, läuft wahrscheinlich noch das alte Image.
 
 Der Docker-Healthcheck spricht `127.0.0.1` direkt an und läuft **nicht** über
 Caddy. Ein internes `200` bei `/api/info` plus Fehler im öffentlichen Pfad
