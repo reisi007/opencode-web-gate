@@ -34,6 +34,12 @@ __REMOTE_DOMAIN__ {
 	# alles andere: Cookie pruefen, dann VPS-Container (kein SSH-Tunnel).
 	handle {
 		forward_auth code-auth-remote:8081 {
+			# Auth-Preflight bewusst als kurze HTTP/1.1-Verbindung: der
+			# Python-Sidecar ist HTTP/1.0 und soll keinen Idle-Pool aufbauen.
+			transport http {
+				versions 1.1
+				keepalive off
+			}
 			uri /check?
 			copy_headers Remote-User
 			@denied status 401

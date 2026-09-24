@@ -111,9 +111,10 @@ services:
         import json
         import os
         import subprocess
+        import sys
         import time
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-        from urllib.parse import parse_qs
+        from urllib.parse import parse_qs, urlsplit
 
         AUTH_USER = os.environ.get("AUTH_USER", "admin")
         AUTH_HASH = os.environ.get("AUTH_HASH", "")
@@ -143,7 +144,7 @@ services:
                 _bcrypt = bcrypt
                 print("bcrypt installiert.", flush=True)
             except Exception as e:
-                print(f"WARN: pip install bcrypt fehlgeschlagen ({e}) -> Login liefert 401.", flush=True)
+                print(f"WARN: pip install bcrypt fehlgeschlagen ({e}) -> Auth-Service startet nicht.", flush=True)
 
 
         def verify_password(plain: str) -> bool:
@@ -166,8 +167,8 @@ services:
                     return hmac.compare_digest(dk.hex(), hash_hex)
                 except Exception:
                     return False
-            # Klartext-Fallback (nicht empfohlen, nur Dev)
-            return hmac.compare_digest(plain, AUTH_HASH)
+            # Unbekanntes Hashformat: fail closed; kein Klartext-Fallback.
+            return False
 
 
         def sign(user: str, exp: int) -> str:
@@ -207,52 +208,86 @@ services:
             return user
 
 
+        MAX_BODY_BYTES = 16 * 1024
+
+
+        class AuthHTTPServer(ThreadingHTTPServer):
+            allow_reuse_address = True
+            daemon_threads = True
+
+            def handle_error(self, request, client_address):
+                exc = sys.exc_info()[1]
+                if isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, TimeoutError)):
+                    return
+                super().handle_error(request, client_address)
+
+
         class H(BaseHTTPRequestHandler):
-            server_version = "code-auth-remote/1.0"
+            # Auth-Preflights sind kurz; HTTP/1.0 verhindert Idle-Auth-Sockets.
+            protocol_version = "HTTP/1.0"
+            server_version = "code-auth-remote/1.1"
+
+            def setup(self):
+                super().setup()
+                self.connection.settimeout(10)
 
             def log_message(self, *a):
                 pass
 
-            def _send(self, code: int, body: bytes = b"", ctype: str = "text/plain"):
-                self.send_response(code)
-                self.send_header("Content-Type", ctype)
-                self.send_header("Content-Length", str(len(body)))
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers()
-                if body:
+            def _write(self, body: bytes):
+                try:
                     self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, TimeoutError):
+                    self.close_connection = True
+
+            def _send(self, code: int, body: bytes = b"", ctype: str = "text/plain"):
+                try:
+                    self.send_response(code)
+                    self.send_header("Content-Type", ctype)
+                    self.send_header("Content-Length", str(len(body)))
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    if body:
+                        self._write(body)
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, TimeoutError):
+                    self.close_connection = True
 
             def _user(self):
                 return check_cookie(self.headers.get("Cookie"))
 
             def do_GET(self):
-                if self.path in ("/check", "/api/me"):
+                path = urlsplit(self.path).path
+                if path in ("/check", "/api/me"):
                     user = self._user()
                     if user:
-                        if self.path == "/api/me":
+                        if path == "/api/me":
                             self._send(200, json.dumps({"user": user}).encode(), "application/json")
                         else:
                             self._send(200, b"OK")
                     else:
                         self._send(401, b"Unauthorized")
-                elif self.path in ("/", "/health"):
+                elif path in ("/", "/health"):
                     self._send(200, b"code-auth-remote ok")
                 else:
                     self._send(404, b"not found")
 
             def do_POST(self):
-                if self.path not in ("/login", "/api/login", "/logout", "/api/logout"):
+                path = urlsplit(self.path).path
+                if path not in ("/login", "/api/login", "/logout", "/api/logout"):
                     self._send(404, b"not found")
                     return
-                if self.path.endswith("logout"):
+                if path.endswith("logout"):
                     self.send_response(200)
                     self.send_header("Set-Cookie",
                                      "auth=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax")
                     self.send_header("Content-Length", "2")
                     self.end_headers()
-                    self.wfile.write(b"OK")
+                    self._write(b"OK")
                     return
                 length = int(self.headers.get("Content-Length", "0") or 0)
+                if length > MAX_BODY_BYTES:
+                    self._send(413, b"request too large")
+                    return
                 raw = self.rfile.read(length) if length else b""
                 ctype = self.headers.get("Content-Type", "")
                 username, password = "", ""
@@ -281,7 +316,7 @@ services:
                                      f"auth={cookie}; Path=/; Max-Age={SESSION_TTL}; "
                                      f"HttpOnly; Secure; SameSite=Lax")
                     self.end_headers()
-                    self.wfile.write(body)
+                    self._write(body)
                 else:
                     time.sleep(0.5)  # minimales Rate-Limit gegen Brute-Force
                     self._send(401, json.dumps({"ok": False}).encode(), "application/json")
@@ -293,18 +328,23 @@ services:
             if not AUTH_HASH:
                 raise SystemExit("AUTH_HASH fehlt (siehe README: caddy hash-password)")
             ensure_bcrypt()
-            fmt = "bcrypt" if AUTH_HASH.startswith("$$2") else ("pbkdf2" if AUTH_HASH.startswith("pbkdf2$$") else "klartext")
-            print(f"Hash-Format: {fmt}, bcrypt-Modul: {'ok' if _bcrypt else 'FEHLT'}", flush=True)
+            if not (AUTH_HASH.startswith("$$2") or AUTH_HASH.startswith("pbkdf2$$")):
+                raise SystemExit("AUTH_HASH-Format unsupported (bcrypt oder pbkdf2 erforderlich)")
+            if AUTH_HASH.startswith("$$2") and _bcrypt is None:
+                raise SystemExit("bcrypt-Modul nicht verfuegbar")
+            fmt = "bcrypt" if AUTH_HASH.startswith("$$2") else "pbkdf2"
+            print(f"Hash-Format: {fmt}, bcrypt-Modul: {'ok' if _bcrypt else 'n/a'}", flush=True)
             print(f"AUTH_HASH-Laenge: {len(AUTH_HASH)} Zeichen (bcrypt=60, pbkdf2>100)", flush=True)
             print(f"code-auth-remote lauscht auf :{LISTEN_PORT} als {AUTH_USER}", flush=True)
-            ThreadingHTTPServer(("0.0.0.0", LISTEN_PORT), H).serve_forever()
+            AuthHTTPServer(("0.0.0.0", LISTEN_PORT), H).serve_forever()
         PYEOF
         exec python3 /app/auth.py
     healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/health')"]
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/health', timeout=3)"]
       interval: 30s
       timeout: 5s
       retries: 3
+      start_period: 120s
 
 networks:
   code-remote:

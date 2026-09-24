@@ -37,6 +37,12 @@ __CODE_DOMAIN__ {
 	# reicht die 401-Antwort direkt durch, handle_errors greift dort nicht).
 	handle {
 		forward_auth code-auth:8081 {
+			# Auth-Preflight bewusst als kurze HTTP/1.1-Verbindung: der
+			# Python-Sidecar ist HTTP/1.0 und soll keinen Idle-Pool aufbauen.
+			transport http {
+				versions 1.1
+				keepalive off
+			}
 			uri /check?
 			copy_headers Remote-User
 			@denied status 401
