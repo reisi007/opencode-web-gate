@@ -8,6 +8,8 @@
 * Stack `code-remote` (`docker-compose.yml` hier): `code-dev` + isolierter
   `dind`-Daemon + eigener `code-auth-remote`. Nur Netz `code-remote` — kein `webnet`,
   daher keine Prod-Container per Name erreichbar, Internet via NAT ok.
+  `code-dev` ist standardmäßig auf 3 CPU-Kerne und 4 GB RAM begrenzt; über
+  `CPU_CORES` und `MEMORY_LIMIT` im Stack-Environment anpassbar.
   Secrets kommen als **globales Env** aus `.env.production` (gitignored, MANUELL
   aus Root-`.env` uebernommen: `AUTH_USER/AUTH_HASH/AUTH_SECRET/OPENCODE_PASSWORD/SESSION_TTL/IMAGE`) — nichts im Image.
 * `gh auth` + SSH-Keys + Projekte liegen in Named Volumes (`gh-config`, `gh-ssh`,
