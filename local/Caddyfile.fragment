@@ -58,6 +58,17 @@ __CODE_DOMAIN__ {
 			# und in die globale Caddyfile uebernehmen.
 			header_up Authorization "__OPENCODE_BASIC__"
 
+			# Direkter, authentisierter Healthcheck durch denselben SSH-Tunnel:
+			# er erkennt einen toten oder nicht mehr erreichbaren Mac-Upstream.
+			health_uri /api/info
+			health_interval 30s
+			health_timeout 4s
+			health_status 200
+			health_fails 3
+			health_headers {
+				Authorization "__OPENCODE_BASIC__"
+			}
+
 			# Gleicher Upstream-Transport wie im Remote-Stack: Browser->Caddy
 			# darf HTTP/2 bleiben; Caddy->OpenCode nutzt HTTP/1.1 und kurzes
 			# Keepalive, damit keine abgelaufenen Tunnel-Sockets wiederverwendet
@@ -67,6 +78,11 @@ __CODE_DOMAIN__ {
 				keepalive 4s
 				keepalive_interval 1s
 			}
+
+			# Aktive Streams nicht unbegrenzt halten: nach 24h wird die alte
+			# Verbindung sauber beendet, damit der V2-Client neu verbindet.
+			stream_timeout 24h
+			stream_close_delay 5m
 
 			# WebSockets/SSE nicht mit globalem flush_interval -1 behandeln;
 			# Caddy soll bei Client-Abbruch den Upstream sauber abbrechen.

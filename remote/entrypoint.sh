@@ -87,7 +87,7 @@ in_update_window() {
 server_idle() {
   # Return 0 = keine aktive Session (Neustart ok), 1 = busy/unbekannt (vertagen).
   # Auth per Basic wie Caddy upstream (User opencode + Serverpasswort).
-  local pw="${OPENCODE_PASSWORD:-${OPENCODE_SERVER_PASSWORD:-}}"
+  local pw="${OPENCODE_SERVER_PASSWORD:-${OPENCODE_PASSWORD:-}}"
   local resp count
   resp="$(curl -fsSL --http1.1 --max-time 10 -u "opencode:$pw" "http://127.0.0.1:${PORT:-8080}/api/session/active" 2>/dev/null || true)"
   if [ -z "$resp" ]; then echo "idle-check: API nicht erreichbar → vertagt"; return 1; fi

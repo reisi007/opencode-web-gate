@@ -214,7 +214,18 @@ services:
                     self.end_headers()
                     self._write(b"OK")
                     return
-                length = int(self.headers.get("Content-Length", "0") or 0)
+                length_values = self.headers.get_all("Content-Length", [])
+                if len(length_values) > 1:
+                    self._send(400, b"invalid Content-Length")
+                    return
+                if not length_values:
+                    length = 0
+                else:
+                    length_value = length_values[0]
+                    if not length_value.isascii() or not length_value.isdecimal():
+                        self._send(400, b"invalid Content-Length")
+                        return
+                    length = int(length_value)
                 if length > MAX_BODY_BYTES:
                     self._send(413, b"request too large")
                     return
