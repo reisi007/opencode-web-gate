@@ -34,8 +34,8 @@ services:
     cpus: ${CPU_CORES:-3}
     mem_limit: ${MEMORY_LIMIT:-4g}
     environment:
-      # OPENCODE_PASSWORD ist der Name im Stack-Environment. Der Entrypoint
-      # exportiert ihn als OPENCODE_SERVER_PASSWORD, den der OpenCode-Server liest.
+      # OPENCODE_PASSWORD ist der aktuelle Name; OPENCODE_SERVER_PASSWORD bleibt
+      # als Legacy-Fallback für Entrypoint/Caddy und ältere OpenCode-Versionen.
       - OPENCODE_SERVER_PASSWORD=${OPENCODE_PASSWORD}
       - OPENCODE_PASSWORD=${OPENCODE_PASSWORD}
       - OPENCODE_AUTOUPDATE=${OPENCODE_AUTOUPDATE:-true}

@@ -76,16 +76,15 @@ __CODE_DOMAIN__ {
 			transport http {
 				versions 1.1
 				keepalive 4s
-				keepalive_interval 1s
 			}
 
-			# Aktive Streams nicht unbegrenzt halten: nach 24h wird die alte
-			# Verbindung sauber beendet, damit der V2-Client neu verbindet.
+			# WebSocket-Upgrades (z.B. PTY) begrenzen; SSE bleibt davon unberührt.
 			stream_timeout 24h
+			# Beim Caddy-Reload den Abbruch alter WebSocket-Streams verzögern.
 			stream_close_delay 5m
 
-			# WebSockets/SSE nicht mit globalem flush_interval -1 behandeln;
-			# Caddy soll bei Client-Abbruch den Upstream sauber abbrechen.
+			# Caddy puffert SSE automatisch. Kein globales flush_interval -1:
+			# es ist redundant und würde auch alle normalen Responses beeinflussen.
 		}
 	}
 
