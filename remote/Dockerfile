@@ -120,7 +120,7 @@ EXPOSE 8080
 # und ohne Caddy, damit der Healthcheck keine Abhaengigkeit zum Proxy hat.
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=120s \
   CMD curl -fsS --http1.1 --connect-timeout 2 --max-time 4 \
-    -u "opencode:${OPENCODE_PASSWORD:-${OPENCODE_SERVER_PASSWORD}}" \
+    -u "opencode:${OPENCODE_SERVER_PASSWORD:-${OPENCODE_PASSWORD}}" \
     http://127.0.0.1:${PORT:-8080}/api/info >/dev/null || exit 1
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

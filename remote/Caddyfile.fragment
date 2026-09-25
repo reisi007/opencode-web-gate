@@ -51,6 +51,18 @@ __REMOTE_DOMAIN__ {
 			# PLATZHALTER — manuell ersetzen (siehe Root-README).
 			header_up Authorization "__OPENCODE_BASIC__"
 
+			# Direkter, authentisierter Healthcheck auf denselben Container:
+			# ein unerreichbarer oder nicht bereiter Upstream wird für neue
+			# Requests als unhealthy markiert.
+			health_uri /api/info
+			health_interval 30s
+			health_timeout 4s
+			health_status 200
+			health_fails 3
+			health_headers {
+				Authorization "__OPENCODE_BASIC__"
+			}
+
 			# Browser->Caddy darf HTTP/2 bleiben. Für Caddy->OpenCode nur HTTP/1.1:
 			# OpenCode antwortet mit Keep-Alive: timeout=5; Cadys 2m-Default kann
 			# abgelaufene Upstream-Sockets wiederverwenden (502/WS-Resets).
@@ -59,6 +71,11 @@ __REMOTE_DOMAIN__ {
 				keepalive 4s
 				keepalive_interval 1s
 			}
+
+			# Aktive Streams nicht unbegrenzt halten: nach 24h wird die alte
+			# Verbindung sauber beendet, damit der V2-Client neu verbindet.
+			stream_timeout 24h
+			stream_close_delay 5m
 
 			# SSE und WebSockets streamt Caddy automatisch. Kein globales
 			# flush_interval -1: dadurch wuerde Caddy Upstream-Requests bei

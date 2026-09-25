@@ -34,8 +34,8 @@ services:
     cpus: ${CPU_CORES:-3}
     mem_limit: ${MEMORY_LIMIT:-4g}
     environment:
-      # Beide Namen gleich setzen: OPENCODE_PASSWORD ist der aktuelle Name,
-      # OPENCODE_SERVER_PASSWORD wird von entrypoint/aelteren Releases erwartet.
+      # OPENCODE_PASSWORD ist der Name im Stack-Environment. Der Entrypoint
+      # exportiert ihn als OPENCODE_SERVER_PASSWORD, den der OpenCode-Server liest.
       - OPENCODE_SERVER_PASSWORD=${OPENCODE_PASSWORD}
       - OPENCODE_PASSWORD=${OPENCODE_PASSWORD}
       - OPENCODE_AUTOUPDATE=${OPENCODE_AUTOUPDATE:-true}
@@ -284,7 +284,18 @@ services:
                     self.end_headers()
                     self._write(b"OK")
                     return
-                length = int(self.headers.get("Content-Length", "0") or 0)
+                length_values = self.headers.get_all("Content-Length", [])
+                if len(length_values) > 1:
+                    self._send(400, b"invalid Content-Length")
+                    return
+                if not length_values:
+                    length = 0
+                else:
+                    length_value = length_values[0]
+                    if not length_value.isascii() or not length_value.isdecimal():
+                        self._send(400, b"invalid Content-Length")
+                        return
+                    length = int(length_value)
                 if length > MAX_BODY_BYTES:
                     self._send(413, b"request too large")
                     return

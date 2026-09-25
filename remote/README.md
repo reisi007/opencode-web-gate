@@ -58,6 +58,14 @@ ohne Idle-Pool. SSE wird von Caddy automatisch ungepuffert weitergereicht; ein
 globales `flush_interval -1` bleibt bewusst weg, weil dabei Upstream-Requests
 bei Client-Abbruch schlechter abgeräumt werden können.
 
+Zusätzlich prüft Caddy alle 30 Sekunden direkt und mit OpenCode-Basic-Auth
+`/api/info`. Erst nach drei Fehlversuchen wird der Upstream für neue Requests
+als `unhealthy` markiert; der Healthcheck läuft ohne Umweg über die Custom-Auth.
+Bereits bestehende SSE-/WebSocket-Streams werden davon nicht abgerissen. Dafür
+begrenzt `stream_timeout 24h` deren maximale Lebensdauer, während
+`stream_close_delay 5m` unnötige Reconnect-Stürme beim Caddy-Reload vermeidet.
+Der V2-Client verbindet SSE und PTY-WebSockets nach einem sauberen Close erneut.
+
 ### Schnelldiagnose auf dem VPS
 
 ```bash
@@ -75,7 +83,8 @@ docker inspect code-dev --format \
 
 # Direkter interner OpenCode-Test: umgeht Caddy und Custom-Auth absichtlich
 docker exec code-dev sh -lc \
-  'curl -fsS --http1.1 --connect-timeout 2 --max-time 4 -u "opencode:${OPENCODE_PASSWORD}" \
+  'curl -fsS --http1.1 --connect-timeout 2 --max-time 4 \
+   -u "opencode:${OPENCODE_SERVER_PASSWORD:-${OPENCODE_PASSWORD}}" \
    "http://127.0.0.1:${PORT:-8080}/api/info"'
 
 # Ressourcen/Prozess und OpenCode-Log
@@ -112,9 +121,10 @@ Testen vorübergehend `OPENCODE_AUTOUPDATE=false` setzen. `OOMKilled=true`
 hingegen spricht zuerst für das 4-GB-Limit (testweise `MEMORY_LIMIT=8g`), nicht
 für HTTP/2.
 
-Falls die Messung echte verwaiste WebSockets zeigt, kann `stream_timeout 24h`
-als Sicherheitsnetz ergänzt werden; ein kurzer Wert würde laufende PTY-Sessions
-unnötig beenden.
+Das Caddy-Fragment enthält bereits `stream_timeout 24h` und
+`stream_close_delay 5m` als Sicherheitsnetz für alte beziehungsweise beim
+Config-Reload nicht benötigte Streams. Ein deutlich kürzerer Timeout würde
+laufende PTY-Sessions unnötig beenden.
 
 Nach einer Änderung an `Caddyfile.fragment` den Block in die echte globale
 Caddyfile übernehmen und dort `./sync.sh` ausführen. Der Healthcheck in
