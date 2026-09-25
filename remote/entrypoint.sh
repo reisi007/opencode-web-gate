@@ -160,10 +160,12 @@ if command -v codegraph >/dev/null 2>&1; then
 fi
 
 # opencode serve erzwingt Serverpasswort (wie Mac-Setup in run.sh).
-if [ -z "${OPENCODE_SERVER_PASSWORD:-${OPENCODE_PASSWORD:-}}" ]; then
-  echo "FEHLER: OPENCODE_SERVER_PASSWORD (oder OPENCODE_PASSWORD) fehlt (Portainer-Env)"; exit 1
+# OPENCODE_PASSWORD ist der aktuelle Name; OPENCODE_SERVER_PASSWORD ist Legacy.
+if [ -z "${OPENCODE_PASSWORD:-${OPENCODE_SERVER_PASSWORD:-}}" ]; then
+  echo "FEHLER: OPENCODE_PASSWORD (oder OPENCODE_SERVER_PASSWORD) fehlt (Portainer-Env)"; exit 1
 fi
-export OPENCODE_SERVER_PASSWORD="${OPENCODE_SERVER_PASSWORD:-$OPENCODE_PASSWORD}"
+export OPENCODE_PASSWORD="${OPENCODE_PASSWORD:-$OPENCODE_SERVER_PASSWORD}"
+export OPENCODE_SERVER_PASSWORD="$OPENCODE_PASSWORD"
 
 PORT="${PORT:-8080}"
 # Watcher als Hintergrundprozess starten (ueberlebt das exec unten, da bereits

@@ -33,7 +33,7 @@
    * Netz `code-remote` anlegen: `docker network create code-remote`
    * `deployment/docker-compose.yml`: `networks: [webnet, code-remote]` am
      `caddy`-Service + beide als `external: true` deklarieren, Stack redeployen.
-   * Snippet aus `/tmp/Caddyfile.remote.snippet` in `Caddyfile` uebernehmen,
+   * Block aus `remote/Caddyfile.fragment` in `Caddyfile` uebernehmen,
      DNS `remote-code.example.com` A-Record auf VPS, dort `./sync.sh`.
 5. Test: `https://remote-code.example.com/login.html` → Login → OpenCode.
    In OpenCode-Terminal: `gh auth login` (einmalig), dann
@@ -55,16 +55,17 @@ gesetzte `keepalive 4s` verhindert, dass Caddy einen bereits geschlossenen
 Upstream-Socket wiederverwendet. Für den kurzen `forward_auth`-Preflight ist
 Cadys Keepalive explizit aus; der Python-Sidecar arbeitet als HTTP/1.0-Service
 ohne Idle-Pool. SSE wird von Caddy automatisch ungepuffert weitergereicht; ein
-globales `flush_interval -1` bleibt bewusst weg, weil dabei Upstream-Requests
-bei Client-Abbruch schlechter abgeräumt werden können.
+globales `flush_interval -1` bleibt bewusst weg, weil es redundant wäre und
+auch alle normalen Responses beeinflussen würde.
 
 Zusätzlich prüft Caddy alle 30 Sekunden direkt und mit OpenCode-Basic-Auth
 `/api/info`. Erst nach drei Fehlversuchen wird der Upstream für neue Requests
 als `unhealthy` markiert; der Healthcheck läuft ohne Umweg über die Custom-Auth.
-Bereits bestehende SSE-/WebSocket-Streams werden davon nicht abgerissen. Dafür
-begrenzt `stream_timeout 24h` deren maximale Lebensdauer, während
-`stream_close_delay 5m` unnötige Reconnect-Stürme beim Caddy-Reload vermeidet.
-Der V2-Client verbindet SSE und PTY-WebSockets nach einem sauberen Close erneut.
+`forward_auth` wird nur beim Start eines Requests bzw. WebSocket-Handshakes
+geprüft, nicht erneut für einen bereits laufenden SSE-/WebSocket-Stream.
+`stream_timeout 24h` und `stream_close_delay 5m` gelten für WebSocket-Upgrades
+(insbesondere PTY), nicht für SSE. Der V2-Client verbindet einen sauber
+beendeten PTY-WebSocket erneut.
 
 ### Schnelldiagnose auf dem VPS
 
@@ -84,7 +85,7 @@ docker inspect code-dev --format \
 # Direkter interner OpenCode-Test: umgeht Caddy und Custom-Auth absichtlich
 docker exec code-dev sh -lc \
   'curl -fsS --http1.1 --connect-timeout 2 --max-time 4 \
-   -u "opencode:${OPENCODE_SERVER_PASSWORD:-${OPENCODE_PASSWORD}}" \
+   -u "opencode:${OPENCODE_PASSWORD:-${OPENCODE_SERVER_PASSWORD}}" \
    "http://127.0.0.1:${PORT:-8080}/api/info"'
 
 # Ressourcen/Prozess und OpenCode-Log
@@ -121,10 +122,10 @@ Testen vorübergehend `OPENCODE_AUTOUPDATE=false` setzen. `OOMKilled=true`
 hingegen spricht zuerst für das 4-GB-Limit (testweise `MEMORY_LIMIT=8g`), nicht
 für HTTP/2.
 
-Das Caddy-Fragment enthält bereits `stream_timeout 24h` und
-`stream_close_delay 5m` als Sicherheitsnetz für alte beziehungsweise beim
-Config-Reload nicht benötigte Streams. Ein deutlich kürzerer Timeout würde
-laufende PTY-Sessions unnötig beenden.
+Das Caddy-Fragment enthält `stream_timeout 24h` und
+`stream_close_delay 5m` als Betriebsrichtlinie für WebSocket-Upgrades. Ein
+deutlich kürzerer Timeout würde laufende PTY-Sessions unnötig beenden; SSE
+wird davon nicht betroffen.
 
 Nach einer Änderung an `Caddyfile.fragment` den Block in die echte globale
 Caddyfile übernehmen und dort `./sync.sh` ausführen. Der Healthcheck in
