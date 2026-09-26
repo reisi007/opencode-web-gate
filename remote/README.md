@@ -8,8 +8,11 @@
 * Stack `code-remote` (`docker-compose.yml` hier): `code-dev` + isolierter
   `dind`-Daemon + eigener `code-auth-remote`. Nur Netz `code-remote` — kein `webnet`,
   daher keine Prod-Container per Name erreichbar, Internet via NAT ok.
-  `code-dev` ist standardmäßig auf 3 CPU-Kerne und 4 GB RAM begrenzt; über
-  `CPU_CORES` und `MEMORY_LIMIT` im Stack-Environment anpassbar.
+  `code-dev` ist standardmäßig auf 3 CPU-Kerne, 2 GB RAM **plus 3 GB Swap**
+  begrenzt; über `CPU_CORES`, `MEMORY_LIMIT` und `MEMSWAP_LIMIT` im
+  Stack-Environment anpassbar. Wichtig: `memswap_limit` muss größer sein als
+  `mem_limit`, sonst ist der Swap-Deckel exakt so hoch wie das RAM-Limit.
+  Siehe *RAM- und Swap-Limits*.
   **Kein Host-Zugriff:** `code-dev` hat bewusst *kein* `extra_hosts` und
   erreicht den VPS nicht. `127.0.0.1` ist der Container selbst — ein
   Dev-Server laeuft daher direkt in `code-dev` und ist sofort ueber
@@ -188,11 +191,77 @@ Rootless-Docker kann ohne systemd im Container **keine cgroups** durchsetzen:
 > `WARNING: Running in rootless-mode without cgroups. Systemd is required to
 > enable cgroups in rootless-mode.`
 
-Daher greifen `mem_limit`/`cpus` fuer Container **im DinD** nicht mehr. Die
-Limits von `code-dev` selbst (`mem_limit: ${MEMORY_LIMIT}`, `cpus:
-${CPU_CORES}`) sind **nicht** betroffen — das ist ein eigener Container auf dem
-Host-Daemon. Wenn ein Build den Host ueberlaesst: `MEMORY_LIMIT`/`CPU_CORES`
-im Stack-Environment anpassen.
+Daher greifen `mem_limit`/`cpus` **an den inneren Containern** nicht. Die Limits
+von `code-dev` selbst (`mem_limit`/`memswap_limit`/`cpus`) sind **nicht**
+betroffen — das ist ein eigener Container auf dem Host-Daemon.
+
+**Ein Limit am `dind`-Container selbst greift aber sehr wohl fuer die inneren
+Container.** Die inneren Prozesse teilen sich denselben cgroup wie der Daemon.
+Live gemessen: der `sleep` eines inneren `alpine`-Containers und der
+dind-Daemon liegen beide in
+`/system.slice/docker-<dind-id>.scope`. Gegenprobe mit 1,8 GB tmpfs in einem
+inneren Container bei `mem_limit: 600m` auf dem DinD:
+
+```
+memory.peak   629149696   (= exakt die 600-MB-Decke)
+oom_kill      1
+```
+
+Also: Limit am DinD = Deckel fuer **alles**, was der Agent darin startet.
+
+**Die Fehlerbehandlung ist der Haken.** Bei OOM waehlt der Kernel den
+**groessten** Prozess im cgroup, und das ist der dind-Daemon, nicht der
+schuldige Build. Deshalb **kein gemeinsames Limit** mit `code-dev`, sondern
+zwei getrennte: so stirbt ein runaway Build nur `code-remote-dind`
+(`restart: unless-stopped`, startet neu) und die `code-dev`-Session laeuft
+weiter.
+
+### RAM- und Swap-Limits
+
+`cgroup`-v2-Semantik, live auf dem VPS gemessen (Direkt-Reads aus
+`/sys/fs/cgroup/.../memory.max` und `memory.swap.max`):
+
+| Docker-Argumente | `memory.max` | `memory.swap.max` | Bedeutung |
+|---|---|---|---|
+| `--memory 200m` | 200 MB | 200 MB | 200 MB RAM + 200 MB Swap |
+| `--memory 200m --memory-swap 800m` | 200 MB | 600 MB | 200 MB RAM + 600 MB Swap |
+| `--memory 200m --memory-swap 1600m` | 200 MB | 1400 MB | 200 MB RAM + 1400 MB Swap |
+
+**Formel: `memory.swap.max = memswap_limit − mem_limit`.** In cgroup v2 ist
+`memory.swap.max` ein **reiner Swap-Deckel**, nicht die Summe.
+
+Hier stand zuerst die gegenteilige Behauptung im Compose und sie war **falsch**:
+ohne `memswap_limit` ist Swap weder deaktiviert noch unbegrenzt, sondern der
+Deckel ist exakt `mem_limit`. `memswap_limit` setzt man also nicht, um Swap zu
+eroeffnen, sondern um das **Verhaeltnis** zu bestimmen und den Gesamt-Fussabd
+hart zu deckeln.
+
+Aktuelles Budget (live gemessen, 2026-09-26):
+
+| Container | RAM | Swap | gesamt | cpus |
+|---|---|---|---|---|
+| `code-dev` | 2048 MB | 3072 MB | 5120 MB | 3 |
+| `code-remote-dind` | 1300 MB | 1772 MB | 3072 MB | 2 |
+| `code-auth-remote` | unbegrenzt | — | — | — |
+| **Summe** | **3348 MB** | **4844 MB** | **8192 MB** | |
+
+Gegen den Host: 7680 MB RAM, 10239 MB Swap, davon live gemessen 2309 MB
+OS/Kernel/dockerd und 2000 MB Reserve fuer die 10 Prod-Container. Worst Case
+7657 von 7680 MB RAM. `code-auth-remote` bleibt bewusst unbegrenzt — real
+18 MB, und ein Deckel wuerde nur Aerger machen.
+
+RAM ist bei `code-dev` knapper als Swap, beim DinD umgekehrt: Builds im Daemon
+sind Batch-Arbeit, Latenz ist egal; `code-dev` ist interaktiv und soll nicht
+swappen.
+
+> **Achtung, `code-dev` ist noch nicht auf den neuen Limits.** Ein Wechsel der
+> Limits braucht zwingend einen Recreate, der jede laufende Sitzung im
+> Container beendet (Dateien auf dem Projekt-Volume bleiben erhalten):
+>
+> ```sh
+> cd /var/lib/docker/volumes/portainer_data/_data/compose/49
+> docker compose --env-file stack.env -p dev-vm up -d --no-deps code-dev
+> ```
 
 ## Aufräumen: `dind-image-gc.sh`
 
@@ -322,8 +391,17 @@ bei Network mit „Preserve log“ prüfen: `/api/event` sollte `200` mit
 liefern. Steigt `RestartCount` und zeigen die Logs `opencode watcher: neues
 Binary → Container-Neustart`, ist der Auto-Update-Watcher die Ursache; zum
 Testen vorübergehend `OPENCODE_AUTOUPDATE=false` setzen. `OOMKilled=true`
-hingegen spricht zuerst für das 4-GB-Limit (testweise `MEMORY_LIMIT=8g`), nicht
-für HTTP/2.
+hingegen spricht zuerst für das RAM-Limit, nicht für HTTP/2. Standard sind
+2048 MB RAM plus 3072 MB Swap (`MEMORY_LIMIT` / `MEMSWAP_LIMIT`) — ein OOM
+bedeutet also, dass **beide** erschöpft waren. Vor dem Hochsetzen prüfen, ob
+der Swap-Deckel überhaupt der Engpass war:
+
+```sh
+cat /sys/fs/cgroup/system.slice/docker-$(docker inspect -f '{{.Id}}' code-dev).scope/memory.swap.current
+```
+
+Steht dort `0`, wurde nie Swap benutzt und `MEMORY_LIMIT` ist zu niedrig. Steht
+es nahe am Deckel, ist `MEMSWAP_LIMIT` zu niedrig.
 
 Das Caddy-Fragment enthält `stream_timeout 24h` und
 `stream_close_delay 5m` als Betriebsrichtlinie für WebSocket-Upgrades. Ein

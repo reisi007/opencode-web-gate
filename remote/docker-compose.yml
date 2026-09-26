@@ -22,7 +22,17 @@
 #   SESSION_TTL         default 43200
 #   IMAGE               default ghcr.io/reisi007/opencode-web-dev-baseline:latest
 #   CPU_CORES           default 3: maximale CPU-Kerne fuer code-dev
-#   MEMORY_LIMIT        default 4g: RAM-Limit fuer code-dev (z. B. 2g, 8g)
+#   MEMORY_LIMIT        default 2g: RAM-Limit fuer code-dev
+#   MEMSWAP_LIMIT       default 5g: RAM+Swap GESAMT fuer code-dev (3 GB Swap).
+#                         MUSS groesser sein als MEMORY_LIMIT, weil Docker
+#                         memory.swap.max = MEMSWAP_LIMIT - MEMORY_LIMIT setzt.
+#                         Ohne diesen Wert ist der Swap-Deckel exakt
+#                         MEMORY_LIMIT. Details und Messwerte: README,
+#                         Abschnitt "RAM- und Swap-Limits".
+#   DIND_MEMORY_LIMIT   default 1300m: RAM-Limit fuer den dind-Daemon
+#   DIND_MEMSWAP_LIMIT  default 3g: RAM+Swap gesamt fuer den dind-Daemon
+#                         (1,7 GB Swap fuer Builds im Daemon)
+#   DIND_CPU_CORES      default 2: CPU-Quota fuer den dind-Daemon
 #
 # KEIN HOST_GATEWAY / extra_hosts mehr (entfernt 2026-09-26, siehe
 # remote/README.md Abschnitt "Warum es kein extra_hosts gibt").
@@ -39,7 +49,27 @@ services:
     container_name: code-dev
     restart: unless-stopped
     cpus: ${CPU_CORES:-3}
-    mem_limit: ${MEMORY_LIMIT:-4g}
+    # RAM-Deckel und Swap-Deckel getrennt setzen.
+    #
+    # cgroup-v2-Semantik, live auf dem VPS gemessen (Direkt-Reads aus
+    # /sys/fs/cgroup/.../memory.max und memory.swap.max):
+    #     memory.max      = mem_limit        (RAM-Deckel)
+    #     memory.swap.max = memswap_limit - mem_limit   (REINER Swap-Deckel)
+    #   --memory 200m                      -> max 200m, swap.max  200m (gesamt  400m)
+    #   --memory 200m --memory-swap  800m  -> max 200m, swap.max  600m (gesamt  800m)
+    #   --memory 200m --memory-swap 1600m  -> max 200m, swap.max 1400m (gesamt 1600m)
+    #
+    # WICHTIG, es wurde hier zuerst das Gegenteil behauptet und es war FALSCH:
+    # ohne memswap_limit ist Swap NICHT deaktiviert und auch nicht unbegrenzt,
+    # sondern der Deckel ist exakt mem_limit. Vorher stand hier 4g/4g, und
+    # code-dev hat nachweislich 385 MB Swap benutzt (memory.swap.current).
+    # memswap_limit setzt man, um das VERHaelTNIS zu bestimmen und den
+    # Gesamt-Fussabd (RAM+Swap) hart zu deckeln — nicht um Swap zu eroeffnen.
+    #
+    # 2g RAM + 3g Swap = 5g gesamt. Bei 1,4 GB anon realem Bedarf ist 2g RAM
+    # knapp, der Swap fängt Spitzen ab, statt Caddy/MariaDB zu verdrängen.
+    mem_limit: ${MEMORY_LIMIT:-2g}
+    memswap_limit: ${MEMSWAP_LIMIT:-5g}
     environment:
       # OPENCODE_PASSWORD ist der aktuelle Name; OPENCODE_SERVER_PASSWORD bleibt
       # als Legacy-Fallback für Entrypoint/Caddy und ältere OpenCode-Versionen.
@@ -91,6 +121,26 @@ services:
     image: docker:29-dind-rootless
     container_name: code-remote-dind
     restart: unless-stopped
+    # Limit fuer ALLE Container, die der Agent in diesem Daemon startet:
+    # die inneren Prozesse teilen sich denselben cgroup wie der Daemon
+    # (live gemessen: /system.slice/docker-<id>.scope fuer beide), ein
+    # Limit am Daemon-Container schlaegt also auf innere Container durch.
+    # Verifiziert mit 1,8 GB tmpfs in einem inneren Container bei mem_limit 600m:
+    #   memory.peak   629149696  (genau die Decke)
+    #   oom_kill       1
+    # Also ja, das Limit greift. Der OOM-Killer trifft dabei aber den
+    # GROESSTEN Prozess im cgroup — das ist der dind-Daemon, nicht der
+    # schuldige Container. Deshalb ein eigenes Limit fuer den DinD statt
+    # eines gemeinsamen mit code-dev: so stirbt bei einem runaway Build
+    # nur code-remote-dind (restart: unless-stopped, startet neu), waehrend
+    # die code-dev-Session weiterlaeuft.
+    cpus: ${DIND_CPU_CORES:-2}
+    # 1300m RAM + 1772m Swap = 3g gesamt. Da memswap_limit = 3g gesamt ist,
+    # setzt Docker memory.swap.max auf 3g - 1300m. RAM knapper, Swap grosszuegiger
+    # als bei code-dev: Builds im Daemon sind Batch-Arbeit, die Latenz des
+    # Daemons ist egal, code-dev ist interaktiv und darf nicht swappen.
+    mem_limit: ${DIND_MEMORY_LIMIT:-1300m}
+    memswap_limit: ${DIND_MEMSWAP_LIMIT:-3g}
     # Die drei Eintraege sind NOTWENDIG, nicht Kosmetik — jeweils einzeln
     # getestet, alle drei zusammen laeuft es erst:
     #   seccomp=unconfined     Default-seccomp blockt unshare(CLONE_NEWUSER),
@@ -129,13 +179,23 @@ services:
     networks:
       - code-remote
 
-    # ACHTUNG, funktionale Einschraenkung von rootless: ohne systemd im
-    # Container kann der Daemon keine cgroups durchsetzen. "mem_limit"/"cpus"
-    # fuer Container IN diesem Daemon greifen daher nicht mehr. Die Limits
-    # von code-dev selbst (mem_limit: ${MEMORY_LIMIT}) sind davon NICHT
-    # betroffen — das ist ein eigener Container auf dem Host-Daemon.
-    # Wenn ein Build den Host ueberlaesst: mem_limit auf dem Stack
-    # heraufsetzen und code-dev ggf. per pids/ulimit bremsen.
+    # ACHTUNG: "mem_limit"/"cpus" an den INNEREN Containern greifen nicht, weil
+    # rootless ohne systemd im Container keine cgroups durchsetzen kann. Die
+    # inneren Limits lassen sich also nicht einzeln setzen.
+    #
+    # ABER: die Limits hier AM dind-CONTAINER greifen fuer alles, was der Agent
+    # in diesem Daemon startet. Die inneren Prozesse teilen sich denselben
+    # cgroup wie der Daemon — live gemessen liegen beide in
+    # /system.slice/docker-<dind-id>.scope. Verifiziert mit 1,8 GB tmpfs in
+    # einem inneren Container bei mem_limit 600m auf dem DinD:
+    #   memory.peak  629149696  (= exakt die Decke)
+    #   oom_kill     1
+    #
+    # Der Haken: bei OOM waehlt der Kernel den GROESSTEN Prozess im cgroup, und
+    # das ist der dind-Daemon, nicht der schuldige Build. Deshalb KEIN
+    # gemeinsames Limit mit code-dev, sondern zwei getrennte — so stirbt ein
+    # runaway Build nur code-remote-dind (restart: unless-stopped) und die
+    # code-dev-Session laeuft weiter.
 
   # Gleicher Sidecar-Code wie stack/docker-compose.yml (code-auth), aber als eigene
   # Instanz NUR in code-remote -> kein webnet -> kein Prod-Sichtkontakt.
