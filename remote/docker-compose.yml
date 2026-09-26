@@ -23,6 +23,14 @@
 #   IMAGE               default ghcr.io/reisi007/opencode-web-dev-baseline:latest
 #   CPU_CORES           default 3: maximale CPU-Kerne fuer code-dev
 #   MEMORY_LIMIT        default 4g: RAM-Limit fuer code-dev (z. B. 2g, 8g)
+#   HOST_GATEWAY        default host.docker.internal: Name, unter dem code-dev den
+#                         VPS-Host erreicht. Loopback im Container ist der
+#                         Container selbst, nicht der Host — Dienste auf dem Host
+#                         sind nur ueber diesen Namen nutzbar. Ueberschreibbar
+#                         mit einem eigenen Namen. Als Name lassen: host-gateway
+#                         loest automatisch auf das Gateway des jeweiligen
+#                         Container-Netzes auf, das kann sich bei einem
+#                         Stack-Recreate aendern.
 #
 # Erster Login danach: docker exec -it code-dev gh auth login
 # (gespeichert in Volume gh-config -> ueberlebt Image-Upgrades)
@@ -44,6 +52,18 @@ services:
       - OPENCODE_UPDATE_RESTART=${OPENCODE_UPDATE_RESTART:-idle}
       - DOCKER_HOST=tcp://dind:2375
       - PORT=8080
+      - HOST_GATEWAY=${HOST_GATEWAY:-host.docker.internal}
+    # Loesung fuer "localhost laesst sich im Container nicht nutzen":
+    # "host-gateway" ist ein Magic-Value der Docker-Engine (>= 20.10) und wird auf
+    # das Gateway des Container-Netzes aufgeloest — live verifiziert auf dem VPS:
+    # Netz code-remote hat Subnet 172.24.0.0/16, Gateway 172.24.0.1, code-dev
+    # haengt als 172.24.0.3 drin. Ohne diesen Eintrag ist host.docker.internal
+    # im Container nicht auflösbar (DNS-Name fehlt komplett).
+    # WICHTIG: Das ueberbrueckt nur den Adress-Teil. Ein Host-Dienst, der auf
+    # 127.0.0.1 lauscht, ist ueber 172.24.0.1 trotzdem NICHT erreichbar — er
+    # muss auf 0.0.0.0 oder der Bridge-IP binden. Siehe remote/README.md.
+    extra_hosts:
+      - "${HOST_GATEWAY:-host.docker.internal}:host-gateway"
     volumes:
       - code-remote-projects:/projects
       - gh-config:/home/dev/.config/gh

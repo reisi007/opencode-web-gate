@@ -1,17 +1,39 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- Beispiel: ~/Library/LaunchAgents/com.code-tunnel.plist
-     Pfad zu run.sh anpassen, dann: launchctl load ~/Library/LaunchAgents/com.code-tunnel.plist -->
+<!-- VORLAGE — wird von bootstrap.sh gerendert, nicht von Hand kopieren.
+     __REPO__ -> Repo-Wurzel, __PATH__ -> KANONISCHER PATH, nicht der des Aufrufers.
+     Ein wechselnder PATH (Finder vs. Shell) wuerde einen cmp-Mismatch und damit
+     einen grundlosen Neustart des Agenten erzeugen. Deshalb hier bewusst fest.
+     Ziel: ~/Library/LaunchAgents/com.code-tunnel.plist
+     Ablauf: start-tunnel.command -> bootstrap.sh (rendert + launchctl bootstrap).
+     Manuelle Notinstallation (sonst gibt es keinen Pfad-Ersatz, der stimmt):
+       sed -e "s|__REPO__|$PWD/..|g" \
+           -e "s|__PATH__|$HOME/.opencode/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin|g" \
+           scripts/com.code-tunnel.plist > ~/Library/LaunchAgents/com.code-tunnel.plist
+       launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.code-tunnel.plist
+     Umask ist DEZIMAL: 63 = 077 (plists kennen kein Oktal). -->
 <plist version="1.0">
 <dict>
   <key>Label</key><string>com.code-tunnel</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/florianreisinger/dev/opencode-web-gate/local/run.sh</string>
+    <string>__REPO__/local/run.sh</string>
     <string>--tunnel-only</string>
   </array>
+  <key>WorkingDirectory</key><string>__REPO__/local</string>
+  <!-- launchd startet ohne TTY: PATH muss brew (autossh) und opencode enthalten. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>__PATH__</string>
+  </dict>
   <key>RunAtLoad</key><true/>
+  <!-- Watchdog: stirbt ssh/autossh, startet launchd den Tunnel neu (min. 10s Abstand). -->
   <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>ProcessType</key><string>Background</string>
+  <!-- 077 (dezimal 63): /tmp/code-tunnel.log und das opencode-Log (Session-Inhalte)
+       nur fuer den Besitzer lesbar, nicht world-readable wie sonst in /tmp. -->
+  <key>Umask</key><integer>63</integer>
   <key>StandardOutPath</key><string>/tmp/code-tunnel.log</string>
   <key>StandardErrorPath</key><string>/tmp/code-tunnel.log</string>
 </dict>

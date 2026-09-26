@@ -7,7 +7,8 @@ need() { command -v "$1" >/dev/null 2>&1 || { echo "FEHLT: $1"; MISSING=1; }; }
 MISSING=0
 need ssh; need docker; need rclone; need python3; need openssl
 if ! command -v autossh >/dev/null 2>&1; then
-  echo "HINWEIS: autossh fehlt -> brew install autossh (sonst plain ssh Fallback in run.sh)"
+  echo "HINWEIS: autossh fehlt -> local/bootstrap.sh (bzw. brew install autossh) installiert es"
+  echo "          und richtet den LaunchAgent ein; ohne autossh kein Reconnect im Tunnel."
 fi
 if [ "${MISSING:-0}" = 1 ]; then echo "Bitte fehlende Tools installieren."; exit 1; fi
 
@@ -67,4 +68,4 @@ if getent hosts "${CODE_DOMAIN:-code.example.com}" >/dev/null 2>&1 || dscacheuti
 else
   echo "WARN: DNS ${CODE_DOMAIN:-code.example.com} loest nicht auf -> A-Record auf VPS setzen"
 fi
-echo "Fertig. Naechste Schritte siehe README (Portainer-Stack + Caddyfile-Fragment + ./run.sh)."
+echo "Fertig. Naechste Schritte siehe README (Portainer-Stack + Caddyfile-Fragment + ./local/start-tunnel.command)."

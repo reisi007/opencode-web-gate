@@ -14,7 +14,8 @@ Beide Wege teilen Auth-Prinzip (Caddy `forward_auth` → `code-auth`-Sidecar →
 ```
 .env / .env.example   zentrale Secrets + Domains (gitignored: .env)
 setup.sh              einmalig: .env erzeugen (Secrets, Hash)
-local/                Mac-Tunnel-Runtime (run.sh, Compose, Fragment, Login-Seite)
+local/                Mac-Tunnel-Runtime (start-tunnel.command -> bootstrap.sh: autossh,
+                      SSH-Key, LaunchAgent; run.sh, Compose, Fragment, Login-Seite)
 remote/               VPS-Runtime (Dockerfile, Compose, Fragment, CI-Image)
 remote/.env.production  globales Portainer-Env (gitignored, MANUELL aus .env uebernehmen)
 ```
