@@ -23,14 +23,13 @@
 #   IMAGE               default ghcr.io/reisi007/opencode-web-dev-baseline:latest
 #   CPU_CORES           default 3: maximale CPU-Kerne fuer code-dev
 #   MEMORY_LIMIT        default 4g: RAM-Limit fuer code-dev (z. B. 2g, 8g)
-#   HOST_GATEWAY        default host.docker.internal: Name, unter dem code-dev den
-#                         VPS-Host erreicht. Loopback im Container ist der
-#                         Container selbst, nicht der Host — Dienste auf dem Host
-#                         sind nur ueber diesen Namen nutzbar. Ueberschreibbar
-#                         mit einem eigenen Namen. Als Name lassen: host-gateway
-#                         loest automatisch auf das Gateway des jeweiligen
-#                         Container-Netzes auf, das kann sich bei einem
-#                         Stack-Recreate aendern.
+#
+# KEIN HOST_GATEWAY / extra_hosts mehr (entfernt 2026-09-26, siehe
+# remote/README.md Abschnitt "Warum es kein extra_hosts gibt").
+# Kurzfassung: `extra_hosts: host-gateway` hat localhost nie repariert —
+# 127.0.0.1 ist im Container immer der Container. Es hat nur eine Tuer zum
+# VPS-Host geoeffnet (Portainer-UI auf 8000/9443 war live erreichbar), und
+# `host.docker.internal` wurde nachweislich nirgends benutzt.
 #
 # Erster Login danach: docker exec -it code-dev gh auth login
 # (gespeichert in Volume gh-config -> ueberlebt Image-Upgrades)
@@ -52,18 +51,11 @@ services:
       - OPENCODE_UPDATE_RESTART=${OPENCODE_UPDATE_RESTART:-idle}
       - DOCKER_HOST=tcp://dind:2375
       - PORT=8080
-      - HOST_GATEWAY=${HOST_GATEWAY:-host.docker.internal}
-    # Loesung fuer "localhost laesst sich im Container nicht nutzen":
-    # "host-gateway" ist ein Magic-Value der Docker-Engine (>= 20.10) und wird auf
-    # das Gateway des Container-Netzes aufgeloest — live verifiziert auf dem VPS:
-    # Netz code-remote hat Subnet 172.24.0.0/16, Gateway 172.24.0.1, code-dev
-    # haengt als 172.24.0.3 drin. Ohne diesen Eintrag ist host.docker.internal
-    # im Container nicht auflösbar (DNS-Name fehlt komplett).
-    # WICHTIG: Das ueberbrueckt nur den Adress-Teil. Ein Host-Dienst, der auf
-    # 127.0.0.1 lauscht, ist ueber 172.24.0.1 trotzdem NICHT erreichbar — er
-    # muss auf 0.0.0.0 oder der Bridge-IP binden. Siehe remote/README.md.
-    extra_hosts:
-      - "${HOST_GATEWAY:-host.docker.internal}:host-gateway"
+    # Bewusst KEIN extra_hosts: 127.0.0.1 ist im Container der Container,
+    # nicht der VPS. host-gateway loest dieses Problem nicht, es oeffnet
+    # nur den Host. Ein Dev-Server (z. B. `pnpm dev`) laeuft direkt in
+    # code-dev und ist damit ueber 127.0.0.1 erreichbar — ganz ohne Docker.
+    # Details und die Alternativen: remote/README.md
     volumes:
       - code-remote-projects:/projects
       - gh-config:/home/dev/.config/gh
@@ -80,19 +72,70 @@ services:
         condition: service_started
 
   # Isolierter Docker-Daemon NUR fuer code-dev (eigener Image-Cache, sieht Host/Prod nicht).
+  #
+  # ROOTLESS statt privileged (2026-09-26). Vorher: privileged: true, das ergab
+  # CapEff 000001ffffffffff (alle 37 Capabilities) und /dev/vda4 war sichtbar —
+  # also faktisch Root auf dem Host, auf dem /home/webadmin/websites, die
+  # MariaDB-Volumes, die TLS-Keys, portainer.db und die rclone-Config liegen.
+  # Da code-dev die Docker-CLI hat und DOCKER_HOST auf diesen Daemon zeigt,
+  # war das der direkte Weg aus dem Dev-Container in die Prod-Daten.
+  #
+  # Rootless laeuft in einem User-Namespace: gleiche Funktionalitaet, aber
+  # der Daemon selbst hat keine Host-Pfade. Live verifiziert:
+  #   CapEff                     0000000000000000   (null Capabilities)
+  #   Host-Blockdevices (/dev/vda*)  []                (nicht vorhanden)
+  #   SecurityOptions            seccomp, rootless, cgroupns
+  #   Build / docker compose     funktionieren
+  #   Host 9443                  nicht erreichbar
   dind:
-    image: docker:29-dind
+    image: docker:29-dind-rootless
     container_name: code-remote-dind
     restart: unless-stopped
-    privileged: true
+    # Die drei Eintraege sind NOTWENDIG, nicht Kosmetik — jeweils einzeln
+    # getestet, alle drei zusammen laeuft es erst:
+    #   seccomp=unconfined     Default-seccomp blockt unshare(CLONE_NEWUSER),
+    #                          ohne das startet der rootless-Daemon gar nicht.
+    #   systempaths=unconfined  Docker maskiert /proc o. a. im Container; der
+    #                          /proc-Mount im nested userns schlaegt sonst fehl:
+    #                          "operation not permitted".
+    #   /dev/net/tun            rootlesskit legt ein tap-Device fuer
+    #                          slirp4netns an, sonst: "open: No such file or
+    #                          directory".
+    security_opt:
+      - seccomp=unconfined
+      - systempaths=unconfined
+    devices:
+      - /dev/net/tun:/dev/net/tun
     environment:
+      # LEER = TLS aus. Wichtig: '--tls=false' als command-Argument wird vom
+      # rootless-Entryppoint ignoriert, nur diese Env-Variable wirkt. Ohne sie
+      # laeuft 2376 ueber HTTPS und 2375 gar nicht — DOCKER_HOST=2375 bremst.
       - DOCKER_TLS_CERTDIR=
-    command: ["dockerd", "--host=tcp://0.0.0.0:2375", "--host=unix:///var/run/docker.sock"]
+    # KEIN command-Override: der rootless-Entryppoint setzt dockerd selbst
+    # auf, inklusive 2375. Festes '--host=...' verletzt das (dann laeuft er auf
+    # 2376 und 2375 bleibt zu).
     volumes:
       - code-remote-projects:/projects
-      - dind-data:/var/lib/docker
+      # ACHTUNG, der Mount-Pfad ist NICHT /var/lib/docker. Der rootless-Daemon
+      # startet ohne --data-root und nutzt seinen Default fuer rootless:
+      # $HOME/.local/share/docker = /home/rootless/.local/share/docker
+      # (HOME=/home/rootless, uid 1000). Live verifiziert mit
+      #   docker info --format '{{.DockerRootDir}}'
+      # Ein Mount auf /var/lib/docker ist wirkungslos: das Volume bleibt leer,
+      # und ALLE Images/Builds liegen im Writable-Layer des Containers — weg bei
+      # jedem Recreate. Genau das passiert, wenn man hier /var/lib/docker
+      # eintraegt (gemessen: 11,9 MB im Layer, 0 Byte im Volume).
+      - dind-data-rootless:/home/rootless/.local/share/docker
     networks:
       - code-remote
+
+    # ACHTUNG, funktionale Einschraenkung von rootless: ohne systemd im
+    # Container kann der Daemon keine cgroups durchsetzen. "mem_limit"/"cpus"
+    # fuer Container IN diesem Daemon greifen daher nicht mehr. Die Limits
+    # von code-dev selbst (mem_limit: ${MEMORY_LIMIT}) sind davon NICHT
+    # betroffen — das ist ein eigener Container auf dem Host-Daemon.
+    # Wenn ein Build den Host ueberlaesst: mem_limit auf dem Stack
+    # heraufsetzen und code-dev ggf. per pids/ulimit bremsen.
 
   # Gleicher Sidecar-Code wie stack/docker-compose.yml (code-auth), aber als eigene
   # Instanz NUR in code-remote -> kein webnet -> kein Prod-Sichtkontakt.
@@ -388,4 +431,9 @@ volumes:
   opencode-data:
   opencode-config:
   opencode-state:
-  dind-data:
+  # Eigenes Volume fuer den rootless-Daemon (2026-09-26). Das alte
+  # 'dind-data' war root:root (0:0) und ist fuer rootless unbrauchbar:
+  # der Daemon laeuft als uid 1000 und kann dort nicht schreiben. Ein
+  # eigenes Volume macht den Wechsel rueckgaengig — das alte bleibt
+  # unangetastet und kann wieder eingehängt werden.
+  dind-data-rootless:

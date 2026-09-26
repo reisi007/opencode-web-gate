@@ -1,9 +1,20 @@
 __pycache__/
 .DS_Store
-.env
-.env.production
 .bla
 .idea/
 .__caddycheck/
 .__caddy_check
 *.pyc
+
+# Secrets. Bewusst als Praefix-Muster statt exakter Dateinamen: eine Datei
+# wie '.env.production.bak' oder '.env.local' enthielte sonst den
+# AUTH_HASH im Klartext und waere commitfaehig. Genau so ist hier eine
+# .env.production.bak entstanden.
+.env
+.env.*
+!.env.example
+*.bak
+id_rsa
+id_rsa.pub
+*.pem
+*.key

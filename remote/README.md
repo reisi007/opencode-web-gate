@@ -10,9 +10,11 @@
   daher keine Prod-Container per Name erreichbar, Internet via NAT ok.
   `code-dev` ist standardmäßig auf 3 CPU-Kerne und 4 GB RAM begrenzt; über
   `CPU_CORES` und `MEMORY_LIMIT` im Stack-Environment anpassbar.
-  Host-Dienste sind aus dem Container nur unter `HOST_GATEWAY` (Default
-  `host.docker.internal`, via `extra_hosts: host-gateway`) erreichbar — siehe
-  Abschnitt *Host-Dienste aus dem Container erreichen*.
+  **Kein Host-Zugriff:** `code-dev` hat bewusst *kein* `extra_hosts` und
+  erreicht den VPS nicht. `127.0.0.1` ist der Container selbst — ein
+  Dev-Server laeuft daher direkt in `code-dev` und ist sofort ueber
+  `127.0.0.1` erreichbar. `dind` laeuft **rootless** (kein `privileged`).
+  Siehe *Warum es kein `extra_hosts` gibt* und *`dind` ist rootless*.
   Secrets kommen als **globales Env** aus `.env.production` (gitignored, MANUELL
   aus Root-`.env` uebernommen: `AUTH_USER/AUTH_HASH/AUTH_SECRET/OPENCODE_PASSWORD/SESSION_TTL/IMAGE`) — nichts im Image.
   `AUTH_HASH` muss bcrypt oder PBKDF2 sein; ein Klartext-Fallback wird absichtlich
@@ -42,115 +44,203 @@
    In OpenCode-Terminal: `gh auth login` (einmalig), dann
    `gh repo clone owner/repo` nach `/projects`, arbeiten, loeschen via `rm -rf`.
 
-## Host-Dienste aus dem Container erreichen (`localhost` vs. `host.docker.internal`)
+## Warum es kein `extra_hosts` gibt — und wo Dev-Server laufen
 
-**Kurzfassung:** `localhost`/`127.0.0.1` in `code-dev` ist der Container selbst,
-nicht der VPS. Alles, was auf dem Host laeuft, ist nur unter
-`host.docker.internal` erreichbar — dafür sorgt der `extra_hosts`-Eintrag mit
-`host-gateway` am `code-dev`-Service (braucht Docker-Engine >= 20.10; auf dem VPS
-live verifiziert: **29.2.1**).
+**Kurzfassung:** `127.0.0.1` in `code-dev` ist der Container selbst, nicht der
+VPS. Ein Dev-Server, der in `code-dev` laeuft, ist ueber `127.0.0.1` erreichbar —
+ohne jede Sonderkonfiguration. Es war nie ein Docker-Problem.
 
-Live verifizierter Netz-Zustand (nicht geraten):
+### Die Fehldiagnose, die 2026-09-26 behoben wurde
 
-| | Wert |
-|---|---|
-| Netz `code-remote` | Subnet `172.24.0.0/16`, Gateway `172.24.0.1` |
-| `code-dev` | `172.24.0.3` |
-| `HOST_GATEWAY` vor dem Fix | **nicht auflösbar** (`getent hosts` leer, `ExtraHosts: []`) |
-| `HOST_GATEWAY` nach dem Fix | `172.17.0.1` (= `docker0` auf dem VPS) |
+Der Stack hatte (bis 26.09.2026):
 
-> **Was `host-gateway` wirklich liefert:** die IP des Docker-Hosts — auf diesem VPS
-> `172.17.0.1` (`docker0`) — **nicht** das Gateway des eigenen Container-Netzes
-> (`172.24.0.1`). Beides ist der Host und damit funktional gleichwertig: entscheidend
-> ist, dass der Dienst auf `0.0.0.0` bindet und damit auf jeder Host-IP lauscht.
-> Live gegengeprüft: `http://host.docker.internal:8000/` → `404` (Host-Port, via
-> `0.0.0.0` gebunden), `http://127.0.0.1:8000/` im Container → `000`.
->
-> `172.18.0.1` ist die **webnet**-Gateway-IP und gehört zum *lokalen* Mac-Tunnel-Weg,
-> nicht zu `code-remote`.
-
-### Zwei Fehlerquellen — die zweite wird oft übersehen
-
-`host-gateway` loest nur das **Adressproblem**. Ein auf dem Host laufender Dienst
-ist nur dann erreichbar, wenn er **nicht** exklusit auf Loopback bindet:
-
-* ✅ lauscht auf `0.0.0.0` → ueber `host.docker.internal` erreichbar
-  (live geprueft: Ports 80/443/8000/9443 des Hosts liefern ueber die
-  Gateway-IP `308/400/404/400`, ueber `127.0.0.1` im Container `000`)
-* ❌ lauscht auf `127.0.0.1` → bleibt unerreichbar, egal was in `extra_hosts`
-  steht. Auf dem Host muss der Dienst dann auf `0.0.0.0` oder die Bridge-IP
-  umgestellt werden.
-
-Unpublished Docker-Ports sind ebenfalls unsichtbar: `portal_search` (Meilisearch)
-haengt im Host-Netz `portal-reisinger-pictures_portal_internal` mit
-`7700/tcp` **ohne** veroeffentlichten Port. Auf dem Host gibt es deshalb gar
-keinen Listener auf 7700 — weder ueber Loopback noch ueber die Gateway-IP.
-
-### DIND-Falle: `docker run -p 127.0.0.1:...` erzeugt unerreichbare Ports
-
-`code-dev` hat **keinen** Docker-Socket gemountet; `DOCKER_HOST` zeigt auf den
-isolierten Sidecar `code-remote-dind` (`tcp://dind:2375`). Vom Agenten erzeugte
-Hilfs-Container laufen also im DIND-Daemon, in dessen eigenem Netzraum. Ein
-`docker run -p 127.0.0.1:33317:3306` bindet dort nur auf Loopback **im
-DIND-Netzraum** — von `code-dev` aus weder ueber `127.0.0.1` noch ueber
-`host.docker.internal` erreichbar. Solche Test-Container stattdessen per
-`--network` an ein geteiltes Netz haengen und per **Containername** aufloesen
-(DNS funktioniert containeruebergreifend im selben Netz, Loopback nie).
-
-### Konfiguration, die auf `localhost` zeigt
-
-`HOST_GATEWAY` ist als Env im Container sichtbar, damit Config im Volume
-(`opencode.jsonc`, MCP-Server, `baseURL`s, `.env`-Dateien in `/projects`) nicht
-hart auf `localhost` zeigen muss. Statt `http://localhost:7701/...`:
-`http://${HOST_GATEWAY}:7701/...`. `HOST_GATEWAY` laesst sich im Stack-Environment
-ueberschreiben:
-
-```
-HOST_GATEWAY=host.docker.internal   # Default
-HOST_GATEWAY=vps-gateway            # eigener Name
+```yaml
+    - HOST_GATEWAY=${HOST_GATEWAY:-host.docker.internal}
+    extra_hosts:
+      - "${HOST_GATEWAY:-host.docker.internal}:host-gateway"
 ```
 
-**Als Namen lassen.** `host-gateway` ist ein Magic-Value der Docker-Engine: die
-Engine loest ihn auf das Gateway des Container-Netzes auf. Das Format des
-`extra_hosts`-Eintrags ist `<Name>:host-gateway`, wobei `<Name>` aus
-`HOST_GATEWAY` kommt (Default `host.docker.internal`).
+Der Kommentar im Compose lautete: *"Loesung fuer 'localhost laesst sich im
+Container nicht nutzen'"*. **Das ist falsch.** `extra_hosts` fuegt lediglich
+einen zusaetzlichen Namen fuer eine Host-IP hinzu; es repariert `127.0.0.1`
+nicht. Es gibt dafuer auch keine Option — die einzige Variante, bei der
+`127.0.0.1` der Host ist, ist `network_mode: host`, und das gibt dem Container
+**genau den Zugriff, den wir nicht wollen** (alle Host-Ports, inkl.
+Bind-Konflikte).
 
-* ✅ **empfohlen:** Name (`host.docker.internal`) — trackt das Gateway automatisch,
-  auch wenn sich das Subnetz bei einem Stack-Recreate aendert
-* ⚠️ geht, ist aber nicht noetig: eine IP auf der **linken** Seite
-  (`extra_hosts: "172.24.0.1:host-gateway"`, `HOST_GATEWAY=172.24.0.1`). Live
-  nachgeprueft mit einem Wegwerf-Container (dessen eigenes Bridge-Netz war
-  `172.17.0.0/16`): `--add-host 172.24.0.1:host-gateway` erzeugte
-  `172.17.0.1  172.24.0.1` in `/etc/hosts` — die **erste** Spalte ist die
-  aufgeloeste Gateway-Adresse, die zweite der Name. Der Eintrag wird also
-  geschrieben, es ist kein stiller No-Op; nur pinnst du damit das Subnetz.
-  Im echten `code-remote`-Netz waere die Zeile `172.24.0.1  172.24.0.1`.
-* ❌ abgelehnt wird ein **rechter** Wert, der weder IP noch `host-gateway` ist
-  (*invalid IP address in add-host*). Das Format ist `<linker Name>:<rechter Wert>`;
-  die linke Seite ist **immer** der Hostname im `/etc/hosts` — auch wenn dort eine
-  IP steht, wird sie zum Namen.
+Was `extra_hosts` stattdessen bewirkt hat, war eine **Tuer zum ganzen VPS**:
 
-### Nach dem Redeploy pruefen
+| Host-Port | Dienst | Von `code-dev` erreichbar? |
+|---|---|---|
+| 8000 | **Portainer-UI, unverschluesselt** | ja — HTTP 404 (live gemessen) |
+| 9443 | **Portainer-API** | ja — HTTP 400 (live gemessen) |
+| 80/443 | Caddy | ja |
+
+Und `host.docker.internal` wurde nachweislich **nirgends benutzt** — geprueft in
+`/projects` und im OpenCode-State, Ergebnis: keine Treffer.
+
+**Warum es trotzdem auffiel:** die Agenten wollten einen React-Dev-Server
+erreichen. Ein Dev-Server laeuft aber in einem der zwei Container:
+
+| Wo laeuft er | Erreichbar wie | Auf `127.0.0.1`? |
+|---|---|---|
+| in `code-dev` (`pnpm dev`) | direkt | **ja, sofort** |
+| im DinD (`docker run -p 3000:3000 …`) | nur per Container-Name **innerhalb** des DinD | **nein** |
+
+`code-dev` hat Node 26 / npm 12 / pnpm 12. Ein Dev-Server braucht also gar kein
+Docker. Die Nutzung im DinD sind **Test-Stacks** (`postgres:16-alpine`,
+`axllent/mailpit`, `php:8.5-fpm`, `lumina-ci-r5-maskvis:local`), keine
+Dev-Server.
+
+### Was gemeinsam ist — und was nicht
+
+```
+code-dev  /projects -> dev-vm_code-remote-projects
+dind      /projects -> dev-vm_code-remote-projects   ← gleiches Volume
+```
+
+**Dateien sind geteilt, Prozesse und Netzraum nicht.** Der DinD hat einen
+eigenen Docker-Daemon mit eigener Bridge. Ein `docker run -p 3000:3000` dort
+bindet im DinD-Netzraum und ist von `code-dev` aus weder ueber `127.0.0.1`
+noch ueber eine Host-IP erreichbar. **Loopback funktioniert containeruebergreifend
+nie** — auch nicht mit irgendeinem `extra_hosts`.
+
+### Die drei Regeln fuer die Agenten
+
+1. **Dev-Server → direkt in `code-dev`.** `pnpm dev` / `npm run dev`, dann
+   `127.0.0.1:<port>`. Fertig, kein Docker, kein Port-Publishing.
+2. **Wegwerf-Testcontainer → DinD, per Name ansprechen.** `docker compose -p
+   <projekt> up -d` im DinD, dann im selben Compose-Netz per Service-Namen
+   (`db:5432`, `mailpit:8025`). Namen, nie `127.0.0.1`, nie `host.docker.internal`.
+3. **Nie `docker run -p 127.0.0.1:…`.** Diese Bindung ist im DinD
+   containerlokal und von aussen unerreichbar. Immer `--network` bzw. Compose
+   und den Containernamen nutzen.
+
+### `DOCKER_HOST` und der DinD
+
+`code-dev` hat **keinen** Docker-Socket gemountet und **keinen** eigenen
+`dockerd`. `DOCKER_HOST=tcp://dind:2375` zeigt auf den Sidecar
+`code-remote-dind`. Auch das ist eine häufige Fehlvorstellung: die
+Docker-**CLI** ist in `code-dev`, der **Daemon** nicht.
+
+Fuer den Daemon-Durchgriff aus einem Werkzeug ohne CLI (z. B. `curl`):
 
 ```bash
-# 1) ExtraHosts gesetzt? muss ['host.docker.internal:host-gateway'] liefern
-docker inspect code-dev --format '{{json .HostConfig.ExtraHosts}}'
-
-# 2) Name aufloesbar? irgendeine Host-IP (hier 172.17.0.1 = docker0) — nicht
-#    zwingend das code-remote-Gateway 172.24.0.1, siehe Hinweis oben
-docker exec code-dev getent hosts host.docker.internal
-
-# 3) Host-Port per Hostname erreichbar? hier Port 8000 des Hosts (bindet auf 0.0.0.0)
-docker exec code-dev sh -lc \
-  'curl -sS -m 3 -o /dev/null -w "via host.docker.internal: %{http_code}\n" http://host.docker.internal:8000/'
-
-# 4) Gegenprobe Loopback im Container -> erwartet 000
-docker exec code-dev sh -lc \
-  'curl -sS -m 3 -o /dev/null -w "via localhost: %{http_code}\n" http://127.0.0.1:8000/'
-
-# 5) /etc/hosts-Eintrag zur Kontrolle
-docker exec code-dev cat /etc/hosts | grep host.docker.internal
+# Port 2375 ist die unverschluesselte API des rootless-Daemons.
+# Erreichbar ist NUR 2375, nicht 2376 — 2376 laeuft ueber TLS bzw. ist nicht
+# von aussen offen.
+docker exec code-dev curl -sS -m 3 -o /dev/null -w '%{http_code}\n' http://dind:2375/_ping
 ```
+
+## `dind` ist rootless — und warum das drei Details braucht
+
+Bis 2026-09-26 lief `code-remote-dind` mit `privileged: true`. Das ergab
+`CapEff: 000001ffffffffff` (alle 37 Capabilities) und `/dev/vda4` war sichtbar —
+also praktisch Root auf dem Host, auf dem `/home/webadmin/websites`, die
+MariaDB-Volumes, die TLS-Keys, `portainer.db` und die rclone-Config liegen.
+Da `code-dev` die Docker-CLI hat und `DOCKER_HOST` auf diesen Daemon zeigt, war
+das der direkte Weg aus dem Dev-Container in die Prod-Daten.
+
+Jetzt laeuft der Daemon im User-Namespace. Live verifiziert nach dem Deploy:
+
+| Pruefung | Wert |
+|---|---|
+| `HostConfig.Privileged` | `false` |
+| `CapEff` | `0000000000000000` |
+| Host-Blockdevices (`/dev/vd*`, `/dev/sd*`) | `[]` |
+| `SecurityOptions` | `seccomp, rootless, cgroupns` |
+| `docker build` | funktioniert |
+| `docker compose` | v5.5.1 |
+| `DockerRootDir` | `/home/rootless/.local/share/docker` (= Volume) |
+| Host unter Port 9443 aus dem DinD | nicht erreichbar |
+
+### Die drei Eintraege sind NOTWENDIG
+
+Jeder einzeln getestet — ohne alle drei startet es nicht:
+
+| Eintrag | Ohne ihn |
+|---|---|
+| `security_opt: seccomp=unconfined` | Der Daemon startet gar nicht (Default-seccomp blockt `unshare(CLONE_NEWUSER)`). |
+| `security_opt: systempaths=unconfined` | `error mounting "proc" to rootfs: operation not permitted` — Docker maskiert `/proc` im Container, und der `/proc`-Mount im nested userns scheitert. |
+| `devices: /dev/net/tun` | `tap0: "open: No such file or directory"` — rootlesskit legt ein tap-Device fuer slirp4netns an. |
+
+### Zwei Fallen, die man nicht sieht
+
+**1. `DOCKER_TLS_CERTDIR=` muss leer sein, `--tls=false` als `command`
+wirkungslos.** Der rootless-Entrypoint ueberschreibt bzw. ignoriert das
+CMD-Argument. Mit leerem `DOCKER_TLS_CERTDIR` laeuft die API auf **2375
+plain HTTP** — damit bleibt `DOCKER_HOST=tcp://dind:2375` unveraendert
+gueltig. Ohne das Env laeuft 2376 ueber **HTTPS** und 2375 gar nicht.
+
+**2. Das Volume haengt an `/home/rootless/.local/share/docker`, nicht an
+`/var/lib/docker`.** Der rootless-Daemon startet ohne `--data-root` und nutzt
+seinen Default `$HOME/.local/share/docker` (`HOME=/home/rootless`, uid 1000).
+Ein Mount auf `/var/lib/docker` ist **wirkungslos**: das Volume bleibt leer
+und alle Images/Builds liegen im Writable-Layer — weg bei jedem Recreate. Genau
+das ist zuerst passiert (gemessen: 11,9 MB im Layer, 0 Byte im Volume).
+Das Volume `dind-data-rootless` ist deshalb auch neu, denn das alte
+`dind-data` war `root:root` und fuer uid 1000 unbeschreibbar.
+
+### Funktionale Einschraenkung: keine cgroups
+
+Rootless-Docker kann ohne systemd im Container **keine cgroups** durchsetzen:
+
+> `WARNING: Running in rootless-mode without cgroups. Systemd is required to
+> enable cgroups in rootless-mode.`
+
+Daher greifen `mem_limit`/`cpus` fuer Container **im DinD** nicht mehr. Die
+Limits von `code-dev` selbst (`mem_limit: ${MEMORY_LIMIT}`, `cpus:
+${CPU_CORES}`) sind **nicht** betroffen — das ist ein eigener Container auf dem
+Host-Daemon. Wenn ein Build den Host ueberlaesst: `MEMORY_LIMIT`/`CPU_CORES`
+im Stack-Environment anpassen.
+
+## Aufräumen: `dind-image-gc.sh`
+
+Watchtower (Stack 10) raeumt nur den **Host**-Daemon ab. Die Bilder *im DinD*
+verwaltet niemand — die sind über den Agenten-Workflow stark gewachsen. Live
+gemessen vor der Migration:
+
+```
+TYPE            TOTAL   ACTIVE   SIZE      RECLAIMABLE
+Images          19      0        8.203GB   5.585GB (68%)
+Local Volumes   15      0        76.44GB   76.44GB (100%)   ← das war der Grossteil
+```
+
+**Die 76 GB waren keine Images, sondern 15 verwaiste anonyme Volumes.** Ursache:
+`docker run` legt bei Images mit `VOLUME` ein anonymes Volume an, und
+`docker rm` **ohne** `-v` nimmt es nicht mit. 526 dokumentierte `docker run`
+im Agent-Log — genau dieses Muster.
+
+### Einrichtung
+
+```bash
+install -m 0755 dind-image-gc.sh /usr/local/bin/dind-image-gc.sh
+# taeglich 04:17 (nicht :00 — vermeidet die Minute, in der andere Jobs laufen)
+17 4 * * * /usr/local/bin/dind-image-gc.sh >> /var/log/dind-image-gc.cron.log 2>&1
+```
+
+> Der `2>&1` ist Absicht. Der bestehende Backup-Cron auf diesem Server nutzt
+> `2>&0` — das ist kein Tippfehler, sondern verwirft stderr nach `/dev/null`
+> (fd 0 in cron). Fehlerwaechter sehen dann nichts.
+
+### Verhalten
+
+| Objekt | Regel |
+|---|---|
+| Images | `image prune -a --filter until=14d` |
+| Build-Cache | `builder prune -a --filter until=14d` |
+| Volumes | **Alterspruefung selbst** (siehe unten) |
+| Container/Netze | `prune --filter until=14d` |
+
+`docker volume prune` kennt **keinen** `until`-Filter (nur `label=`) — ein
+`--filter until=14h` liefert `Error response from daemon: invalid filter
+'until'`. Das Skript listet daher dangling Volumes, liest `CreatedAt` und
+löscht nur jenseits der Retention. Zweite Sicherung: `docker volume rm`
+verweigert den Dienst, wenn ein Volume doch noch benutzt wird.
+
+Aufruf: `dind-image-gc.sh [--dry-run] [--host-daemon]`.
+Retention über `RETENTION_DAYS` (Default 14). Log nach
+`/var/log/dind-image-gc.log` mit logrotate-Regel (8 Wochen).
 
 ## Verbindung, WebSockets und Healthcheck
 
