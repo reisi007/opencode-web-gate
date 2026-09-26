@@ -10,6 +10,9 @@
   daher keine Prod-Container per Name erreichbar, Internet via NAT ok.
   `code-dev` ist standardmäßig auf 3 CPU-Kerne und 4 GB RAM begrenzt; über
   `CPU_CORES` und `MEMORY_LIMIT` im Stack-Environment anpassbar.
+  Host-Dienste sind aus dem Container nur unter `HOST_GATEWAY` (Default
+  `host.docker.internal`, via `extra_hosts: host-gateway`) erreichbar — siehe
+  Abschnitt *Host-Dienste aus dem Container erreichen*.
   Secrets kommen als **globales Env** aus `.env.production` (gitignored, MANUELL
   aus Root-`.env` uebernommen: `AUTH_USER/AUTH_HASH/AUTH_SECRET/OPENCODE_PASSWORD/SESSION_TTL/IMAGE`) — nichts im Image.
   `AUTH_HASH` muss bcrypt oder PBKDF2 sein; ein Klartext-Fallback wird absichtlich
@@ -38,6 +41,105 @@
 5. Test: `https://remote-code.example.com/login.html` → Login → OpenCode.
    In OpenCode-Terminal: `gh auth login` (einmalig), dann
    `gh repo clone owner/repo` nach `/projects`, arbeiten, loeschen via `rm -rf`.
+
+## Host-Dienste aus dem Container erreichen (`localhost` vs. `host.docker.internal`)
+
+**Kurzfassung:** `localhost`/`127.0.0.1` in `code-dev` ist der Container selbst,
+nicht der VPS. Alles, was auf dem Host laeuft, ist nur unter
+`host.docker.internal` erreichbar — dafür sorgt der `extra_hosts`-Eintrag mit
+`host-gateway` am `code-dev`-Service (braucht Docker-Engine >= 20.10; auf dem VPS
+live verifiziert: **29.2.1**).
+
+Live verifizierter Netz-Zustand (nicht geraten):
+
+| | Wert |
+|---|---|
+| Netz `code-remote` | Subnet `172.24.0.0/16`, Gateway `172.24.0.1` |
+| `code-dev` | `172.24.0.3` |
+| `HOST_GATEWAY`-Name | **vor dem Fix nicht auflösbar** (`getent hosts` leer) |
+
+> Achtung: `172.18.0.1` ist die **webnet**-Gateway-IP und gehört zum *lokalen*
+> Mac-Tunnel-Weg, nicht zu `code-remote`. Fuer den Remote-Weg ist `172.24.0.1`
+> richtig.
+
+### Zwei Fehlerquellen — die zweite wird oft übersehen
+
+`host-gateway` loest nur das **Adressproblem**. Ein auf dem Host laufender Dienst
+ist nur dann erreichbar, wenn er **nicht** exklusit auf Loopback bindet:
+
+* ✅ lauscht auf `0.0.0.0` → ueber `host.docker.internal` erreichbar
+  (live geprueft: Ports 80/443/8000/9443 des Hosts liefern ueber die
+  Gateway-IP `308/400/404/400`, ueber `127.0.0.1` im Container `000`)
+* ❌ lauscht auf `127.0.0.1` → bleibt unerreichbar, egal was in `extra_hosts`
+  steht. Auf dem Host muss der Dienst dann auf `0.0.0.0` oder die Bridge-IP
+  umgestellt werden.
+
+Unpublished Docker-Ports sind ebenfalls unsichtbar: `portal_search` (Meilisearch)
+haengt im Host-Netz `portal-reisinger-pictures_portal_internal` mit
+`7700/tcp` **ohne** veroeffentlichten Port. Auf dem Host gibt es deshalb gar
+keinen Listener auf 7700 — weder ueber Loopback noch ueber die Gateway-IP.
+
+### DIND-Falle: `docker run -p 127.0.0.1:...` erzeugt unerreichbare Ports
+
+`code-dev` hat **keinen** Docker-Socket gemountet; `DOCKER_HOST` zeigt auf den
+isolierten Sidecar `code-remote-dind` (`tcp://dind:2375`). Vom Agenten erzeugte
+Hilfs-Container laufen also im DIND-Daemon, in dessen eigenem Netzraum. Ein
+`docker run -p 127.0.0.1:33317:3306` bindet dort nur auf Loopback **im
+DIND-Netzraum** — von `code-dev` aus weder ueber `127.0.0.1` noch ueber
+`host.docker.internal` erreichbar. Solche Test-Container stattdessen per
+`--network` an ein geteiltes Netz haengen und per **Containername** aufloesen
+(DNS funktioniert containeruebergreifend im selben Netz, Loopback nie).
+
+### Konfiguration, die auf `localhost` zeigt
+
+`HOST_GATEWAY` ist als Env im Container sichtbar, damit Config im Volume
+(`opencode.jsonc`, MCP-Server, `baseURL`s, `.env`-Dateien in `/projects`) nicht
+hart auf `localhost` zeigen muss. Statt `http://localhost:7701/...`:
+`http://${HOST_GATEWAY}:7701/...`. `HOST_GATEWAY` laesst sich im Stack-Environment
+ueberschreiben:
+
+```
+HOST_GATEWAY=host.docker.internal   # Default
+HOST_GATEWAY=vps-gateway            # eigener Name
+```
+
+**Als Namen lassen.** `host-gateway` ist ein Magic-Value der Docker-Engine: die
+Engine loest ihn auf das Gateway des Container-Netzes auf. Das Format des
+`extra_hosts`-Eintrags ist `<Name>:host-gateway`, wobei `<Name>` aus
+`HOST_GATEWAY` kommt (Default `host.docker.internal`).
+
+* ✅ **empfohlen:** Name (`host.docker.internal`) — trackt das Gateway automatisch,
+  auch wenn sich das Subnetz bei einem Stack-Recreate aendert
+* ⚠️ geht, ist aber nicht noetig: eine IP auf der **linken** Seite
+  (`extra_hosts: "172.24.0.1:host-gateway"`, `HOST_GATEWAY=172.24.0.1`). Live
+  nachgeprueft mit einem Wegwerf-Container (dessen eigenes Bridge-Netz war
+  `172.17.0.0/16`): `--add-host 172.24.0.1:host-gateway` erzeugte
+  `172.17.0.1  172.24.0.1` in `/etc/hosts` — die **erste** Spalte ist die
+  aufgeloeste Gateway-Adresse, die zweite der Name. Der Eintrag wird also
+  geschrieben, es ist kein stiller No-Op; nur pinnst du damit das Subnetz.
+  Im echten `code-remote`-Netz waere die Zeile `172.24.0.1  172.24.0.1`.
+* ❌ abgelehnt wird ein **rechter** Wert, der weder IP noch `host-gateway` ist
+  (*invalid IP address in add-host*). Das Format ist `<linker Name>:<rechter Wert>`;
+  die linke Seite ist **immer** der Hostname im `/etc/hosts` — auch wenn dort eine
+  IP steht, wird sie zum Namen.
+
+### Nach dem Redeploy pruefen
+
+```bash
+# 1) Name aufloesbar? muss die Gateway-IP des code-remote-Netzes liefern
+docker exec code-dev getent hosts host.docker.internal
+
+# 2) Host-Port per Hostname erreichbar? hier Port 8000 des Hosts (bindet auf 0.0.0.0)
+docker exec code-dev sh -lc \
+  'curl -sS -m 3 -o /dev/null -w "via host.docker.internal: %{http_code}\n" http://host.docker.internal:8000/'
+
+# 3) Gegenprobe Loopback im Container -> erwartet 000
+docker exec code-dev sh -lc \
+  'curl -sS -m 3 -o /dev/null -w "via localhost: %{http_code}\n" http://127.0.0.1:8000/'
+
+# 4) /etc/hosts-Eintrag zur Kontrolle
+docker exec code-dev cat /etc/hosts | grep host.docker.internal
+```
 
 ## Verbindung, WebSockets und Healthcheck
 

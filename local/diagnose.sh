@@ -13,7 +13,17 @@ else
   echo ".env fehlt -> ../setup.sh"; exit 1
 fi
 
-SSH_OPTS="-o ControlMaster=auto -o ControlPath=/tmp/ssh-code-%r@%h:%p -o ControlPersist=60"
+# Key-Auth wie in run.sh: spiegelt SSH_IDENTITY/SSH_KEY_AUTH aus .env. Ohne das
+# wuerde ssh die Default-Identitaeten probieren und nach der VPS-Passphrase fragen.
+KEY_OPTS=()
+if [ "${SSH_KEY_AUTH:-0}" = 1 ] && [ -n "${SSH_IDENTITY:-}" ] && [ -f "$SSH_IDENTITY" ]; then
+  KEY_OPTS=(-o BatchMode=yes -o IdentitiesOnly=yes -o UseKeychain=yes -i "$SSH_IDENTITY")
+fi
+# Eine Master-Connection fuer alle VPS-Checks (1x Passphrase, falls kein Key).
+SSH_OPTS=(-o ControlMaster=auto -o ControlPath='/tmp/ssh-code-%r@%h:%p' -o ControlPersist=60)
+if [ "${#KEY_OPTS[@]}" -gt 0 ]; then
+  SSH_OPTS+=("${KEY_OPTS[@]}")
+fi
 TARGET="${SSH_TARGET:-user@vps.example.com}"
 PORT="${SSH_PORT:-22}"
 REMOTE="${REMOTE_PORT:-18731}"
@@ -25,6 +35,11 @@ warn() { echo "WARN $1"; }
 
 echo "== lokal =="
 command -v autossh >/dev/null 2>&1 && ok "autossh vorhanden" || warn "autossh fehlt (brew install autossh)"
+if [ "${#KEY_OPTS[@]}" -gt 0 ]; then
+  ok "SSH-Key: $SSH_IDENTITY (Key-Auth, kein Prompt)"
+else
+  warn "kein Key-Auth (SSH_KEY_AUTH != 1) — Checks fragen nach der VPS-Passphrase"
+fi
 (echo >/dev/tcp/127.0.0.1/"$LOCAL") >/dev/null 2>&1 && ok "localhost:$LOCAL lauscht (OpenCode?)" \
   || warn "localhost:$LOCAL nicht erreichbar -> OpenCode-Web starten?"
 sed -n '/cat > \/app\/auth.py << "PYEOF"/,/^        PYEOF$/p' docker-compose.yml \
@@ -35,7 +50,7 @@ python3 -c "import py_compile; py_compile.compile('/tmp/auth-inline-check.py', d
 [ "$QUICK" = "--quick" ] && exit 0
 
 echo "== VPS $TARGET =="
-ssh $SSH_OPTS -p "$PORT" "$TARGET" \
+ssh "${SSH_OPTS[@]}" -p "$PORT" "$TARGET" \
   "REMOTE=$REMOTE" 'bash -s' <<'EOF'
 set -u
 echo "-- port --"
