@@ -30,3 +30,5 @@ docker run --rm caddy:2 caddy hash-password --plaintext 'PASSWORT'   # → AUTH_
 ```
 
 Echte Domains/Hosts stehen nur in `.env` (Beispiele mit `example.com` im Repo). Nach Public-Schalten Secrets rotiert halten (History aus privater Zeit).
+
+Der Login ist **einer** fuer beide Wege: `AUTH_USER`/`AUTH_HASH`/`AUTH_SECRET` muessen in `.env`, in `remote/.env.production` und im laufenden Portainer-Stack identisch sein. Fuer das Einfuegen in Portainer gilt eine eigene `$`-Escaping-Regel (`AUTH_HASH` dort als `$$2a$…`) — siehe [`AGENTS.md`](AGENTS.md).

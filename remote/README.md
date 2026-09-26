@@ -37,6 +37,10 @@
    Container das frische Image auch zieht.
 3. Portainer → Stacks → Add stack `code-remote` → Inhalt von
    `docker-compose.yml` (dieser Ordner) pasten → `.env.production` als Environment → Deploy.
+   **Achtung beim Einfuegen:** Portainer interpolated die Env-Werte, deshalb steht
+   `AUTH_HASH` in `.env.production` als `$$2a$…` und nicht als `$2a$…`. Nicht
+   "aufraeumen" — unescaped ist der Login auf `remote-code` kaputt. Regel und
+   Verifikation: [`../AGENTS.md`](../AGENTS.md) Abschnitt 2 und 5.
 4. Caddy (caddyfile-Repo, braucht 1x VPS-Handgriff per deiner shell):
    * Netz `code-remote` anlegen: `docker network create code-remote`
    * `deployment/docker-compose.yml`: `networks: [webnet, code-remote]` am
