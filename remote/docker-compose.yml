@@ -49,6 +49,11 @@ services:
     container_name: code-dev
     restart: unless-stopped
     cpus: ${CPU_CORES:-3}
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "3"
     # RAM-Deckel und Swap-Deckel getrennt setzen.
     #
     # cgroup-v2-Semantik, live auf dem VPS gemessen (Direkt-Reads aus
@@ -87,7 +92,7 @@ services:
     # code-dev und ist damit ueber 127.0.0.1 erreichbar — ganz ohne Docker.
     # Details und die Alternativen: remote/README.md
     volumes:
-      - code-remote-projects:/projects
+      - /var/lib/docker/volumes/projects-50g-mnt:/projects
       - gh-config:/home/dev/.config/gh
       - gh-ssh:/home/dev/.ssh
       - opencode-data:/home/dev/.local/share/opencode
@@ -121,6 +126,11 @@ services:
     image: docker:29-dind-rootless
     container_name: code-remote-dind
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "2"
     # Limit fuer ALLE Container, die der Agent in diesem Daemon startet:
     # die inneren Prozesse teilen sich denselben cgroup wie der Daemon
     # (live gemessen: /system.slice/docker-<id>.scope fuer beide), ein
@@ -165,7 +175,7 @@ services:
     # auf, inklusive 2375. Festes '--host=...' verletzt das (dann laeuft er auf
     # 2376 und 2375 bleibt zu).
     volumes:
-      - code-remote-projects:/projects
+      - /var/lib/docker/volumes/projects-50g-mnt:/projects
       # ACHTUNG, der Mount-Pfad ist NICHT /var/lib/docker. Der rootless-Daemon
       # startet ohne --data-root und nutzt seinen Default fuer rootless:
       # $HOME/.local/share/docker = /home/rootless/.local/share/docker
@@ -203,6 +213,11 @@ services:
     image: python:3.12-slim
     container_name: code-auth-remote
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "2"
     networks:
       - code-remote
     environment:
@@ -485,7 +500,6 @@ networks:
     external: true
 
 volumes:
-  code-remote-projects:
   gh-config:
   gh-ssh:
   opencode-data:
