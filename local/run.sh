@@ -60,29 +60,136 @@ echo "[$(date '+%F %T')] run.sh start (Modus: $MODE, Key-Auth: $([ "${#KEY_OPTS[
 # es upstream per Header -> im Browser unsichtbar (de facto deaktiviert).
 [ -n "${OPENCODE_PASSWORD:-}" ] || { echo "FEHLER: OPENCODE_PASSWORD fehlt in .env -> ./setup.sh"; exit 1; }
 export OPENCODE_SERVER_PASSWORD="$OPENCODE_PASSWORD"
+
+# ---------------------------------------------------------------------------
+# Speicher-Watchdog: opencode beendet, sobald der RSS ueber 2 GiB steigt.
+# ---------------------------------------------------------------------------
+# Warum `ps -eo pid=,comm=` + awk und NICHT `pgrep -f opencode`:
+#  - `pgrep -f opencode` matcht die vollstaendige Kommandozeile und trifft damit
+#    auch run.sh SELBST, den opencode-usage node/tsx-Server, codegraph und das
+#    Electron-Crashpad. Ein Kill auf dieses Muster wuerde den Tunnel-Supervisor
+#    und fremde Dienste mitreissen.
+#  - `pgrep -f` greift auf macOS zusaetzlich ins Leere, sobald das argv laenger
+#    als der Kernel-Textlimit ist: der Desktop-Server liegt unter
+#    ".../Application Support/ai.opencode.desktop/cli/2.0.18/opencode-cli" und
+#    wurde von `pgrep -f opencode-cli` NICHT gefunden (verifiziert auf diesem
+#    Mac). Genau den Prozess, der am ehesten zum Speicherleck neigt.
+# Der Anker `(^|/)opencode(-cli)?$` matcht die beiden echten Binaries und laesst
+# alles andere unangetastet. comm wird per Regex auf die GANZE Zeile geprueft,
+# nicht per awk-Feld, weil "Application Support" ein Leerzeichen enthaelt und
+# ein $2 die Pfad-Haelfte abgeschnitten wuerde.
+WATCHDOG_MAX_RSS_KIB=$((2 * 1024 * 1024))   # 2 GiB, hart kodiert
+WATCHDOG_INTERVAL=60                        # Poll-Abstand in Sekunden
+WATCHDOG_MAX_RESTARTS=3                     # Neustarts im Fenster ...
+WATCHDOG_WINDOW=300                         # ... bevor es kuenstlich pausiert
+
+oc_pids() {
+  ps -eo pid=,comm= | awk '{
+    line = $0
+    sub(/^[[:space:]]*[0-9]+[[:space:]]+/, "", line)
+    if (line ~ /(^|\/)opencode(-cli)?$/) print $1
+  }'
+}
+oc_rss_kib() { ps -o rss= -p "$1" 2>/dev/null | tr -d ' \n'; }
+port_up() { (echo >/dev/tcp/127.0.0.1/"$LOCAL") >/dev/null 2>&1; }
+# PID, der gerade auf :$LOCAL lauscht (der superviste opencode serve).
+port_pid() { lsof -nP -iTCP:"$LOCAL" -sTCP:LISTEN -t 2>/dev/null | head -1; }
+
+# OpenCode-Web sicherstellen (Pflicht — nie manuell starten).
+# Ueber .env aenderbar: OPENCODE_CMD="..."
+OPENCODE_CMD="${OPENCODE_CMD:-opencode serve --hostname 127.0.0.1 --port $LOCAL}"
+ensure_opencode() {
+  if port_up; then
+    echo "OpenCode-Web laeuft bereits auf :$LOCAL."
+    return 0
+  fi
+  echo "Starte OpenCode-Web: $OPENCODE_CMD"
+  # shellcheck disable=SC2086
+  $OPENCODE_CMD >>/tmp/code-tunnel-opencode.log 2>&1 &
+  # Log kann Session-Inhalte enthalten -> nur fuer den Besitzer lesbar. Der
+  # LaunchAgent setzt dafuer zusaetzlich Umask 077 in der plist.
+  chmod 600 /tmp/code-tunnel-opencode.log 2>/dev/null || true
+  for _ in $(seq 1 20); do
+    port_up && break
+    sleep 1
+  done
+  port_up || { echo "FEHLER: OpenCode-Web lauscht nicht auf :$LOCAL (Log: /tmp/code-tunnel-opencode.log)"; return 1; }
+}
+
+# Der Watchdog laeuft in ALLEN Modi, auch --tunnel-only: die TUI-Sessions und
+# der Desktop-Server werden nicht von run.sh gestartet, sind aber genau die
+# Speicherfresser.
+# $1 = PID von run.sh. Bewusst per Parameter und per `kill -0` geprueft statt
+# per PPID-Vergleich: `$$` ist in einer Bash-Subshell die PID des ELTERNprozesses
+# (macOS-Bash 3.2 kennt kein BASHPID), ein `ps -o ppid= -p $$` liefert deshalb
+# den Grosselternteil (launchd) und wuerde den Vergleich IMMER falsch ergeben —
+# der Watchdog wuerde nach dem ersten Poll sterben.
+watchdog_loop() {
+  local parent="${1:-$$}"
+  local restarts=0 window_start
+  window_start=$(date +%s)
+  while :; do
+    sleep "$WATCHDOG_INTERVAL"
+    # launchd SIGTERMt nur run.sh, nicht diese Subshell: sie wuerde verwaist
+    # weiterlaufen und der per KeepAlive gestartete run.sh bruechte einen
+    # zweiten Watchdog. Dann beenden wir uns selbst, bevor zwei Watchdogs
+    # dieselben PIDs jagen.
+    if ! kill -0 "$parent" 2>/dev/null; then
+      echo "[$(date '+%F %T')] watchdog: run.sh (PID $parent) weg — beende mich"
+      return 0
+    fi
+    local now; now=$(date +%s)
+    # Restart-Fenster zuruecksetzen, statt eine Restart-Schleife zu fahren:
+    # ein serve, der sofort wieder ueber 2 GiB springt, ist ein Symptom, kein
+    # Kandidat fuer Autofeuer.
+    if [ $((now - window_start)) -ge "$WATCHDOG_WINDOW" ]; then
+      restarts=0; window_start=$now
+    fi
+    if [ "$restarts" -ge "$WATCHDOG_MAX_RESTARTS" ]; then
+      echo "[$(date '+%F %T')] watchdog: $restarts Neustarts in ${WATCHDOG_WINDOW}s — pausiere ${WATCHDOG_INTERVAL}s (Speicherleck, nicht Restart-Bedarf)"
+      continue
+    fi
+
+    local pid rss listen_pid
+    listen_pid=$(port_pid)
+    for pid in $(oc_pids); do
+      rss=$(oc_rss_kib "$pid")
+      [ -n "$rss" ] || continue
+      [ "$rss" -gt "$WATCHDOG_MAX_RSS_KIB" ] || continue
+
+      echo "[$(date '+%F %T')] watchdog: opencode PID $pid bei $((rss / 1024)) MiB > $((WATCHDOG_MAX_RSS_KIB / 1024)) MiB — SIGKILL"
+      kill -9 "$pid" 2>/dev/null || true
+      restarts=$((restarts + 1))
+
+      if [ "$pid" = "$listen_pid" ]; then
+        # Der superviste serve: den Restart koennen wir selbst uebernehmen.
+        sleep 2   # Port muess erst wieder frei sein, sonst EADDRINUSE
+        echo "[$(date '+%F %T')] watchdog: starte OpenCode-Web neu (:$LOCAL)"
+        ensure_opencode || echo "[$(date '+%F %T')] watchdog: Neustart fehlgeschlagen (Log: /tmp/code-tunnel-opencode.log)"
+      else
+        # TUI-Session oder Desktop-Server: die haengen an einem TTY bzw. werden
+        # von OpenCode.app verwaltet. Ein SIGKILL beendet sie, ein Neustart
+        # ist von hier aus NICHT moeglich — dafuer gibt es kein TTY, das man
+        # neu befuellen koennte, und OpenCode.app laeuft nicht zwingend noch.
+        # Wir sagen das laut im Log, statt einen Relaunch zu erfinden, der
+        # in einem fremden Terminal oder ohne Auth-Env landen wuerde.
+        echo "[$(date '+%F %T')] watchdog: PID $pid war NICHT der :$LOCAL-Serve (TUI/Desktop) — beendet, manueller Neustart noetig"
+      fi
+    done
+  done
+}
+
 if [ "$MODE" != "--tunnel-only" ]; then
   ./sync.sh
 fi
+# Watchdog VOR dem blockierenden autossh/ssh weiter unten starten — danach
+# erreicht die Zeile nie wieder den Code. $$ ist hier die PID dieses run.sh und
+# wird als Argument uebergeben (siehe Kommentar an watchdog_loop).
+watchdog_loop $$ &
+echo "[$(date '+%F %T')] watchdog: aktiv (Schwelle $((WATCHDOG_MAX_RSS_KIB / 1024)) MiB, Poll ${WATCHDOG_INTERVAL}s, beobachtet run.sh PID $$)"
 if [ "$MODE" != "--sync-only" ]; then
   # OpenCode-Web sicherstellen (Pflicht — nie manuell starten).
-  # Ueber .env aenderbar: OPENCODE_CMD="..."
-  OPENCODE_CMD="${OPENCODE_CMD:-opencode serve --hostname 127.0.0.1 --port $LOCAL}"
-  if ! (echo >/dev/tcp/127.0.0.1/"$LOCAL") >/dev/null 2>&1; then
-    echo "Starte OpenCode-Web: $OPENCODE_CMD"
-    # shellcheck disable=SC2086
-    $OPENCODE_CMD >>/tmp/code-tunnel-opencode.log 2>&1 &
-    # Log kann Session-Inhalte enthalten -> nur fuer den Besitzer lesbar. Der
-    # LaunchAgent setzt dafuer zusaetzlich Umask 077 in der plist.
-    chmod 600 /tmp/code-tunnel-opencode.log 2>/dev/null || true
-    for _ in $(seq 1 20); do
-      (echo >/dev/tcp/127.0.0.1/"$LOCAL") >/dev/null 2>&1 && break
-      sleep 1
-    done
-    (echo >/dev/tcp/127.0.0.1/"$LOCAL") >/dev/null 2>&1 \
-      || { echo "FEHLER: OpenCode-Web lauscht nicht auf :$LOCAL (Log: /tmp/code-tunnel-opencode.log)"; exit 1; }
-  else
-    echo "OpenCode-Web laeuft bereits auf :$LOCAL."
-  fi
+  ensure_opencode || exit 1
 
   # Alte/verwaiste Tunnel-Instanzen beenden. Zwei ssh-Prozesse auf demselben
   # VPS-Port (BIND:REMOTE) machen sich gegenseitig die Bind kaputt
