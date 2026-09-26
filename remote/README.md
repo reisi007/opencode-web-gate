@@ -56,11 +56,18 @@ Live verifizierter Netz-Zustand (nicht geraten):
 |---|---|
 | Netz `code-remote` | Subnet `172.24.0.0/16`, Gateway `172.24.0.1` |
 | `code-dev` | `172.24.0.3` |
-| `HOST_GATEWAY`-Name | **vor dem Fix nicht auflösbar** (`getent hosts` leer) |
+| `HOST_GATEWAY` vor dem Fix | **nicht auflösbar** (`getent hosts` leer, `ExtraHosts: []`) |
+| `HOST_GATEWAY` nach dem Fix | `172.17.0.1` (= `docker0` auf dem VPS) |
 
-> Achtung: `172.18.0.1` ist die **webnet**-Gateway-IP und gehört zum *lokalen*
-> Mac-Tunnel-Weg, nicht zu `code-remote`. Fuer den Remote-Weg ist `172.24.0.1`
-> richtig.
+> **Was `host-gateway` wirklich liefert:** die IP des Docker-Hosts — auf diesem VPS
+> `172.17.0.1` (`docker0`) — **nicht** das Gateway des eigenen Container-Netzes
+> (`172.24.0.1`). Beides ist der Host und damit funktional gleichwertig: entscheidend
+> ist, dass der Dienst auf `0.0.0.0` bindet und damit auf jeder Host-IP lauscht.
+> Live gegengeprüft: `http://host.docker.internal:8000/` → `404` (Host-Port, via
+> `0.0.0.0` gebunden), `http://127.0.0.1:8000/` im Container → `000`.
+>
+> `172.18.0.1` ist die **webnet**-Gateway-IP und gehört zum *lokalen* Mac-Tunnel-Weg,
+> nicht zu `code-remote`.
 
 ### Zwei Fehlerquellen — die zweite wird oft übersehen
 
@@ -126,18 +133,22 @@ Engine loest ihn auf das Gateway des Container-Netzes auf. Das Format des
 ### Nach dem Redeploy pruefen
 
 ```bash
-# 1) Name aufloesbar? muss die Gateway-IP des code-remote-Netzes liefern
+# 1) ExtraHosts gesetzt? muss ['host.docker.internal:host-gateway'] liefern
+docker inspect code-dev --format '{{json .HostConfig.ExtraHosts}}'
+
+# 2) Name aufloesbar? irgendeine Host-IP (hier 172.17.0.1 = docker0) — nicht
+#    zwingend das code-remote-Gateway 172.24.0.1, siehe Hinweis oben
 docker exec code-dev getent hosts host.docker.internal
 
-# 2) Host-Port per Hostname erreichbar? hier Port 8000 des Hosts (bindet auf 0.0.0.0)
+# 3) Host-Port per Hostname erreichbar? hier Port 8000 des Hosts (bindet auf 0.0.0.0)
 docker exec code-dev sh -lc \
   'curl -sS -m 3 -o /dev/null -w "via host.docker.internal: %{http_code}\n" http://host.docker.internal:8000/'
 
-# 3) Gegenprobe Loopback im Container -> erwartet 000
+# 4) Gegenprobe Loopback im Container -> erwartet 000
 docker exec code-dev sh -lc \
   'curl -sS -m 3 -o /dev/null -w "via localhost: %{http_code}\n" http://127.0.0.1:8000/'
 
-# 4) /etc/hosts-Eintrag zur Kontrolle
+# 5) /etc/hosts-Eintrag zur Kontrolle
 docker exec code-dev cat /etc/hosts | grep host.docker.internal
 ```
 
