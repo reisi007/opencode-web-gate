@@ -36,14 +36,53 @@ Nur `ps -eo pid=,comm=` mit dem Anker `(^|/)opencode(-cli)?$`, dann im awk-Body
 gegen die **ganze Zeile** pruefen. Beides ist erzwungen:
 
 - **Kein `pgrep -f opencode`.** `-f` matcht die Kommandozeile und trifft damit
-  `run.sh` selbst, `opencode-usage` (node/tsx), codegraph und den
-  Electron-Crashpad. Ein Kill auf dieses Muster reisst den Tunnel-Supervisor und
-  fremde Dienste mit.
-- **Kein `$2` als comm-Feld.** Der Desktop-Server liegt unter
-  `"…/Application Support/ai.opencode.desktop/cli/2.0.18/opencode-cli"` — der
-  Pfad enthaelt ein Leerzeichen, ein `$2` schneidet die Pfad-Haelfte ab.
-- **`pgrep -f` greift auf macOS ins Leere**, sobald das argv laenger als das
-  Kernel-Textlimit ist; genau der Desktop-Server wurde so *nicht* gefunden.
+  `run.sh` selbst, `opencode-usage` (node/tsx) und codegraph. Ein Kill auf dieses
+  Muster reisst den Tunnel-Supervisor und fremde Dienste mit.
+- **Kein `$2` als comm-Feld.** `comm` ist der ausfuehrbare Pfad; jeder Pfad mit
+  Leerzeichen (z. B. unter `"/Applications/My Tools/…"`) wuerde an `$2`
+  abgeschnitten.
+- **`pgrep -f` greift auf macOS ins Leere**, wenn argv/Environment am
+  Kernel-Textlimit abgeschnitten sind — das Muster steht dann nicht mehr im argv.
+  Als Erkennungsbasis unbrauchbar.
+
+### Der Anker matcht drei Prozesse, nicht "die beiden Binaries"
+
+Live am 2026-09-27 auf diesem Mac:
+
+| PID | Kommando | Rolle |
+|---|---|---|
+| 13972 | `opencode serve --hostname 127.0.0.1 --port 8080` | der superviste Serve, `:$LOCAL` |
+| 75117 | `…/opencode serve --service` | **zweite** v2-API-/Web-Server-Instanz, PPID 1, `localhost:49374` |
+| 51034 | `opencode` | TUI/CLI |
+
+`opencode serve` ist laut `serve --help` "Start the v2 API and web server"; die
+unabhaengige `--service`-Instanz ist **nicht** vom Desktop, sondern eine eigene
+Web-Server-Instanz. Sie war mit 1286 MiB der groesste Brocken auf diesem Mac.
+
+**Frueher stand hier die Begruendung ueber einen "Desktop-Server" unter
+`Application Support/ai.opencode.desktop`. Das war falsch: die Desktop-App ist
+deinstalliert (`/Applications/OpenCode.app` existiert nicht, nur noch der
+Datenrest im Library-Ordner).** Die Mechanik war trotzdem richtig — der Anker
+fasst `serve --service` mit — nur die Begruendung beschrieb einen Prozess, den
+es nicht mehr gibt. Bei der naechsten Desktop-Reinstallation nicht zur
+Gewohnheit machen.
+
+### Die Schwelle ist ein Runaway-Waechter, kein RAM-Budget
+
+10,6 h minuetlich gemessen ueber alle opencode-Prozesse: **kein unbegrenztes
+Wachstum.** Footprint-Summe 884 -> 694 MiB, Swap 1819 -> 1763 MiB, 88 % RAM frei,
+sieben Stunden exakt waagerecht. `serve --service` stieg auf 1284 MiB und fiel auf
+1248 zurueck. Der RSS folgt der **Last der aktiven Session**, nicht der Zeit —
+ein stuendlicher Neustart haette also 24 Unterbrechungen fuer einen Plattlauf
+gekauft.
+
+- **RSS-Summen mehrerer Prozesse sind keine Speichermenge.** Geteilte Seiten
+  zaehlt macOS pro Prozess. Ehrlich ist der Footprint:
+  `top -l 1 -pid <pid> -stats mem`. Die Schwelle pro Prozess ist robust, weil
+  sie geteilte Seiten nicht ueberzaehlt.
+- **codegraph ist nicht abgedeckt und darf es auch nicht sein:** 1350-1540 MiB in
+  12-17 Prozessen, mehr als alle opencode-Prozesse zusammen. Zaehlen ja,
+  wegkillen nein — das zerstoert die MCP-Verbindungen laufender Runs.
 
 ## 5. Watchdog: Bash 3.2 und die PID-Uebergabe
 
@@ -64,9 +103,10 @@ statt zu feuern. Ein `serve`, der sofort wieder ueber 2 GiB springt, ist ein
 **Speicherleck-Symptom**, kein Neustart-Bedarf. Die Schwelle nicht hochdrehen,
 damit die Logzeile verschwindet.
 
-TUI- und Desktop-Prozesse werden bei Ueberschreitung **beendet, nicht neu
-gestartet** — es gibt kein TTY zum Nachfuellen, und OpenCode.app laeuft nicht
-zwingend noch. Die Logzeile sagt das bewusst laut. Kein Relaunch erfinden.
+TUI-Sessions und die zweite Instanz `serve --service` werden bei Ueberschreitung
+**beendet, nicht neu gestartet** — es gibt kein TTY zum Nachfuellen, und die
+`--service`-Instanz laeuft unabhaengig von `run.sh` (PPID 1), gehoert also nicht
+dem Watchdog. Die Logzeile sagt das bewusst laut. Kein Relaunch erfinden.
 
 ## 7. LaunchAgent: die gerenderte plist nie editieren
 
