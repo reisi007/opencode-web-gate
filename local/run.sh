@@ -63,21 +63,40 @@ export OPENCODE_SERVER_PASSWORD="$OPENCODE_PASSWORD"
 
 # ---------------------------------------------------------------------------
 # Speicher-Watchdog: opencode beendet, sobald der RSS ueber 2 GiB steigt.
+#
+# Das ist ein Runaway-Waechter, KEIN RAM-Budget und keine "RAM ist voll"-
+# Erkennung. Gemessen am 2026-09-27 ueber 10,6 h (648 Proben, minuetlich, ueber
+# alle opencode-Prozesse): **kein unbegrenztes Wachstum.** Summe der Footprints
+# 884 -> 694 MiB, Swap 1819 -> 1763 MiB, 88 % RAM frei, sieben Stunden exakt
+# waagerecht bei ~2973 MiB RSS-Summe. Der einzige Kandidat (zweite Instanz
+# `opencode serve --service`) stieg auf 1284 MiB und fiel wieder auf 1248.
+# Der RSS folgt der Last der aktiven Session, nicht der Zeit.
 # ---------------------------------------------------------------------------
 # Warum `ps -eo pid=,comm=` + awk und NICHT `pgrep -f opencode`:
 #  - `pgrep -f opencode` matcht die vollstaendige Kommandozeile und trifft damit
-#    auch run.sh SELBST, den opencode-usage node/tsx-Server, codegraph und das
-#    Electron-Crashpad. Ein Kill auf dieses Muster wuerde den Tunnel-Supervisor
-#    und fremde Dienste mitreissen.
-#  - `pgrep -f` greift auf macOS zusaetzlich ins Leere, sobald das argv laenger
-#    als der Kernel-Textlimit ist: der Desktop-Server liegt unter
-#    ".../Application Support/ai.opencode.desktop/cli/2.0.18/opencode-cli" und
-#    wurde von `pgrep -f opencode-cli` NICHT gefunden (verifiziert auf diesem
-#    Mac). Genau den Prozess, der am ehesten zum Speicherleck neigt.
-# Der Anker `(^|/)opencode(-cli)?$` matcht die beiden echten Binaries und laesst
-# alles andere unangetastet. comm wird per Regex auf die GANZE Zeile geprueft,
-# nicht per awk-Feld, weil "Application Support" ein Leerzeichen enthaelt und
-# ein $2 die Pfad-Haelfte abgeschnitten wuerde.
+#    auch run.sh SELBST, den opencode-usage node/tsx-Server und codegraph. Ein
+#    Kill auf dieses Muster wuerde den Tunnel-Supervisor und fremde Dienste
+#    mitreissen.
+#  - `pgrep -f` ist auf macOS zusaetzlich unzuverlaessig, weil der Kernel argv
+#    und Environment am Textlimit abschneidet — ein Muster, das nur im
+#    abgeschnittenen argv steht, wird gar nicht erst gefunden. Als
+#    Erkennungsbasis unbrauchbar, deshalb der Anker auf `comm`.
+# Der Anker `(^|/)opencode(-cli)?$` matcht die echten Binaries und laesst alles
+# andere unangetastet. comm wird per Regex auf die GANZE Zeile geprueft, nicht per
+# awk-Feld: comm ist der ausfuehrbare Pfad, und jeder Pfad mit Leerzeichen
+# (z. B. unter "/Applications/My Tools/...") wuerde an $2 abgeschnitten.
+#
+# Was der Anker bewusst NICHT trifft: codegraph. Das haelt auf diesem Mac
+# 1350-1540 MiB in 12-17 Prozessen (ueber dieselben 10,6 h gemessen) — mehr als
+# alle opencode-Prozesse zusammen — und wird nicht gepatcht, weil ein Kill die
+# MCP-Verbindungen laufender Runs zerstoert. Wer den Speicher-Ueberblick erweitern
+# will, darf codegraph zaehlen, aber niemals wegkillen.
+#
+# Vorsicht bei der Interpretation: die SUMME des RSS mehrerer opencode-Prozesse
+# ist keine Speichermenge. Geteilte Seiten zaehlt macOS pro Prozess, eine
+# gemeinsam gemappte Bibliothek also mehrfach. Ehrlich ist der Footprint
+# (`top -l 1 -pid <pid> -stats mem`). Die 2-GiB-Schwelle pro Prozess ist
+# dagegen robust, weil sie geteilte Seiten nicht ueberzaehlt.
 WATCHDOG_MAX_RSS_KIB=$((2 * 1024 * 1024))   # 2 GiB, hart kodiert
 WATCHDOG_INTERVAL=60                        # Poll-Abstand in Sekunden
 WATCHDOG_MAX_RESTARTS=3                     # Neustarts im Fenster ...
@@ -117,8 +136,8 @@ ensure_opencode() {
 }
 
 # Der Watchdog laeuft in ALLEN Modi, auch --tunnel-only: die TUI-Sessions und
-# der Desktop-Server werden nicht von run.sh gestartet, sind aber genau die
-# Speicherfresser.
+# die zweite Instanz `opencode serve --service` werden nicht von run.sh
+# gestartet, sind aber genau die Speicherfresser.
 # $1 = PID von run.sh. Bewusst per Parameter und per `kill -0` geprueft statt
 # per PPID-Vergleich: `$$` ist in einer Bash-Subshell die PID des ELTERNprozesses
 # (macOS-Bash 3.2 kennt kein BASHPID), ein `ps -o ppid= -p $$` liefert deshalb
@@ -167,13 +186,14 @@ watchdog_loop() {
         echo "[$(date '+%F %T')] watchdog: starte OpenCode-Web neu (:$LOCAL)"
         ensure_opencode || echo "[$(date '+%F %T')] watchdog: Neustart fehlgeschlagen (Log: /tmp/code-tunnel-opencode.log)"
       else
-        # TUI-Session oder Desktop-Server: die haengen an einem TTY bzw. werden
-        # von OpenCode.app verwaltet. Ein SIGKILL beendet sie, ein Neustart
-        # ist von hier aus NICHT moeglich — dafuer gibt es kein TTY, das man
-        # neu befuellen koennte, und OpenCode.app laeuft nicht zwingend noch.
-        # Wir sagen das laut im Log, statt einen Relaunch zu erfinden, der
-        # in einem fremden Terminal oder ohne Auth-Env landen wuerde.
-        echo "[$(date '+%F %T')] watchdog: PID $pid war NICHT der :$LOCAL-Serve (TUI/Desktop) — beendet, manueller Neustart noetig"
+        # TUI-Session oder die zweite Instanz `serve --service`: die haengen an
+        # einem TTY bzw. laufen unabhaengig von run.sh (PPID 1, von Hand oder
+        # launchd gestartet). Ein SIGKILL beendet sie, ein Neustart ist von hier
+        # aus NICHT moeglich — dafuer gibt es kein TTY, das man neu befuellen
+        # koennte, und die serve-Instanz gehoert jemand anderem. Wir sagen das
+        # laut im Log, statt einen Relaunch zu erfinden, der in einem fremden
+        # Terminal oder ohne Auth-Env landen wuerde.
+        echo "[$(date '+%F %T')] watchdog: PID $pid war NICHT der :$LOCAL-Serve (TUI bzw. serve --service) — beendet, manueller Neustart noetig"
       fi
     done
   done
