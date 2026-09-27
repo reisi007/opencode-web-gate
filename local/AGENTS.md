@@ -30,6 +30,11 @@ Ein manuell gestarteter `opencode serve` konkurriert mit dem supervisten um
 ihn dann ohne Neustart. `OPENCODE_CMD` in `.env` ueberschreiben **nur** die
 Kommandozeile, nicht die Pflicht.
 
+Er ist zugleich ein Kind von `run.sh` (`run.sh:127`, `&` im Vordergrund) und
+teilt dessen Prozessgruppe. Ein `launchctl bootout` nimmt die Gruppe mit, der
+superviste Serve also mit — siehe §12. Das ist kein Fehler, aber eine Aussage
+wie "opencode laeuft weiter" nach einem Stopp waere falsch.
+
 ## 4. Watchdog: wie der opencode-Prozess gefunden wird
 
 Nur `ps -eo pid=,comm=` mit dem Anker `(^|/)opencode(-cli)?$`, dann im awk-Body
@@ -95,6 +100,11 @@ Diese Form nicht "vereinfachen".
 Nebenbei: launchd SIGTERMt nur `run.sh`, nicht die Watchdog-Subshell — deshalb
 der `kill -0`-Selbstcheck, sonst laufen nach jedem Neustart zwei Watchdogs auf
 denselben PIDs.
+
+**Nachtrag (gemessen 2026-09-27):** Das gilt fuer ein `kill` auf die run.sh-PID.
+`launchctl bootout` stoppt den Job ueber die **Prozessgruppe** und nimmt die
+Subshell dort mit — siehe §12. Der Selbstcheck ist trotzdem richtig, denn er
+deckt den anderen Fall ab (kill, Ctrl+C im Vordergrund).
 
 ## 6. Watchdog: das Restart-Budget ist Absicht
 
@@ -162,3 +172,59 @@ dem Sync, nicht danach.
 
 Siehe [`../AGENTS.md`](../AGENTS.md) fuer die `$$`-Regel in der Portainer-Kopie
 und die Pflicht, dass `code` und `remote-code` denselben Login teilen.
+
+## 12. Stoppen heisst `disable` **vor** `bootout` — und nicht nur das
+
+`stop-tunnel.command` ist der einzige Stopp-Pfad (Doppelklick oder
+`./stop-tunnel.command`). Zwei Dinge, die ein blosses
+`launchctl bootout gui/$(id -u)/com.code-tunnel` nicht leistet und die deshalb
+nicht "vereinfacht" werden duerfen:
+
+- **`disable` zuerst.** Die gerenderte plist bleibt in `~/Library/LaunchAgents`
+  liegen — launchd laedt sie beim naechsten Login wieder, `RunAtLoad` feuert,
+  der Tunnel ist zurueck. `bootstrap.sh` macht `launchctl enable` vor
+  `launchctl bootstrap`, das ist die Rueckfahrt; ohne `enable` dort startet
+  gar nichts (siehe dort, Kommentar "enable VOR bootstrap").
+- **Aufraeumen danach.** `bootout` SIGTERMt die Prozessgruppe und reisst
+  autossh/ssh mit — im Agent-Pfad bleibt also nichts uebrig. Der Schritt ist
+  fuer den Finder-Fallback (`run.sh` im Vordergrund) und fuer Waisen
+  aeilterer Laeufe noetig. Reihenfolge darin: **erst `autossh`, dann `ssh`** —
+  ein allein gekilltes `ssh` im Forward laesst autossh sofort neu verbinden.
+
+Gemessen am 2026-09-27 an diesem Mac (Live-Stopp des laufenden Agenten):
+
+| Prozess | nach dem Stopp |
+|---|---|
+| `run.sh --tunnel-only` (PPID 1) | weg, von `bootout` mitgenommen |
+| Watchdog-Subshell (PPID = run.sh) | weg, gleiche argv — siehe unten |
+| `autossh` + `ssh` mit `-R 172.18.0.1:18731` | weg |
+| `opencode serve --port 8080` (supervist) | **weg** — Kind von `run.sh`, gleiche Gruppe |
+| `opencode serve --service` (PPID 1) | laeuft weiter |
+| TUI-Sessions | laufen weiter |
+| `launchctl print gui/$UID/com.code-tunnel` | „Could not find service" |
+| `launchctl print-disabled` | `"com.code-tunnel" => disabled` |
+| `ss -tln \| grep :18731` auf dem VPS | kein Treffer |
+
+Drei Fallen, jeweils mit derselben Ursache — die Erkennung ist absichtlich eng:
+
+- **Die Watchdog-Subshell hat dasselbe argv wie `run.sh`** (fork ohne exec).
+  Wer per `ps` nach dem Supervisor sucht, findet beide. Das ist hier gewuenscht
+  (spart das 60-s-Selbstcheck-Warten aus §5), darf aber nicht als "zwei
+  Supervisor" fehlgedeutet werden.
+- **Kein `pkill -f run.sh`.** Das Muster trifft jedes Fenster, in dem der Pfad
+  nur vorkommt. `runsh_pids` prueft stattdessen argv-Positionen: Feld 1 = Shell,
+  Feld 2 = `run.sh`-Pfad, danach hoechstens `--tunnel-only`. Gegenprobe
+  `sh -c 'sleep 3 # /run.sh'` darf **nicht** matchen.
+- **Die Forward-Signatur muss mit `run.sh` uebereinstimmen** (`-R BIND:REMOTE`
+  plus `$TARGET` am Zeilenende, §2), sonst raeumt der Stopp eine andere Menge
+  auf als der Start. Kein pauschales `pkill ssh` — das wuerde fremde
+  ssh-Sitzungen (Git, VS-Code-Remote) mitreissen.
+
+**Was der Stopp sichtbar macht, ist nicht der 502.** Ohne Cookie greift
+`forward_auth` zuerst: `https://CODE_DOMAIN/` liefert `302 → /login.html`, mit
+und ohne Tunnel. Den Tunnel sieht erst ein *angemeldeter* Request — dann 502 aus
+dem Proxy, und `handle_errors` liefert `tunnel-down.html`
+(`Caddyfile.fragment` Z. 91-100). Ebenso der aktive Healthcheck: 30 s Intervall,
+3 Fehlschlaege, dann Upstream `down` (Z. 61-66). Wer nach dem Stopp
+`curl -o /dev/null -w '%{http_code}' https://CODE_DOMAIN/` laufen laesst und
+502 erwartet, hat das Gate und nicht den Tunnel gemessen.

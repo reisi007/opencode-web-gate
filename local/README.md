@@ -14,6 +14,7 @@ Browser -> CODE_DOMAIN (zentrales Caddy)
 | Datei | Zweck |
 |---|---|
 | `start-tunnel.command` | Doppelklick-Start am Mac → ruft `bootstrap.sh` auf, Fenster kann zu |
+| `stop-tunnel.command` | Doppelklick-Stop: `launchctl disable` + `bootout` + Aufräumen, idempotent |
 | `bootstrap.sh` | einmalig/bei jedem Start: autossh, SSH-Key, LaunchAgent, Sync |
 | `run.sh` | OpenCode-Autostart + rclone-Sync + Tunnel (`--sync-only` / `--tunnel-only`) |
 | `diagnose.sh` | Checks lokal + VPS (`--quick` nur lokal) |
@@ -27,6 +28,7 @@ Browser -> CODE_DOMAIN (zentrales Caddy)
 
 ```bash
 ./start-tunnel.command   # = Doppelklick: Setup + Tunnel, Fenster danach schließen
+./stop-tunnel.command    # = Doppelklick: Tunnel aus (idempotent, Exit 0)
 ./run.sh                 # direkt im Vordergrund (Debug, Fenster offen lassen)
 ./diagnose.sh            # --quick nur lokal
 ```
@@ -62,11 +64,40 @@ Agent hat sein `.env` schon gelesen), der Tunnel wird dann bewusst neu gestartet
 ```bash
 launchctl print  gui/$(id -u)/com.code-tunnel   # Status
 tail -f /tmp/code-tunnel.log                    # Log (run.sh + ssh/autossh)
-launchctl bootout gui/$(id -u)/com.code-tunnel  # stoppen
+./stop-tunnel.command                           # stoppen (siehe unten)
 ```
 
 Ohne launchd/Key (Fremd-Mac) fällt `start-tunnel.command` auf `./run.sh` im Vordergrund
 zurück — dann Fenster offen lassen.
+
+### Stoppen
+
+`./stop-tunnel.command` macht drei Dinge in dieser Reihenfolge — die Reihenfolge
+ist der Punkt, ein einzelnes `launchctl bootout` reicht nicht:
+
+1. **`launchctl disable` vor `bootout`.** Die gerenderte plist bleibt in
+   `~/Library/LaunchAgents` liegen, launchd lädt sie beim nächsten Login wieder
+   und `RunAtLoad` feuert den Tunnel an. Ohne `disable` ist der Stopp beim
+   nächsten Login erledigt. `start-tunnel.command` hebt das wieder auf:
+   `bootstrap.sh` macht `launchctl enable` vor `launchctl bootstrap`.
+2. **`bootout`** nimmt den Job samt `KeepAlive` weg. launchd SIGTERMt dabei die
+   **Prozessgruppe** — das ist auch der superviste `opencode serve` (Kind von
+   `run.sh`, `run.sh:127`), danach ist `:8080` zu. Gewollt: kein Tunnel, kein
+   Server. `serve --service` (PPID 1) und laufende TUI-Sessions bleiben unberührt.
+3. **Aufräumen** der Waisen (`autossh`/`ssh` mit dem Forward, Master-Socket).
+   Nach dem Agent-Pfad ist nichts mehr übrig; nötig ist der Schritt für den
+   Finder-Fallback (`run.sh` im Vordergrund) und für Reste früherer Läufe.
+   Ein allein gekilltes `ssh` lässt `autossh` sofort neu verbinden — deshalb
+   erst `autossh`, dann `ssh`.
+
+Idempotent: ein zweiter Durchlauf auf einem gestoppten Tunnel meldet nur den
+Zustand und endet mit Exit 0.
+
+Was danach sichtbar ist: `https://CODE_DOMAIN/` liefert **ohne** Cookie weiter
+`302 → /login.html` (das Gate steht, der Forward wird nie erreicht). Erst
+angemeldete Requests sehen den Tunnel: Caddy bekommt `502` vom Proxy und
+liefert `tunnel-down.html`, der aktive Healthcheck (30 s, 3 Fehlschläge) setzt
+den Upstream auf `down`.
 
 Fixe Ports statt random: VPS `172.18.0.1:18731` → Mac `127.0.0.1:8080` (`REMOTE_PORT/LOCAL_PORT/REMOTE_BIND` in `.env`). Serverseitig einmalig: `GatewayPorts clientspecified` in `/etc/ssh/sshd_config` + `systemctl reload sshd`.
 
