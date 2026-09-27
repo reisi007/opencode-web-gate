@@ -12,7 +12,9 @@
 #   4) Login-/Offline-Seite per rclone spiegeln, Tunnel starten, verifizieren
 #
 # Ergebnis: der Tunnel laeuft als LaunchAgent. Das Terminal-Fenster kann
-# geschlossen werden; `launchctl bootout gui/$(id -u)/com.code-tunnel` stoppt ihn.
+# geschlossen werden; `./stop-tunnel.command` stoppt ihn wieder (disable +
+# bootout + Aufraeumen — ein blosses `launchctl bootout` laesst ihn beim
+# naechsten Login via RunAtLoad wiederkommen).
 set -euo pipefail
 cd "$(dirname "$0")"
 # Doppelklick (.command) startet mit minimalem PATH -> Werkzeuge auffindbar machen
@@ -162,7 +164,7 @@ if [ "$CHANGED" = 0 ] && agent_loaded && forward_up && tunnel_uses_identity; the
   echo "== 4/4 Status =="
   ok "Tunnel laeuft bereits (LaunchAgent, Key $IDENTITY, Forward VPS $BIND:$REMOTE steht)"
   echo "     Log: tail -f /tmp/code-tunnel.log"
-  echo "     Stoppen: launchctl bootout gui/$(id -u)/$LABEL"
+  echo "     Stoppen: ./stop-tunnel.command"
   exit 0
 fi
 
@@ -199,5 +201,5 @@ echo "  Watchdog:  KeepAlive startet nach jedem Absturz neu"
 echo "  Reconnect: autossh + ServerAliveInterval (auch nach Sleep/WLAN-Wechsel)"
 echo "  Status:    launchctl print gui/\$(id -u)/$LABEL | head -20"
 echo "  Log:       tail -f /tmp/code-tunnel.log"
-echo "  Stoppen:   launchctl bootout gui/\$(id -u)/$LABEL"
+echo "  Stoppen:   ./stop-tunnel.command"
 echo "  Website:   https://$DOMAIN/"
