@@ -16,9 +16,9 @@ Browser -> CODE_DOMAIN (zentrales Caddy)
 | `start-tunnel.command` | Doppelklick-Start am Mac → ruft `bootstrap.sh` auf, Fenster kann zu |
 | `stop-tunnel.command` | Doppelklick-Stop: `launchctl disable` + `bootout` + Aufräumen, idempotent |
 | `bootstrap.sh` | einmalig/bei jedem Start: autossh, SSH-Key, LaunchAgent, Sync |
-| `run.sh` | OpenCode-Autostart + rclone-Sync + Tunnel (`--sync-only` / `--tunnel-only`) |
+| `run.sh` | OpenCode-Autostart + rsync-Sync + Tunnel (`--sync-only` / `--tunnel-only`) |
 | `diagnose.sh` | Checks lokal + VPS (`--quick` nur lokal) |
-| `sync.sh` | Login-Seite (`apps/web/dist`) per rclone auf VPS |
+| `sync.sh` | Login-Seite (`apps/web/dist`) per rsync/ssh auf VPS (`--dry-run` first) |
 | `scripts/com.code-tunnel.plist` | LaunchAgent-**Vorlage** (Pfade rendert `bootstrap.sh`) |
 | `apps/web/dist/` | Login- + Offline-Seite |
 | `docker-compose.yml` | Portainer-Stack `code-auth` (Single File, ext. `webnet`) |

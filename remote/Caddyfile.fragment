@@ -8,7 +8,7 @@ __REMOTE_DOMAIN__ {
 	import security_headers
 	import compress
 
-	# statische Login-Seite (gleiche wie __CODE_DOMAIN__, rclone aus apps/web/dist)
+	# statische Login-Seite (gleiche wie __CODE_DOMAIN__, rsync/ssh aus apps/web/dist)
 	handle /login.html {
 		root * /srv/websites/__CODE_SITE__
 		file_server
