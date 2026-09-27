@@ -67,9 +67,55 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   Reconnect nach `kill -9` des ssh **mit** `id_rsa`, Neustart nach `kill -9` des `run.sh`
   (launchd in < 3 s), `bootstrap.sh` als No-op ohne Restart. Zwei Review-Runden mit
   DeepSeek 4.1 (Blocker, SOLLTE, KANN) sind eingearbeitet, Abschlussurteil
-  "commit-fähig". **Offen:** ein echter Sleep/WLAN-Wechsel, ein Reboot (Login-Autostart)
+  "commit-fähig". Dazu am 2026-09-27: der Stopp-/Start-Zyklus über
+  `local/stop-tunnel.command` (LaunchAgent gestoppt → `disabled`, dann
+  `start-tunnel.command` → `print-disabled` meldet `enabled`, Agent geladen,
+  `state = running`, Forward `LISTEN 172.18.0.1:18731`, `opencode serve` zurück auf
+  `:8080`). **Offen:** ein echter Sleep/WLAN-Wechsel, ein Reboot (Login-Autostart)
   und der Fall, dass die Login-Keychain nach dem Login gesperrt bleibt (dann
   Restart-Schleife).
+- [ ] **`sync.sh` schlägt seit mindestens 2026-09-27 fehl: `knownhosts: key mismatch`**
+  (beim `start-tunnel.command` als WARN durchgerutscht, der Tunnel startet trotzdem).
+  `rclone` nutzt das SFTP-Remote `reisinger.pictures:` → **Port 2222**, User `webadmin`,
+  `SFTPGo_2`, mit `~/.ssh/known_hosts` als `known_hosts_file`. Dort sind **alle drei**
+  Host-Keys des 2222-Eintrags von den angebotenen verschieden (Fingerprints
+  `SHA256:JjTLxqc…`/`px1oOG0X…`/`AbE4f6dy…` gespeichert gegen
+  `SHA256:8/qQWbf…`/`n7tTugy7…`/`d+cHG8j+…` von `ssh-keyscan -p 2222`); die
+  Port-22-Keys sind unveraendert und `ssh` als root funktioniert. Heißt: SFTPGo
+  hat seine Host-Keys neu erzeugt (Container/Volume oder Rotation) — oder der
+  Port gehoert jetzt jemand anderem.
+  **Schaden heute keiner, verifiziert:** beide Dateien liegen byte-identisch auf
+  dem VPS (`login.html` md5 `66e2bc78…`, `tunnel-down.html` md5 `3da9b192…`,
+  beide == Repo, Pfad `/home/webadmin/websites/code.all-the.rest/`, gemountet als
+  `/srv/websites` in `caddy`; Stand der Dateien 4.9.).
+  **Zu tun:** die drei neuen Fingerprints **out-of-band** verifizieren (SFTPGo
+  selbst, nicht der Kanal, auf dem die neue Key-Meldung kam), dann erst
+  `ssh-keygen -R "[reisinger.pictures]:2222"`. Blind entfernen tauscht einen
+  blockierten Sync gegen eine offene Tür. Danach `sync.sh` einmal laufen lassen
+  und das `rclone`-Log auf "Transferred:"-Zeilen prüfen — bisher ist
+  `sync.sh` laut [`local/AGENTS.md`](local/AGENTS.md) §11 der Weg, auf dem
+  `login.html` live geht, und dieser Weg ist gerade zu.
+- [ ] **`pkill`-Stall in `run.sh` blockiert den Tunnel-Start** (Beobachtung
+  2026-09-27, **nicht reproduziert**). `run.sh:221` (`pkill -f -- "ssh .*-R BIND:REMOTE
+  …$TARGET\$"`) lief beim ersten Start nach dem Stopp **2,5–3 min** mit `STAT R`
+  (PID 4544) fest: Log nach "Starte OpenCode-Web" ohne weiteren Zeile, bis der
+  `pkill` durch war; danach erst `Tunnel:`/`Modus: autossh` (15:28:2x, also
+  **3,5 min nach `run.sh start` 15:24:51**), und `bootstrap.sh` meldete zu Recht
+  "Forward nach 60 s nicht auf dem VPS sichtbar". Danach steht der Forward
+  (`LISTEN 172.18.0.1:18731`).
+  **Kein inherenter `pkill`-Effekt:** dieselbe Musterform gegen einen unbenutzten
+  Port lief zweimal in **0 s** (Exit 1, kein Treffer). Der Scan über 927 Prozesse
+  ist also nicht das Problem — was es blockiert hat, ist offen.
+  **Warum das trotzdem zählt:** `run.sh` hat an dieser Stelle kein Timeout, und
+  `KeepAlive` hilft nicht, weil `run.sh` nicht *beendet*, sondern *haengt* —
+  `launchctl` meldet den Job als `running`, während nichts geforwardet wird. In
+  diesem Zustand ist die Domain minutenlang tot und der einzige sichtbare
+  Hinweis ist die 60-s-Warnung aus `bootstrap.sh`.
+  **Zu entscheiden:** Timeout um die Bereinigung (mit klarer Logzeile, falls sie
+  fehlschlaegt) oder ersetzen durch `ps -eo pid=,args=` + awk + explizite PIDs,
+  wie in [`local/AGENTS.md`](local/AGENTS.md) §4 schon für die opencode-Prozesse
+  vorgegeben. Beides ist eine Eingriffsstelle, an der laut §2 schon einmal etwas
+  kaputt ging — deshalb hier festgehalten und nicht von mir geändert.
 
 ## 2026-09-25
 
