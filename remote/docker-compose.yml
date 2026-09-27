@@ -92,7 +92,7 @@ services:
     # code-dev und ist damit ueber 127.0.0.1 erreichbar — ganz ohne Docker.
     # Details und die Alternativen: remote/README.md
     volumes:
-      - /var/lib/docker/volumes/projects-50g-mnt:/projects
+      - code-remote-projects:/projects
       - gh-config:/home/dev/.config/gh
       - gh-ssh:/home/dev/.ssh
       - opencode-data:/home/dev/.local/share/opencode
@@ -175,7 +175,7 @@ services:
     # auf, inklusive 2375. Festes '--host=...' verletzt das (dann laeuft er auf
     # 2376 und 2375 bleibt zu).
     volumes:
-      - /var/lib/docker/volumes/projects-50g-mnt:/projects
+      - code-remote-projects:/projects
       # ACHTUNG, der Mount-Pfad ist NICHT /var/lib/docker. Der rootless-Daemon
       # startet ohne --data-root und nutzt seinen Default fuer rootless:
       # $HOME/.local/share/docker = /home/rootless/.local/share/docker
@@ -500,6 +500,7 @@ networks:
     external: true
 
 volumes:
+  code-remote-projects:
   gh-config:
   gh-ssh:
   opencode-data:
