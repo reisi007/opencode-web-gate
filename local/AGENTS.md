@@ -165,10 +165,33 @@ dauerhaft unhealthy, obwohl alles laeuft.
 
 ## 11. `sync.sh` veroeffentlicht sofort
 
-`apps/web/dist/` geht per rclone live auf den VPS. `login.html` ist die
+`apps/web/dist/` geht per **rsync/ssh** live auf den VPS (`root@` Port 22,
+Ziel `SYNC_SITES_ROOT/SYNC_SITE_DIR` = `/home/webadmin/websites/code.all-the.rest/`,
+im caddy-Container als `/srv/websites` gemountet). `login.html` ist die
 securityrelevante Tuer des Gates (Cookie-Seite statt Browser-Popup, bcrypt-Passwort
 geht nie an OpenCode). Was dort liegt, ist nach `sync.sh` produktiv — Review vor
 dem Sync, nicht danach.
+
+Der frühere Weg (rclone-SFTP ueber SFTPGo auf Port 2222, User `webadmin`) ist
+tot: derselbe Host-Key ist an drei Key-Typen rotiert, rclone brach mit
+`knownhosts: key mismatch` ab. Migration wie in `all-the.rest` und
+`portal.reisinger.pictures`, Hintergrund dort: `strato-vps/README.md`.
+
+Zwei Dinge nicht wegoptimieren:
+
+- **Der Fremddatei-Check vor `--delete`.** `sync.sh` bricht ab, wenn im
+  Zielverzeichnis etwas liegt, das nicht `*.html` ist. Der Publish ist sofort
+  (siehe oben), und ein falsches `SYNC_SITE_DIR` würde sonst still die Site
+  eines anderen Projekts leeren.
+- **Der GNU-rsync-Guard.** macOS liefert `/usr/bin/rsync` = openrsync, das
+  `--chown`/`--chmod` nicht im nötigen Umfang kann. Der Guard darf **nicht**
+  per `rsync --version | grep -q` gebaut werden: unter `set -o pipefail`
+  beendet `grep -q` den Upstream per SIGPIPE, die Pipeline gilt als
+  fehlgeschlagen, der Guard schlägt immer an. Deshalb erst in eine Variable.
+
+`./sync.sh --dry-run` vor jedem echten Sync. Beim Testen beachten: `LOCAL_DIST`
+steht in `.env`, und `source ../.env` überschreibt einen exportierten Wert —
+`LOCAL_DIST=… ./sync.sh` wird still ignoriert.
 
 Siehe [`../AGENTS.md`](../AGENTS.md) fuer die `$$`-Regel in der Portainer-Kopie
 und die Pflicht, dass `code` und `remote-code` denselben Login teilen.

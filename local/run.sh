@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run.sh: Website syncen (rclone) + SSH-Reverse-Tunnel starten.
+# run.sh: Website syncen (rsync/ssh) + SSH-Reverse-Tunnel starten.
 # Flags: --sync-only | --tunnel-only | (default: beides)
 #
 # WICHTIG (Tunnel-Ownership): Der Tunnel laeuft mit ControlMaster=no und wird von
@@ -30,8 +30,6 @@ PORT="${SSH_PORT:-22}"
 BIND="${REMOTE_BIND:-172.18.0.1}"
 REMOTE="${REMOTE_PORT:-18731}"
 LOCAL="${LOCAL_PORT:-8080}"
-DIST="${LOCAL_DIST:-apps/web/dist}"
-REMOTE_PATH="${RCLONE_REMOTE:-vps.example.com}:${RCLONE_PATH:-/code.example.com}"
 
 # Key-Auth (setzt bootstrap.sh, Werte in .env): unbeaufsichtigter Betrieb ohne
 # Passphrase-Prompt. UseKeychain=yes ist der Punkt, der den Key ohne TTY

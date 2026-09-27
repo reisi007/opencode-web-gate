@@ -74,27 +74,37 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   `:8080`). **Offen:** ein echter Sleep/WLAN-Wechsel, ein Reboot (Login-Autostart)
   und der Fall, dass die Login-Keychain nach dem Login gesperrt bleibt (dann
   Restart-Schleife).
-- [ ] **`sync.sh` schlägt seit mindestens 2026-09-27 fehl: `knownhosts: key mismatch`**
-  (beim `start-tunnel.command` als WARN durchgerutscht, der Tunnel startet trotzdem).
-  `rclone` nutzt das SFTP-Remote `reisinger.pictures:` → **Port 2222**, User `webadmin`,
-  `SFTPGo_2`, mit `~/.ssh/known_hosts` als `known_hosts_file`. Dort sind **alle drei**
-  Host-Keys des 2222-Eintrags von den angebotenen verschieden (Fingerprints
-  `SHA256:JjTLxqc…`/`px1oOG0X…`/`AbE4f6dy…` gespeichert gegen
-  `SHA256:8/qQWbf…`/`n7tTugy7…`/`d+cHG8j+…` von `ssh-keyscan -p 2222`); die
-  Port-22-Keys sind unveraendert und `ssh` als root funktioniert. Heißt: SFTPGo
-  hat seine Host-Keys neu erzeugt (Container/Volume oder Rotation) — oder der
-  Port gehoert jetzt jemand anderem.
-  **Schaden heute keiner, verifiziert:** beide Dateien liegen byte-identisch auf
-  dem VPS (`login.html` md5 `66e2bc78…`, `tunnel-down.html` md5 `3da9b192…`,
-  beide == Repo, Pfad `/home/webadmin/websites/code.all-the.rest/`, gemountet als
-  `/srv/websites` in `caddy`; Stand der Dateien 4.9.).
-  **Zu tun:** die drei neuen Fingerprints **out-of-band** verifizieren (SFTPGo
-  selbst, nicht der Kanal, auf dem die neue Key-Meldung kam), dann erst
-  `ssh-keygen -R "[reisinger.pictures]:2222"`. Blind entfernen tauscht einen
-  blockierten Sync gegen eine offene Tür. Danach `sync.sh` einmal laufen lassen
-  und das `rclone`-Log auf "Transferred:"-Zeilen prüfen — bisher ist
-  `sync.sh` laut [`local/AGENTS.md`](local/AGENTS.md) §11 der Weg, auf dem
-  `login.html` live geht, und dieser Weg ist gerade zu.
+- [x] **`local/sync.sh` von rclone auf rsync/ssh migriert** (2026-09-27).
+  Auslöser war nicht ein Fehler im Sync, sondern eine falsche Diagnose von mir:
+  der `start-tunnel.command` meldete `knownhosts: key mismatch`, und ich habe
+  daraus einen offenen SFTPGo-Host-Key-Punkt gemacht. **Die Ursache ist banal:
+  dieses Repo war beim Wechsel der anderen Repos (2026-09-26) nicht mitgezogen
+  worden.** `rclone` lief weiter auf `RCLONE_REMOTE=reisinger.pictures` /
+  `RCLONE_PATH=/code.all-the.rest` aus `.env`, und der SFTPGo-Weg (Port 2222,
+  User `webadmin`) ist genau der, dessen Keys inzwischen rotiert sind — die
+  Key-Meldung war das Symptom eines Wegs, den es nicht mehr geben soll.
+  **Neu:** `rsync/ssh` auf `root@` Port 22, identisch zu `all-the.rest/sync.sh`
+  und `portal.reisinger.pictures/sync.sh` (Hintergrund: `strato-vps/README.md`),
+  inklusive GNU-rsync-Guard, `--chown=1002:webgroup --chmod=D2777,F666` und
+  eigenem Master-Socket `/tmp/ssh-sync-*`. `RCLONE_*` ist aus `.env` und
+  `.env.example` raus, `setup.sh` prüft statt `rclone listremotes` das
+  Sync-Zielverzeichnis per SSH. `run.sh` hatte zwei tote rclone-Variablen
+  (`REMOTE_PATH`, `DIST`) — entfernt.
+  **Verifiziert:** `--dry-run` zeigt `xfr#0, to-chk=0/3` (Ziel identisch), ein
+  erzwungener Diff liefert `xfr#1` (1.200 B) gegen das echte Ziel, die Datei
+  ist danach md5-identisch zum Repo (Backup/Restore). Das neue
+  **`--delete`-Sicherheitsnetz** (Abbruch, wenn im Ziel etwas nicht `*.html`
+  liegt) wurde gegen ein Wegwerf-Verzeichnis auf dem VPS getestet: Exit 1,
+  `fremd.txt` unangetastet. `setup.sh` meldet „Sync-Ziel ok".
+  **Bewusst nicht angefasst:** die `rclone`-Erwähnungen in
+  [`remote/AGENTS.md`](remote/AGENTS.md), [`remote/README.md`](remote/README.md)
+  und `remote/docker-compose.yml` — die beschreiben, was im **Backup-Volume auf
+  dem VPS** liegt, nicht den Publish-Weg. Das ist eine andere Frage und gehört
+  nicht in diesen Commit.
+  **Rest:** die veralteten `[reisinger.pictures]:2222`-Einträge in
+  `~/.ssh/known_hosts` sind unbenutzt, aber nicht bereinigt. Nur entfernen, wenn
+  klar ist, dass SFTPGo dort nicht mehr genutzt wird — die Fingerprints sind
+  die eines fremden Dienstes.
 - [ ] **`pkill`-Stall in `run.sh` blockiert den Tunnel-Start** (Beobachtung
   2026-09-27, **nicht reproduziert**). `run.sh:221` (`pkill -f -- "ssh .*-R BIND:REMOTE
   …$TARGET\$"`) lief beim ersten Start nach dem Stopp **2,5–3 min** mit `STAT R`

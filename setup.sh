@@ -5,7 +5,18 @@ cd "$(dirname "$0")"
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "FEHLT: $1"; MISSING=1; }; }
 MISSING=0
-need ssh; need docker; need rclone; need python3; need openssl
+need ssh; need docker; need python3; need openssl
+# rsync: macOS liefert per Default /usr/bin/rsync = openrsync (Protokoll 29), das
+# --chown/--chmod nicht kann — local/sync.sh bricht dann hart ab. Also schon hier
+# die GNU-Variante pruefen. WICHTIG: nicht per `rsync --version | grep -q ...`:
+# unter `set -o pipefail` beendet `grep -q` den Upstream per SIGPIPE, die
+# Pipeline gilt als fehlgeschlagen und der Guard schlaegt IMMER an.
+_rsync_version="$(command -v rsync >/dev/null 2>&1 && rsync --version 2>/dev/null | head -1 || true)"
+if [[ "$_rsync_version" != "rsync  version"* ]]; then
+  echo "FEHLT: GNU-rsync (macOS-Default ist openrsync) -> brew install rsync"
+  MISSING=1
+fi
+unset _rsync_version
 if ! command -v autossh >/dev/null 2>&1; then
   echo "HINWEIS: autossh fehlt -> local/bootstrap.sh (bzw. brew install autossh) installiert es"
   echo "          und richtet den LaunchAgent ein; ohne autossh kein Reconnect im Tunnel."
@@ -61,8 +72,17 @@ if [ -z "${OPENCODE_PASSWORD:-}" ]; then
 fi
 
 echo "--- Checks ---"
-rclone listremotes | grep -q "^${RCLONE_REMOTE:-vps.example.com}:$" \
-  && echo "rclone remote ok" || echo "WARN: rclone remote '${RCLONE_REMOTE:-vps.example.com}:' fehlt (rclone config)"
+# Sync-Ziel: kein rclone-Config mehr, aber SSH-Zugang + Zielverzeichnis müssen
+# stehen. BatchMode, damit der Check nicht an einer Passphrase-Prompt hängt.
+SYNC_ROOT="${SYNC_SITES_ROOT:-/home/webadmin/websites}"
+SYNC_SITE="${SYNC_SITE_DIR:-code.example.com}"
+if ssh -o BatchMode=yes -o ConnectTimeout=10 -p "${SSH_PORT:-22}" \
+     "${SSH_TARGET:?FEHLER: SSH_TARGET fehlt in .env}" \
+     "test -d '$SYNC_ROOT/$SYNC_SITE'" 2>/dev/null; then
+  echo "Sync-Ziel ok (${SSH_TARGET}:$SYNC_ROOT/$SYNC_SITE)"
+else
+  echo "WARN: Sync-Ziel ${SSH_TARGET}:$SYNC_ROOT/$SYNC_SITE nicht erreichbar (SSH-Key? Verzeichnis? noch nie gesynct?)"
+fi
 if getent hosts "${CODE_DOMAIN:-code.example.com}" >/dev/null 2>&1 || dscacheutil -q host -a name "${CODE_DOMAIN:-code.example.com}" >/dev/null 2>&1; then
   echo "DNS ${CODE_DOMAIN:-code.example.com} ok"
 else

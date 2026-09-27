@@ -9,7 +9,7 @@
 #      Ist der Public Key auf dem VPS schon freigeschaltet, kostet das genau eine
 #      Passphrase-Eingabe. Es wird BEWUSST kein Key ohne Passphrase erzeugt.
 #   3) LaunchAgent com.code-tunnel rendern + laden -> Autostart beim Login + Watchdog
-#   4) Login-/Offline-Seite per rclone spiegeln, Tunnel starten, verifizieren
+#   4) Login-/Offline-Seite per rsync/ssh spiegeln, Tunnel starten, verifizieren
 #
 # Ergebnis: der Tunnel laeuft als LaunchAgent. Das Terminal-Fenster kann
 # geschlossen werden; `./stop-tunnel.command` stoppt ihn wieder (disable +
@@ -169,7 +169,7 @@ if [ "$CHANGED" = 0 ] && agent_loaded && forward_up && tunnel_uses_identity; the
 fi
 
 echo "== 4/4 Website-Sync + Start =="
-./sync.sh || warn "rclone-Sync fehlgeschlagen (Remote '${RCLONE_REMOTE:-vps.example.com}:' in rclone config?)"
+./sync.sh || warn "Website-Sync fehlgeschlagen (rsync/ssh, siehe Ausgabe von ./sync.sh: GNU-rsync? SSH-Key? Zielverzeichnis der Domain $DOMAIN?)"
 
 # enable VOR bootstrap: ein zuvor `launchctl disable`ter Job waere sonst disabled
 # geladen und RunAtLoad feuerte nicht.
