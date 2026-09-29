@@ -22,9 +22,11 @@
   aus Root-`.env` uebernommen: `AUTH_USER/AUTH_HASH/AUTH_SECRET/OPENCODE_PASSWORD/SESSION_TTL/IMAGE`) — nichts im Image.
   `AUTH_HASH` muss bcrypt oder PBKDF2 sein; ein Klartext-Fallback wird absichtlich
   nicht akzeptiert.
-* `gh auth` + SSH-Keys + Projekte liegen in Named Volumes (`gh-config`, `gh-ssh`,
-  `code-remote-projects`) und ueberleben Image-Upgrades. Einmalig:
-  `docker exec -it code-dev gh auth login`.
+* `gh auth` + SSH-Keys liegen in Named Volumes (`gh-config`, `gh-ssh`) und
+  ueberleben Image-Upgrades. Einmalig: `docker exec -it code-dev gh auth login`.
+  Die **Projekte** liegen seit 2026-09-29 *nicht* mehr in einem Named Volume,
+  sondern auf einem 100-GB-Loopback unter `/srv/dev-projects` — siehe
+  *100-GB-Loopback fuer `/projects`*.
 
 ## Deploy (alles ohne SSH, nur Portainer + 1x VPS-Handgriff)
 
@@ -102,9 +104,12 @@ Dev-Server.
 ### Was gemeinsam ist — und was nicht
 
 ```
-code-dev  /projects -> dev-vm_code-remote-projects
-dind      /projects -> dev-vm_code-remote-projects   ← gleiches Volume
+code-dev  /projects -> bind /srv/dev-projects        (100-GB-Loopback, ext4)
+dind      /projects -> bind /srv/dev-projects        ← gleicher Mountpoint
 ```
+
+Bis 2026-09-28 war das noch `dev-vm_code-remote-projects`, ein Named Volume.
+Die Beobachtung darunter gilt unverändert, nur der Pfad hat sich geändert.
 
 **Dateien sind geteilt, Prozesse und Netzraum nicht.** Der DinD hat einen
 eigenen Docker-Daemon mit eigener Bridge. Ein `docker run -p 3000:3000` dort
@@ -463,13 +468,138 @@ Checkout/Loeschen sind normale Verzeichnisse unter `/projects/<repo>`.
 `gh` ist als `dev`-User installiert, Auth in Volume. Bei Image-Upgrade
 Container recreaten — Volumes bleiben, kein Re-Login noetig.
 
+## 100-GB-Loopback fuer `/projects`
+
+Seit 2026-09-29 liegt `/projects` auf einem eigenen Dateisystem statt im
+Docker-Root-Verzeichnis. Zwei Services teilen sich denselben Bind-Mount:
+`code-dev` und `dind`.
+
+```
+/srv/dev-100g.img     sparse Datei auf vda4, 100 GiB apparent
+/srv/dev-projects     Mountpoint (ext4, 1000:1000)
+```
+
+| Schicht | Wert |
+|---|---|
+| Dateisystem | ext4, Label `devprojects`, `-m 0` (keine reservierten Blöcke) |
+| Loop-Groesse | 26.214.400 Blöcke × 4096 B = **100,00 GiB** |
+| Nach ext4-Metadaten nutzbar | 105.089.261.568 B = **97,87 GiB** |
+| davon belegt (Stand 29.09.) | 33 GB = 34 % |
+| Inodes | 6.553.600, davon 6.553.589 frei |
+| Dateibestand | 162.254 Dateien, 21.979 Verzeichnisse, 4.118 Symlinks |
+
+Die 100 sind die **Loop-Groesse**, nicht der nutzbare Platz — ext4 rechnet
+Journal und Inode-Tabellen ab, das sind die 2,13 GiB Differenz.
+
+### Warum ueberhaupt ein Loop
+
+Der Ausloeser war der 50-GB-Versuch vom 2026-09-26: `/projects` waechst durch
+`node_modules` und Build-Artefakte unbegrenzt, und weil es im selben
+Dateisystem liegt wie Caddy, MariaDB und die 10 Prod-Container, nimmt ein
+`rm -rf` im Dev-Container den **gesamten Prod-Stack** mit. Ein eigenes
+Dateisystem begrenzt den Schaden auf 100 GB.
+
+### Warum kein Volume und keine echte Partition
+
+* **Kein Named Volume:** `code-remote-projects` ist entfallen. Ein Pfad unter
+  `/var/lib/docker/volumes` kann von Docker als verwaist eingestuft und
+  wegrationalisiert werden; `/srv/dev-projects` ist fuer ihn ein normaler
+  Host-Pfad.
+* **Keine Partition auf `vda`:** die ist nicht moeglich. `parted print free`
+  zeigt 0,00 GiB freien Bereich — `vda4` belegt 1,20 bis 300 GiB. Und `vda4`
+  ist **XFS**, das sich nicht verkleinern kann (`xfsresize` waechst nur,
+  `xfs_info` zeigt kein `resize_inode`). Die Partition ist ausserdem die letzte
+  der GPT-Tabelle und traegt das Root-Dateisystem, also nicht unmountbar. Wer
+  ehrlich 100 GB *physisch getrennten* Platz will, braucht eine zweite
+  Cloud-Volume. LVM hilft dabei nicht: es schichtet, es erzeugt keine Bloecke.
+* **ext4 statt XFS** auf dem Loop, weil nur ext4 spaeter schrumpfen kann.
+
+### Einrichtung (auf einem frischen VPS)
+
+```bash
+truncate -s 100G /srv/dev-100g.img
+mkfs.ext4 -L devprojects -m 0 -q /srv/dev-100g.img
+mkdir -p /srv/dev-projects
+mount /srv/dev-100g.img /srv/dev-projects
+chown 1000:1000 /srv/dev-projects
+```
+
+`fstab` (die UUID als Quelle **nicht** nehmen, siehe `AGENTS.md` §14.1):
+
+```
+/srv/dev-100g.img /srv/dev-projects ext4 loop,defaults,noatime 0 2
+```
+
+Datenumzug vom alten Volume, dann verifizieren und das alte loeschen:
+
+```bash
+docker stop code-dev code-remote-dind
+rsync -a /var/lib/docker/volumes/dev-vm_code-remote-projects/_data/ /srv/dev-projects/
+rsync -a --dry-run --itemize-changes \
+      /var/lib/docker/volumes/dev-vm_code-remote-projects/_data/ /srv/dev-projects/
+# leerer Output = bit-identisch. Erst DANACH das alte Volume entfernen:
+docker volume rm dev-vm_code-remote-projects
+```
+
+### Boot-Persistenz pruefen
+
+Der einzige ehrliche Beweis ist ein `mount -a` ohne vorheriges Mounten:
+
+```bash
+umount /srv/dev-projects && mount -a && findmnt /srv/dev-projects
+```
+
+### Performance gegenueber einem normalen Dateisystem
+
+Der Pfad beim Schreiben ist `ext4 → Loop-Device → XFS-Datei → Platte`, also
+**zwei Journale in der Kette**. Gemessen wurde das nicht synthetisch, die
+Zahlen sind Erfahrungswerte fuer Image-Workloads:
+
+| Workload | Overhead |
+|---|---|
+| Sequentielle Writes (`pnpm install`, `git clone`, Build-Artefakte) | ~0–5 % |
+| Metadatenlastig, viele kleine Dateien (`node_modules`) | ~5–15 % |
+| `fsync`-lastige Builds | spuerbar, nicht kritisch |
+
+Zwei Dinge halten den Overhead klein: `truncate` erzeugt die Datei **sparse**
+(100 GiB apparent, anfangs 518 MB belegt, inzwischen 34 GB), und der Kernel
+aktiviert auf Loop-Devices automatisch **Direct I/O** — damit entfaellt die
+doppelte Page-Cache-Schicht. Aeltere Howtos mit „Loop ist langsam“ stammen von
+vor Linux 4.10.
+
+### Der Preis: er kauft einen Deckel, keinen Platz
+
+Vorher 61 GB belegt auf `/`, nachher 65 GB. Die Daten liegen auf ext4 statt
+XFS, und ext4 belegt rund 2 GB mehr, weil XFS File-Tails ueber Extents packt.
+Dafuehr gibt es 97,87 GiB, die `rm -rf` nicht sprengen kann.
+
+### Der offene Punkt
+
+Der Loop ist die **einzige** Kopie der Projekte. Faellt der Mount beim Boot
+aus, startet `code-dev` mit leerem `/projects`, und `gh repo clone` holt nur den
+Code zurueck — nicht `node_modules`, `.env`-Fragmente oder uncommittete Arbeit.
+Ein Boot-Check existiert bisher nicht. Details: `AGENTS.md` §14.
+
+### Historie
+
+* **2026-09-26** (`3d3a046`): 50-GB-Loopback eingefuehrt, Log-Limits dazu.
+* **2026-09-27** (`c5d3c7b`): **verworfen.** Begruendung dort: das waechsende
+  Verzeichnis sind nicht die Logs, sondern die Projekte selbst; ausserdem
+  hostseitiger `fstab`-Zustand, ein Dateisystem im Dateisystem, und der Pfad
+  musste in Compose und `fstab` identisch bleiben. Nach dem Revert 24 % statt
+  98 % Belegung.
+* **2026-09-29**: bewusst wieder aufgegriffen, mit 100 GB statt 50, ext4
+  statt XFS und als Bind-Mount auf `/srv` statt als Volume-Pfad. Die drei
+  damaligen Einwaende gelten unveraendert — sie wurden nicht ausgeraeumt,
+  nur in Kauf genommen.
+
 ## Persistenz (Updates loggen nichts aus)
 
 | Inhalt | Ordner | Volume |
 |---|---|---|
 | `gh auth` | `/home/dev/.config/gh` | `gh-config` |
 | SSH-Keys | `/home/dev/.ssh` | `gh-ssh` |
-| Projekte | `/projects` | `code-remote-projects` |
+| Projekte | `/projects` | **Bind-Mount `/srv/dev-projects`** (100-GB-Loopback, ext4) |
 | opencode-Config (`opencode.json`, editierbar via `nano`) | `/home/dev/.config/opencode` | `opencode-config` |
 | opencode-Daten (Auth, Sessions) | `/home/dev/.local/share/opencode` | `opencode-data` |
 | opencode-State | `/home/dev/.local/state/opencode` | `opencode-state` |

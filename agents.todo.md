@@ -3,6 +3,65 @@
 Offene, nicht triviale Punkte und Blockaden. Einträge werden erst nach einem
 unabhängigen Review und erfolgreicher Verifikation entfernt.
 
+## 2026-09-29
+
+- [x] **`/projects` auf einen 100-GB-Loopback (ext4) umgestellt** (2026-09-29).
+  **Entscheidung des Menschen, ausdrücklich gegen die Empfehlung des Agenten.**
+  Der Agent hatte zuvor gemessen, dass eine 100-GB-**Partition** nicht moeglich
+  ist (`parted print free` → 0,00 GiB frei, `vda4` = XFS = nicht schrumpfbar,
+  letzte GPT-Partition mit Root-FS), und dass der Platzbedarf die Massnahme
+  nicht begruendet (238 GB frei, 31 GB Projekte). Der Loop wurde trotzdem
+  gewaehlt — **als Deckel, nicht als Plattenersatz**.
+  **Live verifiziert:**
+  - `truncate -s 100G` → 100 GiB apparent, anfangs 518 MB belegt (sparse)
+  - `mkfs.ext4 -m 0 -L devprojects` → 26.214.400 × 4096 B, `resize_inode` gesetzt
+  - Nutzbar 97,87 GiB (ext4 rechnet 2,13 GiB Journal + Inode-Tabellen ab)
+  - `fstab` mit `loop,defaults,noatime`; `umount && mount -a` zweimal
+    durchgefuehrt, beide Male sauber
+  - `rsync -a` 188.352 Eintraege in 2m39s; `rsync --dry-run --itemize-changes`
+    meldet **null** Unterschiede; Dateizahlen als root in Quelle und Ziel
+    identisch (162.254 / 21.979 / 4.118)
+  - Deploy ueber Portainer-Compose-Verzeichnis (Stack `dev-vm`, `compose/49`),
+    vorher Byte-Vergleich: Portainer-Kopie war identisch mit Repo HEAD, also
+    **kein** Drift. Backup `docker-compose.yml.bak-loopmount-20260929-100040`
+  - Nach Deploy: alle drei Container `healthy`, `restarts=0`, `oom=false`,
+    `/api/info` intern 200, `/api/me` auf **beiden** Domains 401 (ohne Cookie =
+    korrekt), DinD `/_ping` 200, `DockerRootDir` im Volume (Regel §6 erfuellt)
+  - `code-dev` **und** `dind` sehen denselben Mount (`bind /srv/dev-projects`),
+    beide melden 162.251 Dateien fuer uid 1000
+  - Altvolumen `dev-vm_code-remote-projects` erst **nach** Verifikation
+    entfernt: 95 GB → 65 GB belegt, 205 GB → 235 GB frei
+  **Ehrliche Bilanz:** netto **+4 GB** Belegung, kein Platzgewinn. Der Nutzen
+  ist der Deckel — 97,87 GiB, die `rm -rf` nicht sprengen kann, und die den
+  Prod-Stack (Caddy, MariaDB, 10 Container) nicht mehr mitreißen.
+  **Ein Detail, das beim Umstieg real war:** `fstab`-Quelle muss die **Datei**
+  sein, nicht die UUID — die UUID haengt am Loop-Device, das erst durch
+  `losetup` entsteht. Mit UUID getestet und live gescheitert:
+  `failed to setup loop device for /dev/loop0`. Ferner: der Mountpoint braucht
+  `1000:1000`, sonst kann uid 1000 (`dev`) auf einem root-`755`-Mountpoint
+  nicht schreiben — der Fehler faellt erst beim ersten Schreibversuch auf.
+  Regelwerk dazu: `remote/AGENTS.md` §14, Messwerte: `remote/README.md`
+  Abschnitt „100-GB-Loopback fuer `/projects`".
+  **Nicht im pCloud-Backup, gewollt:** `volume-backup.sh` arbeitet mit einer
+  Allowlist (4 Volumes + 4 Quellverzeichnisse) und listet `dev-vm_*` explizit
+  als ausgeschlossen. `/srv` ist in keiner Quelle enthalten. **Nicht auf eine
+  breite `/var/lib/docker`-Quelle umbauen**, sonst landen die 100 GB im pCloud.
+- [ ] **Boot-Schutz für den Loop fehlt (offener Single Point of Failure)** —
+  `/srv/dev-projects` ist die **einzige** Kopie der Projekte. Faellt der Mount
+  beim Boot aus, startet `code-dev` mit leerem `/projects`, und `gh repo clone`
+  holt nur den Code zurueck — nicht `node_modules`, `.env`-Fragmente oder
+  uncommittete Arbeit. Es gibt **keinen** Check, der das erkennt, bevor der
+  Agent auf leerem Bestand arbeitet.
+  **Zu entscheiden:** Pruefung in einem systemd-`ExecStartPre` auf `code-dev`
+  (`findmnt /srv/dev-projects` als Abbruchbedingung) oder eine Warnung im
+  `bootstrap.sh`-Ablauf. **Bewusst nicht erfunden** — der Cutover sollte nicht
+  noch eine zweite, ungetestete Aenderung bekommen. Vor der Umsetzung klären,
+  was im Fehlerfall passieren soll: Container hart stoppen oder mit leerem
+  Bestand laufen lassen (im zweiten Fall ist die Warnung Pflicht, damit der
+  Agent sie sieht).
+  Geschlossen wird der Punkt erst, wenn ein **Reboot** des VPS gezeigt hat,
+  dass der Mount sauber kommt — der bisherige Beweis ist nur `mount -a`.
+
 ## 2026-09-26
 
 - [x] **Stack `code-remote`: `host.docker.internal` — eingeführt, dann wieder entfernt** (2026-09-26).
@@ -154,3 +213,39 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   - Review-Hinweis: der `Content-Length`-Vergleich oben ist der stichhaltige
     Nachweis fuer beide Sidecars; reines `docker ps` haette "healthy" gezeigt,
     ohne dass ein Deploy der geaenderten Datei stattgefunden haette.
+
+## Verworfen
+
+Ansätze, die **bewusst zurückgezogen** wurden. Nicht erneut implementieren —
+wenn sich die Voraussetzungen ändern, zuerst neu bewerten.
+
+- **Loopback-Image in einem Docker-Volume-Pfad mounten** (`3d3a046` vom
+  2026-09-26, verworfen mit `c5d3c7b`). Damals
+  `- /var/lib/docker/volumes/projects-50g-mnt:/projects`. Der Pfad unter
+  `/var/lib/docker/volumes` kann von Docker als verwaist eingestuft und
+  wegrationalisiert werden. **Die Lehre gilt fort** — deshalb seit 2026-09-29
+  `/srv/dev-projects` als Bind-Mount. Was davon *nicht* ausgeräumt wurde: das
+  Dateisystem-im-Dateisystem-Argument, der `fstab`-Zustand und die
+  Pfad-Duplizierung zwischen `fstab` und Compose. Siehe `remote/AGENTS.md` §14.
+- **50 GB statt 100 GB** (`c5d3c7b`, 2026-09-27). Zurückgedreht, weil der Loop
+  in 98 % volllief und das Log-Limit aus `3d3a046` nicht griff — es wuchsen die
+  Projekte selbst, nicht die Logs. Am 2026-09-29 mit 100 GB neu eingeführt.
+- **`/srv/dev-100g.img` per UUID in `fstab` referenzieren.** Am 2026-09-29 live
+  probiert und **gescheitert**: `mount -a` → `failed to setup loop device for
+  /dev/loop0`. Die UUID existiert erst nach `losetup`; zum Mount-Zeitpunkt
+  findet `mount` sie nicht. Korrekt ist der Dateipfad als Quelle. Nicht erneut
+  versuchen, das „aufzuräumen“.
+- **Root-Dateisystem auf `vda` verkleinern, um Platz zu gewinnen** (2026-09-29,
+  vom Menschen vorgeschlagen, vom Agenten live gemessen widerlegt). `vda4` ist
+  XFS, und XFS hat keinen Shrink-Pfad; die Partition ist die letzte der
+  GPT-Tabelle und trägt das Root-FS, also nicht unmountbar. **LVM löst das
+  nicht** — es schichtet Blockdevices, es erzeugt keine Blöcke. Der einzige Weg
+  zu echtem, physisch getrenntem Platz ist eine zweite Cloud-Volume. Nicht
+  erneut versuchen, LVM in die bestehende Platte zu „pressen“.
+- **Das neue Dateisystem unter `/var/lib/docker` mounten, um Prod mitzunehmen**
+  (2026-09-29, verworfen vor der Umsetzung). Verstoß gegen den
+  Isolationsgeden des Stacks: `dev-vm_code-remote-projects`,
+  `proxy-stack_*`, `portal-reisinger-pictures_*` und `portainer_data` liegen
+  alle unter `/var/lib/docker/volumes` — ein Mountpoint dort hätte Caddy,
+  MariaDB, Meilisearch und Portainer mitgezogen. Richtig ist der Bind-Mount auf
+  `/srv` für **nur** `/projects`.
