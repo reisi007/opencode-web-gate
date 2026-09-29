@@ -217,7 +217,7 @@ Tailnet-Geraet.
 | Client | Vorgehen | Hinweise |
 |---|---|---|
 | **Android** | Play-Store-App starten, dann `http://code-dev.<tailnet>.ts.net:8080` in Chrome | VPN muss aktiv sein; Akkuoptimierung darf die App nicht stilllegen, sonst bricht die SSE-Verbindung nach Minuten ab. Ohne Basic-Auth kein Prompt. |
-| **macOS** | App + Browser, oder `curl`/`ssh` im Terminal | `tailscale ping <name>` und `tailscale ip` als Diagnose |
+| **macOS** | App + Browser, oder `curl`/`ssh` im Terminal. **Die TUI haengt sich direkt dran** — `opencode --server`, siehe Abschnitt 5b | `tailscale ping <name>` und `tailscale ip` als Diagnose. Die `tailscale`-CLI ist nicht vorinstalliert (`brew install tailscale-cli`), fuer die Einrichtung aber nicht noetig |
 | **Windows** | App + Browser; fuer SSH/PowerShell `tailscale.exe` im Pfad | Firewall-Dialog einmalig bestaetigen |
 
 Aufloesung: MagicDNS laeuft **clientseitig**, deshalb funktioniert
@@ -253,6 +253,120 @@ nicht wieder: `tailscaled` legt einen **Unix-Socket** an, keine Datei. Ein
 Prüfbefehl wie `[ -f ]` oder eine Attrappe, die nur `touch` macht, schlägt fehl
 und sieht wie ein Fehler im Entrypoint aus. Richtig ist `[ -S ]` — genau das
 steht jetzt im Code.
+
+---
+
+## 5b. TUI vom Mac: `opencode --server` statt Browser
+
+Der Tailnet-Weg ist nicht auf den Browser beschraenkt. Die OpenCode-TUI
+verbindet sich genauso direkt mit `code-dev` — ohne Caddy, ohne `forward_auth`,
+ohne SSH-Tunnel. Live verifiziert am 2026-09-29.
+
+### Warum nicht ueber `remote-code.<domain>`
+
+Der oeffentliche Weg ist fuer die TUI an einer einzigen Stelle unbrauchbar:
+`forward_auth` antwortet ohne Session-Cookie mit `302` auf `/login.html`. Die
+TUI erwartet eine API-Antwort, keine HTML-Redirect-Kette. Die zugehoerige
+Messung steht in `agents.todo.md` (Eintrag 2026-09-29, 12:28) — und sie
+praezisiert eine Formulierung, die sonst falsch gelesen wird: `/api/info`
+liefert ueber die Domain **302**, `/api/me` liefert **401**. Beides heisst
+„nicht authentifiziert", die Form ist aber verschieden. Wer das verwechselt,
+sucht das Basic-Problem an der falschen Stelle.
+
+### Einrichtung auf dem Mac
+
+Zwei Zeilen in `~/.zshrc`, mehr ist es nicht:
+
+```zsh
+# Passwort = OPENCODE_PASSWORD aus der globalen Caddyfile,
+#            Block remote-code.all-the.rest (header_up Authorization)
+export OPENCODE_REMOTE="code-dev.<tailnet>.ts.net:8080"
+export OPENCODE_PASSWORD="<base64-dekodiert aus __OPENCODE_BASIC__>"
+alias ocdev="opencode --server http://$OPENCODE_REMOTE"
+```
+
+```zsh
+source ~/.zshrc
+ocdev                                  # im CWD des Projekts auf dem VPS
+ocdev /projects/mein-projekt           # oder gleich mit Verzeichnis
+```
+
+Es ist `opencode --server`, **nicht** `opencode attach` — das war V1-Syntax und
+existiert in V2 nicht. Ausserdem wird **kein** eigener `opencode service`-Daemon
+auf dem VPS gebraucht: `code-dev` startet `opencode serve` im Entrypoint bereits
+selbst, auf Port 8080, gebunden auf `0.0.0.0`.
+
+### Woher das Passwort kommt
+
+`opencode --server` liest das Serverpasswort **ausschliesslich aus der
+Environment** (`OPENCODE_PASSWORD`); ein Flag dafuer gibt es nicht. Der Wert ist
+derselbe, den Caddy im Block `remote-code.all-the.rest` per `header_up
+Authorization` injiziert — es gibt damit **kein zweites** Secret.
+`__OPENCODE_BASIC__` ist `base64("opencode:$OPENCODE_PASSWORD")`, also base64 vom
+**Paar**, nicht vom Passwort allein. Dekodieren:
+
+```bash
+grep -h 'header_up Authorization' <globale-Caddyfile> \
+  | grep -o 'Basic [A-Za-z0-9+/=]*' | cut -d' ' -f2 | base64 -d
+# => opencode:<OPENCODE_PASSWORD>
+```
+
+Achtung: die Caddyfile enthaelt **zwei** Bloecke mit **verschiedenen**
+Passwoertern — `code.all-the.rest` (Mac-Tunnel) und `remote-code.all-the.rest`
+(VPS). Der passende ist der zweite; `grep` ueber die ganze Datei liefert beide.
+
+### Was dabei beachtet werden muss
+
+- **Alles laeuft auf dem Server.** Sessions, Tools, Permissions, MCP-Server und
+  Provider-Credentials liegen in `code-dev`. Die lokale `~/.config/opencode` des
+  Mac wird **nicht** gelesen — bis auf das Passwort in der `.zshrc` hat die
+  lokale OpenCode-Installation fuer diese Verbindung keine Bedeutung mehr.
+- **Verzeichnisse muessen auf `code-dev` existieren.** `ocdev ~/dev/irgendwas`
+  zeigt ins Leere, weil der Pfad **im Container** aufgeloest wird, nicht auf dem
+  Mac. Der Projekt-Weg ist der Bind-Mount aus `remote/AGENTS.md` §14
+  (`/projects` = `/srv/dev-projects`).
+- **Der Tailnet-Weg hat kein Gate.** Port 8080 ist direkt erreichbar; wer ihn
+  erreicht, hat das Serverpasswort. Das ist dieselbe Auth-Stufe wie ein 401 auf
+  `/api/info` — kein Feature-Bruch, aber der Grund, warum Regel 6 in
+  `remote/AGENTS.md` §15 den oeffentlichen Weg **nicht** ersetzt.
+- **SSE laeuft ueber dieselbe Verbindung** wie im Browser. Schlaeft der Mac
+  ein, bricht der Stream ab; die Session auf dem Server laeuft weiter, der
+  Client haengt sich beim naechsten Start wieder dran.
+
+### Die vier Meldungen, die der Client bei `--server` ausgibt
+
+| Meldung | Ursache |
+|---|---|
+| `Could not reach server at <url>` | Tailscale aus, falscher Host/Port, `code-dev` down |
+| `Server at <url> requires a password; set OPENCODE_PASSWORD` | Env fehlt in der Client-Shell |
+| `Server at <url> rejected the password` | `OPENCODE_PASSWORD` != Wert in `.env.production` (siehe `remote/AGENTS.md` §13) |
+| `Server at <url> did not provide a compatible V2 health response` | Antwort kam, ist aber keine V2-`/api/info` — meist falscher Port, z. B. 4096 statt 8080 |
+
+Die letzten beiden unterscheiden „falsches Passwort" von „falscher Endpoint".
+Ohne diese Tabelle sucht man bei einem Port-Fehler im Passwort.
+
+### Verifikation (read-only, vom Mac)
+
+```bash
+# 1. Erreichbarkeit + Auth, ohne TUI
+curl -s -u "opencode:$OPENCODE_PASSWORD" "http://$OPENCODE_REMOTE/api/info"
+# => {"version":"2.0.19","pid":1,...}
+
+# 2. derselbe Weg ueber den OpenCode-Client
+opencode api get /api/info --server "http://$OPENCODE_REMOTE"
+
+# Gegenprobe ohne Passwort: muss 401 sein
+curl -s -o /dev/null -w '%{http_code}\n' "http://$OPENCODE_REMOTE/api/info"
+```
+
+Gemessen am 2026-09-29: (1) `{"version":"2.0.19","pid":1,"urls":["http://172.24.0.4:8080"]}`,
+(2) identisch, Gegenprobe `401`.
+
+**Falle bei Schritt 2 in nicht-interaktiven Shells.** `opencode api` und die TUI
+brauchen `OPENCODE_PASSWORD` aus der Environment. In `zsh -c`, in CI oder in
+einem Skript ist sie nicht exportiert, und der Aufruf endet mit
+`UnauthorizedError: Authentication required` — das sieht wie ein Server-Problem
+aus und ist keins. Mit gesetztem Wert funktioniert derselbe Befehl.
 
 ---
 
