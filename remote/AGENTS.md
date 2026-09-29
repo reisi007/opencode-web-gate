@@ -156,12 +156,57 @@ Schritten angehoben: 2g/5g → **3g/6g** (gegen die Kills), dann 3g/6g →
 **4g/8g** (README, *RAM- und Swap-Limits*).
 
 **Und 3 GB hat nur knapp gereicht.** Nachmessung am 3g-Deckel:
-`memory.peak` = 3221229568 bei `memory.max` = 3221225472, `memory.current` bei
-86 % — aber 0 OOM-Kills. Das ist die Signatur eines Deckels, der **berührt**
-wurde und den Kernel nur durch Reclaimen gerettet hat, nicht eines mit Luft
-nach oben. **Wer einen RAM-Deckel als „fixiert" abhakt, prüft `memory.peak`
-gegen `memory.max`, nicht die Kill-Zahl: null Kills heisst nicht, dass die
-Decel stimmt.**
+`memory.peak` auf der Decel, `memory.current` bei 86 % — aber 0 OOM-Kills.
+Damit war 3 GB zu niedrig, weil `rustc`/`rust-lld` **anon**-Speicher
+brauchen und der nicht reclaimbar ist. Wer einen RAM-Deckel als „fixiert"
+abhakt, muss also `anon` prüfen — nicht die Kill-Zahl und nicht
+`memory.peak`. Beide sind irrefuehrend, siehe den naechsten Abschnitt.
+
+**Und 3 GB hat nur knapp gereicht.** Nachmessung am 3g-Deckel:
+`memory.peak` auf der Decel, `memory.current` bei 86 % — aber 0 OOM-Kills.
+Damit war 3 GB zu niedrig, weil `rustc`/`rust-lld` anon-Speicher brauchen und
+der nicht reclaimbar ist. Auf **4 GB** ist derselbe Lastfall entspannt.
+
+### Der RAM-Deckel wird an `anon` gemessen, nicht an `memory.current`
+
+**Die wichtigste Korrektur an dieser ganzen Analyse.** `memory.current`
+enthält den **reclaimbaren File-Cache** — bei einem Playwright- oder
+Vite-Lauf füllt der das Deckel fast voll, ohne dass irgendwo ein echtes
+Speicherproblem existiert. Live gemessen am 2026-09-29, 16:36, bei 95 %
+`memory.current`:
+
+| | MB | Anteil am 4-GB-Deckel |
+|---|---|---|
+| reclaimbarer File-Cache (`file`) | 2821 | 69 % |
+| **anon (echter Prozess-Speicher)** | **929** | **23 %** |
+| `slab_unreclaimable` | 5 | — |
+| `pagetables` + `shmem` + `slab_reclaimable` | 45 | 1 % |
+
+**OOM-relevant sind nur `anon` + `slab_unreclaimable` — hier 934 MB von 4096 MB,
+23 %.** Für echte Allokation waren noch 3,1 GB frei. Der Kernel hat den Cache
+recycled statt zu killen, `oom_kill 0` war also das richtige Ergebnis.
+
+Daraus die Regeln, die beim Korrigieren teuer wurden:
+
+- **`memory.current` hoch heisst nichts.** Nach jedem Vite-, Playwright- oder
+  `cargo`-Lauf ist es nahe an voll, weil Cache aus `node_modules` und
+  Target-Verzeichnissen liegt. Wer daraus „der Deckel ist zu klein" ableitet,
+  hebt Limits an, die nicht das Problem sind.
+- **`memory.peak` über `memory.max` ist KEIN Alarm**, solange `anon` niedrig
+  war. `peak` zählt Cache mit. Ein OOM entsteht nur, wenn `anon` die Decel
+  erreicht. **Die erste Fassung dieser Notiz behauptete das Gegenteil** und
+  wurde am selben Abend durch eine Fehlalarm-Meldung widerlegt: 95 %
+  `memory.current` gemeldet, obwohl nur 23 % nicht-reclaimbar waren.
+- **Die echte Frage ist: war `anon` am Limit?** `rustc`/`rust-lld` brauchen
+  220–920 MB **anon** pro Instanz, das ist der Grund fuer jeden Kill hier.
+  Ein 4-GB-Deckel ist genau dann richtig, wenn parallele Builds zusammen
+  unter ~3 GB `anon` bleiben.
+- **Messen so:**
+  ```sh
+  CG=/sys/fs/cgroup/system.slice/docker-$(docker inspect -f '{{.Id}}' code-dev).scope
+  grep -E '^(anon|file|slab_unreclaimable) ' $CG/memory.stat
+  grep -E 'oom_kill' $CG/memory.events
+  ```
 
 **Die 4 GB machen den Host zur knappsten Stelle im ganzen Setup.**
 code-dev 4g + dind 2,5g + Portal ~0,5g + OS ~0,7g = ~7,7 GB bei 7,5 GB. Erreichen
