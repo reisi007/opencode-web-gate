@@ -148,11 +148,31 @@ gemessen), Limits an inneren Containern greifen nicht (kein systemd im Container
 Dieselbe OOM-Logik wie beim DinD, nur dass der Treffer hier `opencode serve` ist
 und der laeuft als **PID 1**. PID 1 killen = der Container stirbt =
 `restart: unless-stopped` = **die Sitzung ist weg**. Am 2026-09-29 gemessen: 8
-OOM-Kills in 24 h, Ausloeser jedes Mal `cargo build` (parallele `rustc` mit
-220–920 MB pro Instanz bei 3 Cores). Opfer-Bilanz: 3x rustc, aber **5x PID 1**.
-Deshalb war die Erscheinung von aussen „nicht regelmaessig" — sie hing nur
-daran, OB gerade Rust kompiliert wurde. Limits deshalb von 2g/5g auf
-**3g/6g** angehoben (README, *RAM- und Swap-Limits*).
+OOM-Kills in 24 h, Ausloeser jedes Mal `cargo build` (parallele `rustc`/`rust-lld`
+mit 220–920 MB pro Instanz bei 3 Cores). Opfer-Bilanz: 3x rustc, aber **5x
+PID 1**. Deshalb war die Erscheinung von aussen „nicht regelmaessig" — sie
+hing nur daran, OB gerade Rust kompiliert wurde. Limits deshalb in zwei
+Schritten angehoben: 2g/5g → **3g/6g** (gegen die Kills), dann 3g/6g →
+**4g/8g** (README, *RAM- und Swap-Limits*).
+
+**Und 3 GB hat nur knapp gereicht.** Nachmessung am 3g-Deckel:
+`memory.peak` = 3221229568 bei `memory.max` = 3221225472, `memory.current` bei
+86 % — aber 0 OOM-Kills. Das ist die Signatur eines Deckels, der **berührt**
+wurde und den Kernel nur durch Reclaimen gerettet hat, nicht eines mit Luft
+nach oben. **Wer einen RAM-Deckel als „fixiert" abhakt, prüft `memory.peak`
+gegen `memory.max`, nicht die Kill-Zahl: null Kills heisst nicht, dass die
+Decel stimmt.**
+
+**Die 4 GB machen den Host zur knappsten Stelle im ganzen Setup.**
+code-dev 4g + dind 2,5g + Portal ~0,5g + OS ~0,7g = ~7,7 GB bei 7,5 GB. Erreichen
+beide Dev-Container ihre Deckeln gleichzeitig — Normalfall, weil der Agent in
+`code-dev` per cargo baut und parallel im Daemon per docker baut —, feuert der
+**Host**-OOM-Killer, und der nimmt global den größten Prozess: `mariadbd`.
+Ein Dev-Build wäre dann ein Produktionsausfall. Am 2026-09-29 bewusst so
+entschieden (Entscheidung des Menschen), ohne dind zu senken. **Merksatz: die
+RAM-Limits dieses Stacks summieren sich gegen einen Host, der zugleich
+Produktion fährt.** Wer hier nächstes Mal „nur ein bisschen mehr" sagt, muss die
+Summe gegenrechnen, nicht den einzelnen Container.
 
 Merksatz fuer die naechste Anpassung: **`code-dev` ist interaktiv, also darf hier
 nichts den PID-1-Pfad ausloesen.** Ein Weg, den jemand „zur Haushalts-
@@ -166,6 +186,8 @@ scheitert. Live gemessen am 2026-09-29: `memory.swap.current` stand auf **0**,
 obwohl `memswap_limit` 3 GB erlaubt waren und der OOM-Killer parallel feuerte.
 
 Also: `memswap_limit` auf diesem Host **deckelt nur**, er puffert nicht. Der
+Bei `code-dev` 4g/8g sind die vier Swap-GB damit eine Zahl und keine Reserve —
+wer sie als Absicherung verbucht, rechnet mit Luft, die es nicht gibt. Der
 RAM-Deckel ist die einzige wirksame Stellschraube. `vm.swappiness` zu aendern
 waere der naechste logische Schritt, wird aber **nicht** gemacht: es wirkt
 hostweit, also auch auf Caddy und die MariaDB der Produktion, und die gehoeren
@@ -179,12 +201,18 @@ gerade gearbeitet wird, ist das der einzige Weg, der niemanden bricht:
 
 ```sh
 CG=/sys/fs/cgroup/system.slice/docker-$(docker inspect -f '{{.Id}}' code-dev).scope
-echo 3221225472 > "$CG/memory.max"   # 3 GiB
+echo 4294967296 > "$CG/memory.max"   # 4 GiB
 ```
 
-**Nur eine Bruecke.** Beim naechsten Recreate (Watchtower, Stack-Deploy) ist der
-Wert weg; es zaehlt ausschliesslich, was in der Compose-Datei steht. Die
-Compose-Datei nachzuziehen ist Pflicht, nicht optional.
+**Nur eine Bruecke, und sie ist obendrein fehleranfaellig** (2026-09-29
+gemessen): bei jedem `docker restart` wendet Docker die `HostConfig`-Limits
+erneut an und überschreibt den Direktwert. Im Test haben **drei Restarts**
+innerhalb von 90 Minuten das geschriebene Limit zurückgesetzt — auf den Wert
+der Compose-Datei von Erstellungszeit. Der OOM-Killer feuerte deshalb weiter,
+während `memory.max` korrekt aussah. **Ein direkt geschriebenes `memory.max`
+gilt bis zum nächsten *Restart*, nicht bis zum nächsten Recreate.** Wer das
+als Fix verbucht, hält sich für behoben, wo nichts behoben ist: die
+Compose-Datei ist der einzige Ort, der dauerhaft wirkt.
 
 ## 10. Autoupdate: SIGTERM an PID 1 ist der Mechanismus
 

@@ -29,16 +29,39 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   3. **Der In-Container-Auto-Updater** (`OPENCODE_AUTOUPDATE=true`, alle 20 min,
      Fenster 07–23 Uhr) killt PID 1 per `kill -TERM 1`, wenn ein Update
      anliegt und der Server idle ist. Seltenster der drei Pfade.
-  **Umgesetzt:** `mem_limit` 2g → **3g**, `memswap_limit` 5g → **6g**, in der
-  Repo-Compose **und** auf dem VPS (Backup
-  `docker-compose.yml.bak-memlimit-20260929-141149`). Wichtig: `MEMORY_LIMIT`/
-  `MEMSWAP_LIMIT` sind in `stack.env` **nicht** gesetzt, es griffen also die
-  Defaults aus der Compose-Datei — deshalb genügt die Datei-Aenderung.
-  **Live entschaerft ohne Recreate:** `memory.max` direkt ins laufende cgroup
-  geschrieben (3 GiB), weil zwei Sessions aktiv waren (eine war meine eigene).
-  Die Compose-Aenderung ist trotzdem Pflicht — beim naechsten Recreate waere
-  der Direktwert wieder weg. `remote/README.md` und `remote/AGENTS.md` §9
-  nachgezogen.
+  **Umgesetzt, in drei Etappen — die ersten beiden haben sich als Fehler
+  erwiesen und sind hier festgehalten, weil beide plausibel aussahen:**
+  1. **`memory.max` direkt ins laufende cgroup geschrieben** (3 GiB), weil
+     zwei Sessions aktiv waren. **Das war falsch.** Bei jedem `docker restart`
+     wendet Docker die `HostConfig`-Limits erneut an und ueberschreibt den
+     Direktwert. Im Test haben **drei Restarts in 90 Minuten** das Limit
+     zurueckgesetzt, der OOM-Killer feuerte weiter, waehrend `memory.max`
+     korrekt aussah. **Ein direkt geschriebenes `memory.max` gilt bis zum
+     naechsten *Restart*, nicht bis zum naechsten Recreate.** Nur die
+     Compose-Datei wirkt dauerhaft.
+  2. **Recreate mit 3g/6g** — hat funktioniert, aber nur knapp: 0 OOM-Kills,
+     `memory.peak` = 3221229568 bei `memory.max` = 3221225472, `memory.current`
+     bei 86 %. Peak auf der Decel = beruehrt, gerettet nur durch Reclaimen.
+     **Null Kills ist kein Beweis fuer einen passenden Deckel.**
+  3. **Final: 4g/8g** (RAM + Swap gesamt), dind 2,5g/5g. Recreated, weil keine
+     Session aktiv war. Backups auf dem VPS: `*.bak-memlimit-*`,
+     `*.bak-dindlimit-*`, `*.bak-cd4g-*`.
+  **Merksatz zum Pruefen kuenftiger Deckel: `memory.peak` gegen `memory.max`**
+  lesen, nicht die Kill-Zahl.
+  **Die 4 GB machen den Host zur knappsten Stelle:** code-dev 4g + dind 2,5g
+  + Portal ~0,5g + OS ~0,7g = ~7,7 GB bei 7,5 GB. Erreichen beide Dev-Container
+  ihre Deckeln gleichzeitig (Normalfall: cargo in code-dev, docker im Daemon),
+  feuert der **Host**-OOM-Killer und der nimmt global den groessten Prozess —
+  `mariadbd`. Ein Dev-Build als Produktionsausfall. Bewusst so entschieden
+  (Entscheidung des Menschen), **ohne** dind zu senken. Rueckschranke: dind auf
+  2g, dann ~0,3-0,5 GB Luft.
+  **Prod-Container (`portal_db`, `portal_search`, `caddy`, `portal_backend`)
+  bewusst ohne Limit gelassen** (Entscheidung des Menschen): keines hatte je
+  ein OOM, und ein zu knapper Deckel auf MariaDB waere ein Produktionsausfall.
+  `MEMORY_LIMIT`/`MEMSWAP_LIMIT` sind in `stack.env` **nicht** gesetzt, es
+  greifen also die Defaults aus der Compose-Datei — deshalb genuegt die
+  Datei-Aenderung, ein Portainer-DB-Patch ist nicht noetig (die DB haelt nur die
+  Env, siehe §17). `remote/README.md` und `remote/AGENTS.md` §9 nachgezogen.
   **Nebenbefund mit Relevanz:** das Swap-Sicherheitsnetz hat **nie gegriffen**
   — `memory.swap.current` stand auf 0, obwohl 3 GB erlaubt waren. Ursache
   `vm.swappiness=0` auf dem Host: der Kernel swapped erst bei **global** RAM-

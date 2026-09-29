@@ -22,11 +22,12 @@
 #   SESSION_TTL         default 43200
 #   IMAGE               default ghcr.io/reisi007/opencode-web-dev-baseline:latest
 #   CPU_CORES           default 3: maximale CPU-Kerne fuer code-dev
-#   MEMORY_LIMIT        default 3g: RAM-Limit fuer code-dev
-#                         (2026-09-29 von 2g angehoben — 2g hat im Betrieb
-#                         reproduzierbar cgroup-OOM-Kills ausgeloest, siehe
-#                         README, Abschnitt "RAM- und Swap-Limits")
-#   MEMSWAP_LIMIT       default 6g: RAM+Swap GESAMT fuer code-dev (3 GB Swap).
+#   MEMORY_LIMIT        default 4g: RAM-Limit fuer code-dev
+#                         (2026-09-29 zweimal angehoben: 2g -> 3g gegen die
+#                         OOM-Kills, dann 3g -> 4g, weil am 3g-Deckel
+#                         memory.peak die Decel exakt beruehrte. Details und
+#                         Messwerte: README, Abschnitt "RAM- und Swap-Limits")
+#   MEMSWAP_LIMIT       default 8g: RAM+Swap GESAMT fuer code-dev (4 GB Swap).
 #                         MUSS groesser sein als MEMORY_LIMIT, weil Docker
 #                         memory.swap.max = MEMSWAP_LIMIT - MEMORY_LIMIT setzt.
 #                         Ohne diesen Wert ist der Swap-Deckel exakt
@@ -34,9 +35,11 @@
 #                         NIE gegriffen, weil vm.swappiness=0 auf dem Host
 #                         gesetzt ist. Details und Messwerte: README,
 #                         Abschnitt "RAM- und Swap-Limits".
-#   DIND_MEMORY_LIMIT   default 1300m: RAM-Limit fuer den dind-Daemon
-#   DIND_MEMSWAP_LIMIT  default 3g: RAM+Swap gesamt fuer den dind-Daemon
-#                         (1,7 GB Swap fuer Builds im Daemon)
+#   DIND_MEMORY_LIMIT   default 2.5g: RAM-Limit fuer den dind-Daemon
+#                         (2026-09-29 von 1300m angehoben — 2 OOM-Kills am
+#                         26.09.: dockerd und dd, beide im DinD-cgroup)
+#   DIND_MEMSWAP_LIMIT  default 5g: RAM+Swap gesamt fuer den dind-Daemon
+#                         (2,5 GB Swap fuer Builds im Daemon)
 #   DIND_CPU_CORES      default 2: CPU-Quota fuer den dind-Daemon
 #   TS_AUTHKEY          optional: Tailscale-Auth-Key. LEER = Stack laeuft ohne
 #                         Tailnet. Setzen erlaubt den privaten Zugriff auf
@@ -86,7 +89,8 @@ services:
     # memswap_limit setzt man, um das VERHaelTNIS zu bestimmen und den
     # Gesamt-Fussabd (RAM+Swap) hart zu deckeln — nicht um Swap zu eroeffnen.
     #
-    # 3g RAM + 3g Swap = 6g gesamt. 2026-09-29 von 2g/5g angehoben.
+    # 4g RAM + 4g Swap = 8g gesamt. 2026-09-29 in zwei Schritten: erst
+    # 2g/5g -> 3g/6g (gegen die OOM-Kills), dann 3g/6g -> 4g/8g.
     #
     # GRUND, gemessen am 2026-09-29 (8 OOM-Kills in 24 h, alle in DIESEM
     # cgroup, kein anderer Container auffaellig): Mit 2g RAM hat der
@@ -109,11 +113,25 @@ services:
     # hostweit hochsetzen — das wirkt dann aber auch auf Caddy/MariaDB und
     # ist deshalb hier nicht passiert.
     #
-    # Rechnung gegen 7,5 GB Host-RAM: code-dev 3g + dind 1,3g + Portal ~0,5g
-    # + OS ~0,3g = ~5,1 GB, bleibt ~2,4 GB Reserve. 4g waere ebenfalls
-    # moeglich, laesst aber nur ~1,4 GB Luft fuer die Produktion.
-    mem_limit: ${MEMORY_LIMIT:-3g}
-    memswap_limit: ${MEMSWAP_LIMIT:-6g}
+    # NACHMESSUNG am 3g-Deckel (2026-09-29, 15:57-16:01): 0 OOM-Kills, aber
+    # memory.peak = 3221229568 bei memory.max = 3221225472 — die Decel wurde
+    # exakt beruehrt, und memory.current stand bei 86 %. Der 3g-Deckel hat also
+    # nicht "mit Luft nach oben" gehalten, sondern nur gerade noch: der Kernel
+    # konnte diesmal reclaimen statt zu killen. Deshalb 4g.
+    #
+    # ACHTUNG, die Rechnung wird ab hier ENG:
+    #   code-dev 4g + dind 2,5g + Portal ~0,5g + OS/dockerd ~0,7g = ~7,7 GB
+    # bei 7,5 GB Host-RAM. Die beiden Dev-Container erreichen ihre Deckeln
+    # moeglichst GLEICHZEITIG, weil der Agent in code-dev per cargo baut und
+    # parallel im Daemon per docker baut. Wenn beide wirklich an ihre Grenze
+    # gehen, feuert der HOST-OOM-Killer — und der nimmt global den groessten
+    # Prozess, was mariadbd sein kann. Das ist ein Produktionsausfall, weil
+    # ein Dev-Build zu gross war.
+    # Das Risiko wurde am 2026-09-29 bewusst so entschieden (Entscheidung des
+    # Menschen) und nicht durch Senken von dind entschaerft. Wer es zurueck
+    # nehmen will: dind auf 2g senken, dann bleiben ~0,3-0,5 GB Luft.
+    mem_limit: ${MEMORY_LIMIT:-4g}
+    memswap_limit: ${MEMSWAP_LIMIT:-8g}
     environment:
       # OPENCODE_PASSWORD ist der aktuelle Name; OPENCODE_SERVER_PASSWORD bleibt
       # als Legacy-Fallback für Entrypoint/Caddy und ältere OpenCode-Versionen.
@@ -208,12 +226,19 @@ services:
     # nur code-remote-dind (restart: unless-stopped, startet neu), waehrend
     # die code-dev-Session weiterlaeuft.
     cpus: ${DIND_CPU_CORES:-2}
-    # 1300m RAM + 1772m Swap = 3g gesamt. Da memswap_limit = 3g gesamt ist,
-    # setzt Docker memory.swap.max auf 3g - 1300m. RAM knapper, Swap grosszuegiger
-    # als bei code-dev: Builds im Daemon sind Batch-Arbeit, die Latenz des
-    # Daemons ist egal, code-dev ist interaktiv und darf nicht swappen.
-    mem_limit: ${DIND_MEMORY_LIMIT:-1300m}
-    memswap_limit: ${DIND_MEMSWAP_LIMIT:-3g}
+    # 2.5g RAM + 2.5g Swap = 5g gesamt. 2026-09-29 von 1300m/3g angehoben.
+    # Grund: am 2026-09-26 hat dieser cgroup zweimal gefeuert (dockerd und dd).
+    # Derselbe Haken wie bei code-dev, nur harmloser: der groesste Prozess im
+    # DinD-cgroup ist der dind-Daemon, also stirbt der Daemon und nicht der
+    # schuldige Build — der Agent sieht einen abgebrochenen Build, nicht die
+    # eigene Sitzung. Genau deshalb sind die Limits getrennt (siehe oben).
+    # Rechnung gegen 7,5 GB Host-RAM: code-dev 4g + dind 2,5g + Portal ~0,5g
+    # + OS ~0,7g = ~7,7 GB, es bleiben ~0,8 GB. Das ist bewusst eng: beide
+    # erreichen ihre Deckel moeglichst GLEICHZEITIG, weil der Agent in
+    # code-dev per cargo baut und parallel im Daemon per docker baut. Wer hier
+    # mehr Luft braucht, muss code-dev senken, nicht dind.
+    mem_limit: ${DIND_MEMORY_LIMIT:-2.5g}
+    memswap_limit: ${DIND_MEMSWAP_LIMIT:-5g}
     # Die drei Eintraege sind NOTWENDIG, nicht Kosmetik — jeweils einzeln
     # getestet, alle drei zusammen laeuft es erst:
     #   seccomp=unconfined     Default-seccomp blockt unshare(CLONE_NEWUSER),
