@@ -92,7 +92,20 @@ services:
     # code-dev und ist damit ueber 127.0.0.1 erreichbar — ganz ohne Docker.
     # Details und die Alternativen: remote/README.md
     volumes:
-      - code-remote-projects:/projects
+      # BIND-MOUNT auf einen 100-GB-Loopback (ext4), NICHT das Named Volume
+      # code-remote-projects. Beide code-dev UND dind muessen denselben Pfad
+      # nutzen, sonst laufen die Dateien auseinander.
+      #   Datei (sparse)  /srv/dev-100g.img   -> hostseitiger Zustand, fstab
+      #   Mountpoint      /srv/dev-projects   -> UUID steckt am Loop, s. fstab
+      # Pfad MUSS identisch bleiben mit /etc/fstab auf dem VPS. Beim Umstieg
+      # 2026-09-29 kam das Named Volume (31 GB) hierher; es ist seither leer
+      # und wird nicht mehr verwendet. Warum Bind-Mount und kein Volume-Pfad
+      # unter /var/lib/docker/volumes: Portainer/Docker koennte einen Volume-
+      # Pfad als verwaist einstufen und wegrationalisieren — der Pfad unter
+      # /srv ist fuer Docker ein ganz normaler Host-Pfad. Details und die
+      # Revert-Historie (2026-09-27): remote/README.md, Abschnitt "100-GB-
+      # Loopback fuer /projects".
+      - /srv/dev-projects:/projects
       - gh-config:/home/dev/.config/gh
       - gh-ssh:/home/dev/.ssh
       - opencode-data:/home/dev/.local/share/opencode
@@ -175,7 +188,9 @@ services:
     # auf, inklusive 2375. Festes '--host=...' verletzt das (dann laeuft er auf
     # 2376 und 2375 bleibt zu).
     volumes:
-      - code-remote-projects:/projects
+      # GLEICHER Bind-Mount wie bei code-dev — bewusst identisch, damit beide
+      # Container dieselben Dateien sehen. Siehe Kommentar dort.
+      - /srv/dev-projects:/projects
       # ACHTUNG, der Mount-Pfad ist NICHT /var/lib/docker. Der rootless-Daemon
       # startet ohne --data-root und nutzt seinen Default fuer rootless:
       # $HOME/.local/share/docker = /home/rootless/.local/share/docker
@@ -500,7 +515,10 @@ networks:
     external: true
 
 volumes:
-  code-remote-projects:
+  # code-remote-projects ist ENTFALLEN (2026-09-29). /projects laeuft jetzt ueber
+  # den Bind-Mount /srv/dev-projects (100-GB-Loopback, ext4). Das alte Named
+  # Volume kann mit "docker volume rm dev-vm_code-remote-projects" geloescht
+  # werden, sobald der erste Lauf auf dem neuen Mount verifiziert ist.
   gh-config:
   gh-ssh:
   opencode-data:

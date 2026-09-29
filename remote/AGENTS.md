@@ -86,12 +86,16 @@ ein geteiltes Netz und werden per Containername angesprochen (`db:5432`,
 
 ## 8. Volumes sind Named Volumes, kein Docker-Wurzelverzeichnis
 
-`gh-config`, `gh-ssh`, `opencode-data/-config/-state` und
-`/var/lib/docker/volumes/projects-50g-mnt:/projects` tragen `gh auth`, SSH-Keys
-und den OpenCode-Zustand — sie ueberleben Image-Upgrades. Genau darum sind es
-Named Volumes. `gh auth login` ist nach einem Stack-Recreate **nicht** noetig
-und soll auch nicht dauernd noetig sein; wenn doch, ist ein Volume verloren
-gegangen, nicht das Passwort.
+`gh-config`, `gh-ssh`, `opencode-data/-config/-state` tragen `gh auth`,
+SSH-Keys und den OpenCode-Zustand — sie ueberleben Image-Upgrades. Genau darum
+sind es Named Volumes. `gh auth login` ist nach einem Stack-Recreate **nicht**
+noetig und soll auch nicht dauernd noetig sein; wenn doch, ist ein Volume
+verloren gegangen, nicht das Passwort.
+
+**Ausnahme `/projects`:** das ist seit 2026-09-29 ein Bind-Mount auf
+`/srv/dev-projects` (100-GB-Loopback), kein Named Volume. Siehe §14 — dort
+steht auch, warum ausgerechnet dieser Pfad *nicht* unter
+`/var/lib/docker/volumes` liegen darf.
 
 ## 9. RAM- und Swap-Limits: `memswap_limit` ist der **Gesamt**-Deckel
 
@@ -158,3 +162,74 @@ der Ursache sichtbar sein.
 Login der Login-Seite hat damit nichts zu tun. Ein 401 auf `/api/login` ist ein
 `AUTH_HASH`-Problem, ein 401 auf `/api/info` ein Basic-Problem. Diagnosebefehle
 stehen in [`../AGENTS.md`](../AGENTS.md) Abschnitt 5.
+
+## 14. `/projects` liegt auf einem 100-GB-Loopback — die sieben Regeln
+
+Seit 2026-09-29 haengt `/projects` an `/srv/dev-projects`, einem 100-GB-Loopback
+mit ext4. Der alte 50-GB-Versuch wurde am 2026-09-27 mit `c5d3c7b` **verworfen**
+und am 2026-09-29 mit 100 GB bewusst wieder aufgegriffen. Messwerte und
+Performance: [`README.md`](README.md), Abschnitt „100-GB-Loopback fuer
+`/projects`“.
+
+**Wer hier etwas aendert, ohne die Regeln zu kennen, macht den Dev-Container
+leer.** Deshalb einzeln:
+
+1. **`fstab`-Quelle ist die DATEI, nicht die UUID.** Die UUID haengt am
+   Loop-Device, das erst durch `losetup` entsteht — `mount -a` hat sie zum
+   Boot-Zeitpunkt also gar nicht. Mit UUID als Quelle getestet:
+   `failed to setup loop device for /dev/loop0`. Korrekt ist
+   `/srv/dev-100g.img /srv/dev-projects ext4 loop,defaults,noatime 0 2`.
+   Nebenstelle: der Dateipfad ist zugleich stabiler als jede UUID-Variante,
+   weil `/dev/loopN` pro Boot neu nummeriert wird.
+2. **`loop` in den Mount-Options ist Pflicht.** Ohne die Option setzt `mount`
+   beim Boot kein Loop-Device auf. Das ist kein „kosmetischer“ Eintrag.
+3. **Der Pfad muss in `fstab` und `docker-compose.yml` identisch sein.** Im
+   Compose steht `- /srv/dev-projects:/projects` **zweimal** — bei `code-dev`
+   und bei `dind`. Nur einer von beiden aendern laesst die Dateien auseinander
+   laufen; `code-dev` sieht dann einen anderen Bestand als der DinD-Daemon.
+4. **ext4, nicht XFS.** Nur ext4 hat `resize_inode` und kann damit
+   `resize2fs` nach unten. XFS kann ausschliesslich wachsen — das ist der
+   Grund, warum der Weg ueber eine zweite Platte die einzige Alternative mit
+   echtem Platz waere und ein Loop ueberhaupt noetig macht (XFS auf der
+   bestehenden `vda4` laesst sich nicht schrumpfen, die Partition ist die
+   letzte der GPT-Tabelle und haelt das Root-FS).
+5. **Bind-Mount auf `/srv`, niemals auf einen Pfad unter
+   `/var/lib/docker/volumes`.** Docker kann einen Volume-Pfad als verwaist
+   einstufen und wegrationalisieren; `/srv/dev-projects` ist fuer ihn ein
+   ganz normaler Host-Pfad. Deshalb heisst §8 fuer `/projects` „Ausnahme“.
+6. **Der Mountpoint muss `1000:1000` sein.** `code-dev` laeuft als uid 1000
+   (`dev`). Ein root-owned Mountpoint mit `755` laesst den Agenten zwar
+   lesen, aber nicht schreiben — und das faellt erst beim ersten Schreibversuch
+   auf. Beim Anlegen des Mountpoints explizit setzen.
+7. **Single Point of Failure, siehe unten.** Der Loop ist die *einzige* Kopie
+   der Projekte. Faellt der Mount beim Boot aus, startet `code-dev` mit leerem
+   `/projects` — und `gh repo clone` holt nur den Code zurueck, nicht
+   `node_modules`, `.env`-Fragmente oder uncommittete Arbeit.
+
+### Was der Weg gekauft hat — und was nicht
+
+Er hat **keinen Platz gespart, sondern einen Deckel.** Vorher 61 GB belegt,
+nachher 65 GB: die Daten liegen jetzt auf ext4 statt XFS, und ext4 belegt
+etwa 2 GB mehr (XFS packt File-Tails ueber Extents). Dafuehr gibt es jetzt
+97,87 GiB nutzbare Kapazitaet, die `rm -rf` nicht sprengen kann. Die Zahl
+100 ist die **Loop-Groesse**, nicht der nutzbare Platz — ext4 rechnet Journal
+und Inode-Tabellen ab.
+
+### Der Boot-Schutz, der noch fehlt
+
+Regel 7 ist real und derzeit **nicht abgesichert**. Es gibt keinen Check, der
+einen ausgefallenen Mount erkennt, bevor der Agent mit leerem `/projects`
+arbeitet. Naheliegend waere eine Pruefung in `bootstrap.sh` oder ein
+systemd-`ExecStartPre` auf `code-dev` auf `findmnt /srv/dev-projects`. **Nicht
+erfunden und nicht als erledigt fuehren.**
+
+### Nicht ins pCloud-Backup
+
+Absichtlich, und es muss auch so bleiben: `/usr/local/bin/volume-backup.sh`
+arbeitet mit einer **Allowlist** (4 explizit benannte Volumes plus
+`/home/webadmin/portal`, `/home/webadmin/websites`, `/opt/stacks`,
+`portainer_data/_data/compose`). `dev-vm_*` steht dort explizit als
+„Dev-Sandboxen, ~115 GB Muell“ in der Auschluss-Liste. `/srv` ist in keiner
+Quelle enthalten, die 100-GB-Datei wird also **nicht** gesichert — richtig so,
+sonst frisst sie das pCloud-Konto. Wer das Skript anfasst, darf die
+Allowlist **nicht** auf „alles unter /var/lib/docker“ umbauen.
