@@ -307,6 +307,28 @@ umstellt, setzt die Variablen im Stack-Env (die schlagen wiederum das Image).
 
 Kein Geheimnis, nur Anzeigename und Mailadresse fuer die Commit-Metadaten.
 
+### Und `git push` ohne Prompt
+
+`gh auth setup-git` schreibt seinen Credential-Helper nach **`~/.gitconfig`**
+(verifiziert: `git config --list --show-origin | grep credential` zeigt
+`/home/dev/.gitconfig`). Dieselbe Datei ueberlebt keinen Recreate. Live
+beobachtet: Nach einem Container-Neustart war der Helper weg und `git push
+origin main` brach ab mit
+
+```
+fatal: could not read Username for 'https://github.com': No such device or address
+```
+
+obwohl `gh auth status` weiterhin gueltig war (Token in `gh-config`, ein
+Volume, also persistent). Der Entrypoint setzt den Helper deshalb bei jedem
+Start neu. Wer das entfernt, muss nach jedem Recreate `gh auth setup-git`
+von Hand laufen lassen, sonst pushen nur noch Sessions, die es einmal gemacht
+haben.
+
+Fuer einen Commit mit anderem Autor: `env -u GIT_AUTHOR_NAME -u
+GIT_AUTHOR_EMAIL git commit ...` (ENV schlaegt `user.name`, siehe Tabelle
+oben).
+
 ### Ist `/tmp/opencode` nicht beschreibbar?
 
 `/tmp/opencode` (Scratch der Agent-Tools) wird **root:root 755** angelegt, nicht

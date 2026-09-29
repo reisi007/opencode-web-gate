@@ -35,6 +35,22 @@ else
   echo "WARN: GIT_AUTHOR_NAME/GIT_AUTHOR_EMAIL fehlen im Image -> Commits ohne Identitaet moeglich"
 fi
 
+# Git-Push ueber den gh-Token, ohne dass eine ~/.gitconfig vom Recreate
+# abhaengt. `gh auth setup-git` schreibt seinen Credential-Helper in
+# ~/.gitconfig — und die Datei ueberlebt hier keinen Neustart (siehe oben).
+# Live beobachtet: Helper nach einem Container-Neustart weg, daraufhin
+# `fatal: could not read Username for 'https://github.com'`, obwohl
+# `gh auth status` weiterhin gueltig war. Deshalb wird er hier bei jedem
+# Start neu gesetzt. Das Volume gh-config (mit hosts.yml und Token) ist
+# persistent, der Helper damit auch wirklich nutzbar.
+if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+  gh auth setup-git >/dev/null 2>&1 \
+    && echo "git: push-Credentials via gh-Token (Helper in ~/.gitconfig)" \
+    || echo "WARN: gh auth setup-git fehlgeschlagen -> git push bricht evtl. mit 'could not read Username' ab"
+else
+  echo "WARN: gh nicht angemeldet -> git push nicht moeglich (einmalig: gh auth login)"
+fi
+
 if ! command -v gh >/dev/null 2>&1; then
   echo "WARN: gh fehlt im Image"
 else
