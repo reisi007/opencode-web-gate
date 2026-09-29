@@ -149,6 +149,25 @@ ENV HOME=/home/dev \
     DOCKER_HOST=tcp://dind:2375 \
     OPENCODE_DISABLE_AUTOUPDATE=true
 
+# Git-Identitaet. Warum ENV und nicht `git config --global`:
+# ~/.gitconfig liegt NICHT in einem Volume (/home/dev ist selbst kein Mount),
+# waere also nach jedem Stack-Recreate wieder weg — dann faellt Git auf
+# user.name aus dem Repo-Config zurueck, oder bricht bei einem frischen
+# `git init` ganz ohne Identitaet ab. Mit ENV im Image ist die Identitaet in
+# JEDEM Container vorhanden, unabhaengig vom Startpfad.
+#
+# Gemessen (Git 2.x): GIT_AUTHOR_NAME/-EMAIL und GIT_COMMITTER_NAME/-EMAIL
+# werden unabhaengig voneinander ausgewertet und schlagen jede
+# user.name/user.email aus .git/config. Wer sie per Stack-Env ueberschreibt
+# (z. B. fuer einen anderen Autor) gewinnt damit auch gegen das Image.
+#
+# Kein Geheimnis, keine Credential — nur Anzeigename und Mailadresse fuer die
+# Commit-Metadaten.
+ENV GIT_AUTHOR_NAME="Florian Reisinger" \
+    GIT_AUTHOR_EMAIL="florian.reisinger.at@gmail.com" \
+    GIT_COMMITTER_NAME="Florian Reisinger" \
+    GIT_COMMITTER_EMAIL="florian.reisinger.at@gmail.com"
+
 USER dev
 WORKDIR /projects
 EXPOSE 8080

@@ -279,6 +279,34 @@ Nicht sichtbar: `dind` und seine Testcontainer (`db:5432`, `mailpit:8025`) sowie
 `code-auth-remote:8081` — andere Netzraeume, siehe §7. Wer von aussen auf eine
 DB im DinD will, braucht einen Forwarder **in** `code-dev`, nicht `extra_hosts`.
 
+## 16. Git-Identitaet kommt aus dem Image, nicht aus `~/.gitconfig`
+
+`GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` / `GIT_COMMITTER_NAME` /
+`GIT_COMMITTER_EMAIL` stehen als `ENV` im `Dockerfile`; der Entrypoint
+schreibt dieselben Werte zusaetzlich per `git config --global`.
+
+**Warum nicht `~/.gitconfig` allein:** `/home/dev` ist selbst **kein** Mount
+(verifiziert: `mount | grep 'on /home/dev '` liefert nichts, nur die sechs
+Unterverzeichnisse sind Volumes). Eine `~/.gitconfig` waere damit nach jedem
+Stack-Recreate weg — Git faellt dann auf `user.name` aus dem Repo-Config
+zurueck, oder bricht bei einem frischen `git init` ganz ohne Identitaet ab.
+
+**Gemessen (Git 2.x, Wegwerf-Repos mit `HOME` auf leerem Verzeichnis):**
+
+| Konstellation | Ergebnis |
+|---|---|
+| nur `ENV` | `Florian Reisinger <florian.reisinger.at@gmail.com>` |
+| `ENV` + `git config --global` | identisch (beide Wege nennen dieselbe Person) |
+| `ENV` + abweichende lokale `user.name` | **`ENV` gewinnt** |
+
+**Konsequenz aus der letzten Zeile:** `GIT_AUTHOR_*` schlaegt jede
+`user.name`/`user.email` aus `.git/config`. Wer fuer EINEN Commit einen anderen
+Autor will, braucht darum `env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL git
+commit ...` — ein `git config user.name` im Repo genuegt nicht. Wer dauerhaft
+umstellt, setzt die Variablen im Stack-Env (die schlagen wiederum das Image).
+
+Kein Geheimnis, nur Anzeigename und Mailadresse fuer die Commit-Metadaten.
+
 ### Ist `/tmp/opencode` nicht beschreibbar?
 
 `/tmp/opencode` (Scratch der Agent-Tools) wird **root:root 755** angelegt, nicht
