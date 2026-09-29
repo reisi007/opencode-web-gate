@@ -8,7 +8,7 @@
 * Stack `code-remote` (`docker-compose.yml` hier): `code-dev` + isolierter
   `dind`-Daemon + eigener `code-auth-remote`. Nur Netz `code-remote` — kein `webnet`,
   daher keine Prod-Container per Name erreichbar, Internet via NAT ok.
-  `code-dev` ist standardmäßig auf 3 CPU-Kerne, 3 GB RAM **plus 3 GB Swap**
+  `code-dev` ist standardmäßig auf 3 CPU-Kerne, 4 GB RAM **plus 4 GB Swap**
   begrenzt; über `CPU_CORES`, `MEMORY_LIMIT` und `MEMSWAP_LIMIT` im
   Stack-Environment anpassbar. Wichtig: `memswap_limit` muss größer sein als
   `mem_limit`, sonst ist der Swap-Deckel exakt so hoch wie das RAM-Limit.
@@ -247,32 +247,37 @@ Deckel ist exakt `mem_limit`. `memswap_limit` setzt man also nicht, um Swap zu
 eroeffnen, sondern um das **Verhaeltnis** zu bestimmen und den Gesamt-Fussabd
 hart zu deckeln.
 
-Aktuelles Budget (live gemessen, 2026-09-29 nach der Anhebung):
+Aktuelles Budget (live gemessen, 2026-09-29 nach der zweiten Anhebung):
 
 | Container | RAM | Swap | gesamt | cpus |
 |---|---|---|---|---|
-| `code-dev` | 3072 MB | 3072 MB | 6144 MB | 3 |
-| `code-remote-dind` | 1300 MB | 1772 MB | 3072 MB | 2 |
+| `code-dev` | 4096 MB | 4096 MB | 8192 MB | 3 |
+| `code-remote-dind` | 2560 MB | 2560 MB | 5120 MB | 2 |
 | `code-auth-remote` | unbegrenzt | — | — | — |
-| **Summe** | **4372 MB** | **4844 MB** | **9216 MB** | |
+| **Summe** | **6656 MB** | **6656 MB** | **13312 MB** | |
 
-Gegen den Host: 7680 MB RAM, 10239 MB Swap, davon live gemessen 2309 MB
-OS/Kernel/dockerd und 2000 MB Reserve fuer die 10 Prod-Container. `code-dev`
-3g + dind 1,3g + Portal ~0,5g + OS ~0,3g = ~5,1 GB, es bleiben ~2,4 GB.
-`code-auth-remote` bleibt bewusst unbegrenzt — real 18 MB, und ein Deckel
+**Die Summe der RAM-Limits (6,66 GB) liegt bei 7,5 GB Host-RAM, zusammen mit
+Portal (~0,5 GB) und OS/dockerd (~0,7 GB) aber darüber.** Das ist am
+2026-09-29 bewusst so entschieden worden und ist der engste Punkt auf dem
+Host: erreichen code-dev und dind ihre Deckeln gleichzeitig — und das ist der
+Normalfall, weil der Agent in `code-dev` per cargo baut und parallel im Daemon
+per docker baut —, feuert der **Host**-OOM-Killer. Der nimmt global den
+größten Prozess, und das kann `mariadbd` sein. Wer das nicht will, senkt dind
+auf 2 GB; das kostet nur Reserve im Daemon, der real 196 MB nutzt.
+
+`code-auth-remote` bleibt bewusst unbegrenzt — real 11 MB, und ein Deckel
 wuerde nur Aerger machen.
 
 RAM ist bei `code-dev` knapper als Swap, beim DinD umgekehrt: Builds im Daemon
 sind Batch-Arbeit, Latenz ist egal; `code-dev` ist interaktiv und soll nicht
 swappen.
 
-### Warum 2 GB nicht gereicht haben — und warum der Swap nicht half
+### Warum 2 GB nicht gereicht haben — und warum 3 GB auch noch nicht reichten
 
 Am 2026-09-29 gemessen: **8 cgroup-OOM-Kills in 24 Stunden, alle in `code-dev`**,
-kein anderer Container auffaellig (die 15 OOM-Events im laufenden Kernel-Boot
-verteilen sich genau so: 13 `code-dev`, 2 `code-remote-dind`). Ausloeser war
-jedes Mal ein `cargo build` — parallele `rustc` liegen bei 220–920 MB pro
-Instanz, bei 3 CPU-Cores also mehrere gleichzeitig.
+kein anderer Container auffaellig. Ausloeser war jedes Mal ein `cargo build` —
+parallele `rustc`/`rust-lld` liegen bei 220–920 MB pro Instanz, bei 3 CPU-Cores
+also mehrere gleichzeitig.
 
 Der Haken ist derselbe wie beim DinD weiter oben, nur mit schlimmerem Ausgang:
 **der Kernel killt im cgroup den GROESSTEN Prozess, nicht den schuldigen.**
@@ -292,18 +297,32 @@ neu, die Sitzung ist weg. Ein Tag im Log:
 
 3× rustc, aber 5× PID 1. Deshalb war es von aussen **nicht regelmaessig** —
 es hing nur daran, OB zur Zeit gerade Rust kompiliert wurde. Idle liegt
-`code-dev` bei ~700 MB (opencode 400 + codegraph-node 100 + tailscaled 48 +
-Rest), `memory.peak` im letzten Lauf 1558 MB. 2 GB waren knapp.
+`code-dev` bei ~700 MB (opencode 320 + codegraph-node ~350 + tailscaled 42 +
+Rest).
 
-**Der Swap-Deckel hat dabei nie gegriffen:** `memory.swap.current` stand auf 0,
+**Und 3 GB hat es auch nur knapp geschafft.** Nachmessung am 3g-Deckel, vier
+Minuten live:
+
+```
+memory.max      3221225472   (3,00 GB)
+memory.current  2759196672   (2,57 GB)  = 86 %
+memory.peak     3221229568               = 100 %, Decel exakt berührt
+OOM-Kills                       0
+```
+
+Null Kills, aber nur, weil der Kernel diesmal rechtzeitig reclaimen konnte
+statt zu killen. `memory.peak` über der Decel ist die Signatur dafür, dass es
+knapp war und nicht bequem. Deshalb 4 GB.
+
+**Der Swap-Deckel hat nie gegriffen:** `memory.swap.current` stand auf 0,
 obwohl 3 GB erlaubt waren. Ursache ist `vm.swappiness=0` auf dem Host — der
 Kernel swapped erst, wenn RAM **global** knapp wird, und der Host hatte 4,6 GB
-frei. Die 2-GB-cgroup-Grenze kommt also immer **vor** dem Swap, und der
-OOM-Killer feuert vorher. Die damalige Begruendung im Compose („der Swap
-faengt Spitzen ab, statt Caddy/MariaDB zu verdraengen") war damit faktisch nie
-in Kraft. Wer den Swap tatsaechlich nutzen will, muss `vm.swappiness` hostweit
-hochsetzen — das wirkt dann aber auch auf Caddy/MariaDB der Produktion und ist
-deshalb bewusst nicht passiert.
+frei. Die cgroup-Grenze kommt also immer **vor** dem Swap, und der OOM-Killer
+feuert vorher. Der Swap-Deckel ist damit Reserve, kein Puffer; die RAM-Deckel ist
+die einzige wirksame Stellschraube. Bei 4 GB/8 GB ist das unverändert true —
+die vier Swap-GB sind eine Zahl, keine Reserve. `vm.swappiness` zu erhöhen wäre
+der nächste logische Schritt, wirkt aber **hostweit**, also auch auf Caddy und
+die MariaDB der Produktion, und ist deshalb bewusst nicht passiert.
 
 ### Recreate ja, aber nicht um jeden Preis
 
@@ -459,7 +478,7 @@ liefern. Steigt `RestartCount` und zeigen die Logs `opencode watcher: neues
 Binary → Container-Neustart`, ist der Auto-Update-Watcher die Ursache; zum
 Testen vorübergehend `OPENCODE_AUTOUPDATE=false` setzen. `OOMKilled=true`
 hingegen spricht zuerst für das RAM-Limit, nicht für HTTP/2. Standard sind
-3072 MB RAM plus 3072 MB Swap (`MEMORY_LIMIT` / `MEMSWAP_LIMIT`); die Werte
+4096 MB RAM plus 4096 MB Swap (`MEMORY_LIMIT` / `MEMSWAP_LIMIT`); die Werte
 standen bis 2026-09-29 auf 2048/3072 und haben dabei reproduzierbar OOM-Kills
 ausgeloest, Grund und Messwerte siehe *RAM- und Swap-Limits*. Ein OOM bedeutet
 also **nicht**, dass beide erschöpft waren — der Swap-Deckel greift auf diesem
@@ -473,6 +492,8 @@ dmesg -T | grep -E "Memory cgroup out of memory" | tail -20
 dmesg -T | grep -oE "oom_memcg=/system.slice/docker-[0-9a-f]+" | sort | uniq -c
 # Swap tatsaechlich ungenutzt?
 cat /sys/fs/cgroup/system.slice/docker-$(docker inspect -f '{{.Id}}' code-dev).scope/memory.swap.current
+# Wie knapp war es? peak > max heisst: Decel beruehrt, es war ZUFALL, nicht Luft
+cat /sys/fs/cgroup/system.slice/docker-$(docker inspect -f '{{.Id}}' code-dev).scope/memory.peak
 ```
 
 Steht dort `0`, wurde nie Swap benutzt und `MEMORY_LIMIT` ist zu niedrig. Steht
