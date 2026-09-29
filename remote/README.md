@@ -300,19 +300,51 @@ es hing nur daran, OB zur Zeit gerade Rust kompiliert wurde. Idle liegt
 `code-dev` bei ~700 MB (opencode 320 + codegraph-node ~350 + tailscaled 42 +
 Rest).
 
-**Und 3 GB hat es auch nur knapp geschafft.** Nachmessung am 3g-Deckel, vier
-Minuten live:
+**Und 3 GB hat es nicht geschafft — aber `memory.current` hat es verschleiert.**
+Nachmessung am 3g-Deckel:
 
 ```
 memory.max      3221225472   (3,00 GB)
 memory.current  2759196672   (2,57 GB)  = 86 %
-memory.peak     3221229568               = 100 %, Decel exakt berührt
+memory.peak     3221229568               = Decel berührt
 OOM-Kills                       0
 ```
 
-Null Kills, aber nur, weil der Kernel diesmal rechtzeitig reclaimen konnte
-statt zu killen. `memory.peak` über der Decel ist die Signatur dafür, dass es
-knapp war und nicht bequem. Deshalb 4 GB.
+`rustc`/`rust-lld` brauchen **anon**-Speicher (220–920 MB pro Instanz), und der
+ist nicht reclaimbar. Deshalb 4 GB.
+
+### Der Deckel wird an `anon` gemessen, nicht an `memory.current`
+
+`memory.current` enthält den **reclaimbaren File-Cache**. Nach einem
+Playwright- oder Vite-Lauf füllt der das Deckel fast voll, ohne dass ein
+Speicherproblem existiert. Live gemessen am 2026-09-29 um 16:36 bei
+`memory.current` = 95 %:
+
+| | MB | vom 4-GB-Deckel |
+|---|---|---|
+| reclaimbarer File-Cache (`file`) | 2821 | 69 % |
+| **anon — echter Prozess-Speicher** | **929** | **23 %** |
+| `slab_unreclaimable` | 5 | — |
+| `pagetables` + `shmem` + `slab_reclaimable` | 45 | 1 % |
+
+**OOM-relevant sind nur `anon` + `slab_unreclaimable` = 934 MB von 4096 MB.**
+Der Kernel hat 2,8 GB Cache recycled statt zu killen; `oom_kill 0` war das
+richtige Ergebnis. `memory.peak` über `memory.max` ist in diesem Zustand
+**kein** Alarm, weil `peak` den Cache mitzählt.
+
+Daraus die Regeln:
+
+- **`memory.current` hoch heisst nichts.** Wer daraus „Deckel zu klein" ableitet,
+  hebt Limits an, die nicht das Problem sind.
+- **`memory.peak > memory.max` ist kein OOM-Beweis.** `peak` zählt Cache mit.
+- **Die echte Frage: war `anon` am Limit?** Ein Deckel stimmt, wenn parallele
+  Builds zusammen unter ~3 GB `anon` bleiben.
+- **Messen:**
+  ```sh
+  CG=/sys/fs/cgroup/system.slice/docker-$(docker inspect -f '{{.Id}}' code-dev).scope
+  grep -E '^(anon|file|slab_unreclaimable) ' $CG/memory.stat
+  grep oom_kill $CG/memory.events
+  ```
 
 **Der Swap-Deckel hat nie gegriffen:** `memory.swap.current` stand auf 0,
 obwohl 3 GB erlaubt waren. Ursache ist `vm.swappiness=0` auf dem Host — der
@@ -492,8 +524,10 @@ dmesg -T | grep -E "Memory cgroup out of memory" | tail -20
 dmesg -T | grep -oE "oom_memcg=/system.slice/docker-[0-9a-f]+" | sort | uniq -c
 # Swap tatsaechlich ungenutzt?
 cat /sys/fs/cgroup/system.slice/docker-$(docker inspect -f '{{.Id}}' code-dev).scope/memory.swap.current
-# Wie knapp war es? peak > max heisst: Decel beruehrt, es war ZUFALL, nicht Luft
-cat /sys/fs/cgroup/system.slice/docker-$(docker inspect -f '{{.Id}}' code-dev).scope/memory.peak
+# Die echte Kennzahl: anon (nicht-reclaimbar). current/peak zaehlen Cache mit!
+CG=/sys/fs/cgroup/system.slice/docker-$(docker inspect -f '{{.Id}}' code-dev).scope
+grep -E '^(anon|file|slab_unreclaimable) ' $CG/memory.stat
+grep oom_kill $CG/memory.events
 ```
 
 Steht dort `0`, wurde nie Swap benutzt und `MEMORY_LIMIT` ist zu niedrig. Steht

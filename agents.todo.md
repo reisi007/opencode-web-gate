@@ -46,8 +46,10 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   3. **Final: 4g/8g** (RAM + Swap gesamt), dind 2,5g/5g. Recreated, weil keine
      Session aktiv war. Backups auf dem VPS: `*.bak-memlimit-*`,
      `*.bak-dindlimit-*`, `*.bak-cd4g-*`.
-  **Merksatz zum Pruefen kuenftiger Deckel: `memory.peak` gegen `memory.max`**
-  lesen, nicht die Kill-Zahl.
+  **Merksatz zum Pruefen kuenftiger Deckel: `anon` messen, nicht
+  `memory.current` und nicht `memory.peak`.** Erste Fassung dieser Notiz
+  empfahl `memory.peak` gegen `memory.max` — das ist **unvollstaendig und
+  fuehrt in die Irre**, siehe naechsten Punkt.
   **Die 4 GB machen den Host zur knappsten Stelle:** code-dev 4g + dind 2,5g
   + Portal ~0,5g + OS ~0,7g = ~7,7 GB bei 7,5 GB. Erreichen beide Dev-Container
   ihre Deckeln gleichzeitig (Normalfall: cargo in code-dev, docker im Daemon),
@@ -55,6 +57,21 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   `mariadbd`. Ein Dev-Build als Produktionsausfall. Bewusst so entschieden
   (Entscheidung des Menschen), **ohne** dind zu senken. Rueckschranke: dind auf
   2g, dann ~0,3-0,5 GB Luft.
+  **Korrektur der eigenen Messregel (2026-09-29, 16:36).** Beim
+  Stabilitaets-Check wurde `memory.current` = 95 % vom 4-GB-Deckel gemeldet und
+  daraus "nicht stabil" geschlossen. **Falsch.** `memory.current` enthaelt den
+  reclaimbaren File-Cache. Die Aufteilung:
+    reclaimbarer File-Cache  2821 MB (69 %)  <- Playwright/Vite aus node_modules
+    anon (echter Heap)        929 MB (23 %)
+    slab_unreclaimable          5 MB
+    pagetables+shmem+slab_rec   45 MB
+  OOM-relevant sind nur `anon` + `slab_unreclaimable` = **934 MB von 4096 MB**.
+  Der Kernel hat 2,8 GB Cache recycled statt zu killen, `oom_kill 0` war korrekt.
+  Fuer echte Allokation waren 3,1 GB frei. `memory.peak > memory.max` ist in so
+  einem Zustand **kein** Alarm, weil `peak` den Cache mitzaehlt.
+  **Regel: `memory.current` hoch heisst nichts, `peak > max` heisst nichts.
+  Nur `anon` gegen das Deckel sagt etwas ueber OOM-Risiko.** In `AGENTS.md` §9
+  und README korrigiert, mit Messbefehl.
   **Prod-Container (`portal_db`, `portal_search`, `caddy`, `portal_backend`)
   bewusst ohne Limit gelassen** (Entscheidung des Menschen): keines hatte je
   ein OOM, und ein zu knapper Deckel auf MariaDB waere ein Produktionsausfall.
