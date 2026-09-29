@@ -96,6 +96,36 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin pipx install 'markitdown[pdf,docx,pptx,xlsx,xls]' \
  && markitdown --version
 
+# --- Tailscale: privater Zugang zu lokal gestarteten Dev-Servern --------------
+# Use case: ein in code-dev gestarteter Dev-Server (`pnpm dev`, `next dev`,
+# `vite` …) ist ueber keinen anderen Weg erreichbar — code-dev hat bewusst
+# keine veroeffentlichten Ports und kein extra_hosts (AGENTS.md §3). Der
+# Userspace-Modus loest genau das: tailscaled leitet jede eingehende TCP-
+# Verbindung auf die Tailnet-IP auf 127.0.0.1:<port> DIESES Containers weiter.
+# Also jeder Port, auf dem hier etwas lauscht, ohne Port-Publishing.
+#
+# Bewusst Userspace und NICHT der TUN-Modus: userspace braucht kein
+# /dev/net/tun, keine Capabilities (kein NET_ADMIN) und kein Root. Damit
+# bleiben die Isolationsregeln aus AGENTS.md §3/§4 unberuehrt — code-dev
+# bekommt durch Tailscale KEINEN Weg zum VPS-Host.
+#
+# Bewusst auch NICHT das offizielle Image tailscale/tailscale als Basis:
+# dessen containerboot will PID 1 sein und wuerde damit den Autoupdate-
+# Mechanismus aus AGENTS.md §10 zerstoeren (SIGTERM an PID 1 = Container-
+# Neustart). Hier laeuft tailscaled als Kindprozess des Entrypoints.
+#
+# Versionsfloating wie im Rest des Images (woechentlicher CI holt latest).
+# Fuer Tailscale ist das unkritisch: der Userspace-Modus ist stabil, und
+# `tailscale version` steht im Build-Log.
+RUN curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.gpg \
+      | gpg --dearmor -o /usr/share/keyrings/tailscale-archive-keyring.gpg \
+ && chmod a+r /usr/share/keyrings/tailscale-archive-keyring.gpg \
+ && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/tailscale-archive-keyring.gpg] https://pkgs.tailscale.com/stable/debian bookworm main" \
+      > /etc/apt/sources.list.d/tailscale.list \
+ && apt-get update && apt-get install -y --no-install-recommends tailscale \
+ && tailscale version \
+ && rm -rf /var/lib/apt/lists/*
+
 # --- Non-root User: gh-Auth + Projekte leben in Volumes (ueberleben Image-Upgrades) ---
 ARG DEV_UID=1000
 ARG DEV_GID=1000
@@ -103,6 +133,13 @@ RUN groupadd -g "$DEV_GID" dev 2>/dev/null || true \
  && useradd -m -u "$DEV_UID" -g "$DEV_GID" -s /bin/bash dev \
  && echo "dev ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/dev \
  && mkdir -p /projects /home/dev/.config/gh /home/dev/.ssh /home/dev/.local/share/opencode /home/dev/.config/opencode /home/dev/.config/pnpm \
+      /home/dev/.local/share/tailscale \
+ # /tmp/opencode: Scratch-Verzeichnis fuer die Agent-Tools. 1777 wie /tmp
+ # selbst (sticky bit), damit dev ohne sudo schreiben kann, ohne dass ein
+ # User die Dateien eines anderen loeschen kann. Wird es vom Harness bereits
+ # root:root 755 angelegt, korrigiert dieses chmod die Rechte fuer jeden
+ # Container-Start neu — sonst waere jeder Weg darauf als uid 1000 gesperrt.
+ && mkdir -p /tmp/opencode && chmod 1777 /tmp/opencode \
  && chown -R dev:dev /projects /home/dev
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh

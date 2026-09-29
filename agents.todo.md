@@ -5,6 +5,62 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
 
 ## 2026-09-29
 
+- [ ] **Tailscale in `code-dev` — live verifizieren** (Code im Repo, VPS noch
+  auf dem alten Image). Use case: **lokal in `code-dev` gestartete Dev-Server
+  von aussen sehen** (`pnpm dev` o. ae.). `Dockerfile`, `entrypoint.sh`,
+  `docker-compose.yml` und `.env.example` sind angepasst; Design und die
+  verworfene Alternative stehen in [`remote/TAILSCALE-PLAN.md`](remote/TAILSCALE-PLAN.md),
+  Regeln in `remote/AGENTS.md` §15.
+  **Warum Userspace und nicht TUN:** `tailscaled --tun=userspace-networking`
+  braucht kein `/dev/net/tun` und keine Capabilities. Live verifiziert am
+  laufenden `code-dev` (Stand vor der Aenderung):
+  ```
+  /.dockerenv vorhanden, PID 1 = opencode
+  /usr/local/bin/entrypoint.sh, DOCKER_HOST=tcp://dind:2375
+  ```
+  Ein TUN-Modus haette `cap_add: NET_ADMIN` plus `devices: /dev/net/tun`
+  gebraucht — genau die Tür, die §3/§4 geschlossen halten.
+  **Gegengeprüft, dass die Isolation hält** (YAML geparst, `code-dev`):
+  `cap_add` nein, `devices` nein, `ports` nein, `extra_hosts` nein,
+  `network_mode` nein, `privileged` nein.
+  **Bekannt und gewollt:** der Tailnet-Weg umgeht Caddy. `forward_auth`,
+  `code-auth-remote` und der oeffentliche DNS-Eintrag bleiben unberuehrt;
+  `remote-code.<domain>` antwortet nach dem Deploy **weiterhin ohne VPN**. Wer
+  das umkehrt erwartet, macht einen Fehltest.
+  **Nicht erreichbar vom Tailnet** (anderer Netzraum, §7): `dind` und seine
+  Testcontainer, `code-auth-remote:8081`.
+  **Entrypoint-Logik getestet, ausserhalb des Containers** — mit Attrappen fuer
+  `tailscaled`/`tailscale` (echter Unix-Socket) und der echten, extrahierten
+  Funktion. Vier Szenarien, alle mit Rueckgabe 0:
+  | Fall | `TS_AUTHKEY` | `BackendState` | Erwartung | Ist |
+  |---|---|---|---|---|
+  | Erstlauf | gesetzt | `NeedsLogin` | `up` mit Key + Host | wie erwartet |
+  | Recreate | gesetzt | `Running` | **kein** `up` | wie erwartet |
+  | kein Key | leer | `NoState` | uebersprungen | wie erwartet |
+  | `tailscaled` tot | gesetzt | – | Warnung, Start geht weiter | wie erwartet |
+  **Falle beim Nachbauen des Tests:** `tailscaled` legt einen Unix-**Socket**
+  an, keine Datei. `[ -f ]` oder ein `touch` in der Attrappe schlaegt fehl und
+  sieht wie ein Bug im Entrypoint aus. Richtig ist `[ -S ]`.
+  **Nebenbefund, mitgefixt:** `/tmp/opencode` (Scratch der Agent-Tools) wurde
+  **root:root 755** angelegt, war als uid 1000 also nicht beschreibbar. Das
+  Image setzt jetzt `mkdir -p /tmp/opencode && chmod 1777 /tmp/opencode` (1777
+  wie `/tmp` selbst, mit Sticky Bit). Per Test-Build verifiziert: uid 1000
+  schreibt. **Im laufenden Container einmalig nachgezogen** mit
+  `sudo chmod 1777 /tmp/opencode` — bis zum naechsten Image-Build haelt das nur.
+  **Zu tun:**
+  - Auth-Key (nicht ephemer) + ACL in der Tailscale-Admin-Console.
+  - `TS_AUTHKEY`/`TS_TAILSCALE_HOSTNAME` in `remote/.env.production` (gitignored,
+    Handarbeit, §1).
+  - Image bauen, `IMAGE` setzen, Stack in Portainer neu deployen.
+  - Live pruefen: `tailscale status`/`ip -4` im Container, `ss -ltnp` (welche
+    Ports ueberhaupt lauschen), von einem Client `curl` auf `100.x.x.x:<port>`.
+  - **Gegenproben, die schiefgehen MUESSEN:** `curl` auf `100.x.x.x:2375/_ping`
+    (dind) und `100.x.x.x:8081/` (code-auth-remote) darf **nicht** antworten.
+  - `remote-code.<domain>` ohne Cookie auf `/api/info` → weiterhin 401, nicht 200.
+  - Dev-Server im Tailnet ueber laengere Zeit offen halten (SSE bricht sonst
+    gern lautlos) und Tailnet-IP ueber einen Stack-Recreate hinweg vergleichen.
+  - Abnahme erst nach unabhaengigem Review der Live-Verifikation.
+
 - [x] **`/projects` auf einen 100-GB-Loopback (ext4) umgestellt** (2026-09-29).
   **Entscheidung des Menschen, ausdrücklich gegen die Empfehlung des Agenten.**
   Der Agent hatte zuvor gemessen, dass eine 100-GB-**Partition** nicht moeglich
