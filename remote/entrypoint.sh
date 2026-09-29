@@ -15,6 +15,26 @@ for d in "$HOME/.config/gh" "$HOME/.ssh" "$HOME/.local/share/opencode" "$HOME/.c
 done
 chmod 700 "$HOME/.ssh" 2>/dev/null || true
 
+# Git-Identitaet zusaetzlich in die globale Config schreiben.
+#
+# Das Dockerfile setzt GIT_AUTHOR_* / GIT_COMMITTER_* per ENV — das ueberlebt
+# jeden Recreate und ist damit die eigentliche Absicherung. Dieser Block
+# deckt den Rest ab: Werkzeuge, die die ENV-Variablen nicht auswerten (z. B.
+# Editor-Git-Integrationen, `git var GIT_AUTHOR_IDENT` in manchen Skripten,
+# Forks mit eigenem Aufrufkontext). Beide Wege nennen dieselbe Person, damit
+# ein Commit je nach Werkzeug nicht zwei verschiedene Autoren zeigt.
+#
+# Wichtig: ~/.gitconfig liegt NICHT in einem Volume. Deshalb wird es hier bei
+# JEDEM Start neu geschrieben statt einmalig. Fehlt der Wert im Image, wird
+# nichts geraten und nichts Kuenstliches erfunden.
+if [ -n "${GIT_AUTHOR_NAME:-}" ] && [ -n "${GIT_AUTHOR_EMAIL:-}" ]; then
+  git config --global user.name  "$GIT_AUTHOR_NAME"
+  git config --global user.email "$GIT_AUTHOR_EMAIL"
+  echo "git: Identitaet global gesetzt ($GIT_AUTHOR_NAME <$GIT_AUTHOR_EMAIL>)"
+else
+  echo "WARN: GIT_AUTHOR_NAME/GIT_AUTHOR_EMAIL fehlen im Image -> Commits ohne Identitaet moeglich"
+fi
+
 if ! command -v gh >/dev/null 2>&1; then
   echo "WARN: gh fehlt im Image"
 else

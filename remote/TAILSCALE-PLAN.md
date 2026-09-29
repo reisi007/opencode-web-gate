@@ -528,7 +528,7 @@ Erledigt im Repo:
       YAML geparst: kein `cap_add`, kein `devices`, kein `ports`, kein
       `extra_hosts`, kein `network_mode`.
 - [x] 4. `.env.example` ergaenzt.
-- [x] 8. Doku: `remote/AGENTS.md` §15, dieser Plan, `.env.example`-Kommentar.
+- [x] 8. Doku: `remote/AGENTS.md` §15 und §16, dieser Plan, `.env.example`-Kommentar.
       **Noch offen:** ein Bedienungsabschnitt in `remote/README.md` und die
       Strukturzeile im Root-`README.md`.
 
