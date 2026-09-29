@@ -8,7 +8,7 @@ if [ -n "${DOCKER_HOST:-}" ]; then
 fi
 
 # Sicherstellen, dass gemountete Volumes dem dev-User gehoeren (Portainer Named Volumes = root bei Erststart)
-for d in "$HOME/.config/gh" "$HOME/.ssh" "$HOME/.local/share/opencode" "$HOME/.config/opencode" "$HOME/.local/state/opencode" /projects; do
+for d in "$HOME/.config/gh" "$HOME/.ssh" "$HOME/.local/share/opencode" "$HOME/.config/opencode" "$HOME/.local/state/opencode" "$HOME/.local/share/tailscale" /projects; do
   if [ -e "$d" ] && [ ! -O "$d" ] 2>/dev/null; then
     sudo chown -R "$(id -u):$(id -g)" "$d" 2>/dev/null || true
   fi
@@ -146,6 +146,86 @@ if [ "${OPENCODE_AUTOUPDATE:-true}" = "true" ]; then
 else
   echo "opencode update: deaktiviert (OPENCODE_AUTOUPDATE=false)"
 fi
+
+# --- Tailscale: privater Zugang zu lokal gestarteten Dev-Servern -------------
+# Zweck: ein in diesem Container gestarteter Dev-Server (`pnpm dev`, `next dev`,
+# `vite` …) ist sonst von aussen unerreichbar — code-dev hat bewusst keine
+# veroeffentlichten Ports und kein extra_hosts (AGENTS.md §3). Der
+# Userspace-Modus loest das ohne Sonderrechte: tailscaled nimmt
+# eingehende TCP-Verbindungen auf der Tailnet-IP an und leitet sie auf
+# 127.0.0.1:<port> DIESES Containers weiter. Also jeder Port, auf dem hier
+# etwas lauscht — ohne Port-Publishing, ohne /dev/net/tun, ohne NET_ADMIN.
+#
+# Das ist ein ZUSATZ-Weg, kein Ersatz: der oeffentliche Weg (Caddy ->
+# forward_auth -> code-auth-remote -> code-dev:8080) bleibt unberuehrt. Ueber
+# den Tailnet-Weg ist Caddy nicht beteiligt, die Cookie-Kette gilt also nur fuer
+# remote-code.<domain>. Warum forward_auth NICHT abgeschaltet wird, steht in
+# TAILSCALE-PLAN.md Abschnitt 6.
+#
+# dind und code-auth-remote haengen an anderen Netzraeumen und sind deshalb vom
+# Tailnet aus NICHT erreichbar (AGENTS.md §7). Wer eine DB im DinD braucht,
+# braucht einen Forwarder IN diesem Container.
+#
+# Grundsatz: Tailscale ist additiv. Fehlt der Key, ist das Netz kaputt, oder
+# startet tailscaled nicht, laeuft der Container normal weiter — der Weg darf
+# opencode serve nie blockieren.
+TS_DIR="$HOME/.local/share/tailscale"
+TS_SOCK="$TS_DIR/tailscaled.sock"
+TS_STATE="$TS_DIR/state"
+
+ts() { tailscale --socket="$TS_SOCK" "$@"; }
+
+start_tailscale() {
+  if [ -z "${TS_AUTHKEY:-}" ]; then
+    echo "tailscale: kein TS_AUTHKEY gesetzt -> ueber Tailnet nicht erreichbar"
+    return 0
+  fi
+  mkdir -p "$TS_STATE" || true
+
+  # --accept-dns=false ist Pflicht: tailscaled will sonst /etc/resolv.conf
+  # umschreiben und damit Docker-DNS (127.0.0.11) im ganzen Container zerlegen.
+  # MagicDNS laeuft clientseitig, die Namensaufloesung auf Mac/PC/Handy
+  # funktioniert also trotzdem.
+  tailscaled --tun=userspace-networking --statedir="$TS_STATE" --socket="$TS_SOCK" &
+  local i
+  for i in $(seq 1 30); do
+    [ -S "$TS_SOCK" ] && break
+    sleep 1
+  done
+  if [ ! -S "$TS_SOCK" ]; then
+    echo "WARN: tailscaled-Socket kam nicht (s. /tmp/tailscaled.log) -> Start geht weiter"
+    return 0
+  fi
+
+  # Auth-Key nur beim Erstlauf. Danach reicht der persistierte State im Volume
+  # (AGENTS.md §8: Named Volumes ueberleben Image-Upgrades und Recreates) —
+  # sonst waere die Tailnet-IP nach jedem Redeploy eine neue.
+  # needsLogin kommt aus dem Status, nicht aus einem Plattencheck: der State
+  # kann auch nach einem Abbruch zurueckgesetzt sein.
+  local needs_login
+  needs_login="$(ts status --json 2>/dev/null | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print("yes"); raise SystemExit(0)
+print("yes" if d.get("BackendState") in ("NeedsLogin", "NoState") else "no")
+' 2>/dev/null || echo yes)"
+  if [ "$needs_login" = "yes" ]; then
+    echo "tailscale: erstmalige Anmeldung mit TS_AUTHKEY"
+    if ts up --authkey="$TS_AUTHKEY" --accept-dns=false \
+             --hostname="${TS_TAILSCALE_HOSTNAME:-code-dev}"; then
+      echo "tailscale: angemeldet als ${TS_TAILSCALE_HOSTNAME:-code-dev}"
+    else
+      echo "WARN: tailscale up fehlgeschlagen (s. /tmp/tailscaled.log) -> Start geht weiter"
+    fi
+  else
+    echo "tailscale: State aktiv, keine erneute Anmeldung noetig"
+  fi
+  echo "tailscale: IP $(ts ip -4 2>/dev/null | tr -d '[:space:]' || echo unbekannt)"
+}
+
+start_tailscale
 
 # CodeGraph-MCP automatisch verdrahten (nur opencode, global) — einmalig,
 # danach Skip (Config liegt im Volume). Blockiert den Start nie.

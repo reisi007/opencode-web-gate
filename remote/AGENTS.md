@@ -233,3 +233,57 @@ arbeitet mit einer **Allowlist** (4 explizit benannte Volumes plus
 Quelle enthalten, die 100-GB-Datei wird also **nicht** gesichert — richtig so,
 sonst frisst sie das pCloud-Konto. Wer das Skript anfasst, darf die
 Allowlist **nicht** auf „alles unter /var/lib/docker“ umbauen.
+
+## 15. Tailscale im Userspace-Modus — sechs Regeln
+
+`code-dev` ist ueber die Tailnet-IP erreichbar, damit lokal gestartete
+Dev-Server (`pnpm dev`, `next dev`, `vite`) von Mac, PC und Handy aus sichtbar
+sind. Vollstaendige Begruendung: [`TAILSCALE-PLAN.md`](TAILSCALE-PLAN.md).
+Live noch nicht verifiziert — siehe `agents.todo.md`.
+
+1. **Userspace-Modus, kein TUN.** `tailscaled --tun=userspace-networking`.
+   Das braucht **kein** `/dev/net/tun` und **keine** Capabilities. Taucht bei
+   `code-dev` `cap_add: NET_ADMIN` oder `devices: /dev/net/tun` auf, ist die
+   Begruendung "fuer Tailscale noetig" falsch — dann laeuft der TUN-Modus und
+   die Isolation aus §3/§4 ist nicht mehr die von heute.
+2. **`--accept-dns=false` ist Pflicht.** Ohne das Flag schreibt `tailscaled`
+   `/etc/resolv.conf` um und Docker-DNS (`127.0.0.11`) faellt im **ganzen**
+   Container aus — OpenCode loest dann keine Provider mehr auf. MagicDNS laeuft
+   clientseitig, die Namensaufloesung auf dem Client funktioniert trotzdem.
+3. **State liegt im Named Volume `tailscale-state`**, gemountet auf
+   `/home/dev/.local/share/tailscale`. Ohne dieses Volume waere die 100.x-Adresse
+   nach jedem Recreate eine neue (siehe §8). Der Pfad steht deshalb auch in der
+   Chown-Liste des Entrypoints — sonst waere das frisch gemountete Volume
+   root-gehoert und `tailscaled` kaeme als uid 1000 nicht hinein.
+4. **`TS_AUTHKEY` nur aus `.env.production`,** nie ins Image, nie ins Repo. Und
+   **nicht ephemer**: der Node soll seine Tailnet-IP dauerhaft behalten, sonst
+   verschwindet er nach jedem Disconnect aus der Admin-Console. Leer = der Stack
+   laeuft ohne Tailnet, alles wie bisher.
+5. **Ein Tailscale-Problem darf `opencode serve` nie blockieren.** Die Funktion
+   gibt in jedem Fehlerfall `return 0` und loggt eine Warnung. Der Weg ist
+   additiv, kein Voraussetzung fuer den Betrieb.
+6. **`forward_auth` bleibt unangetastet.** Der Tailnet-Weg umgeht Caddy
+   komplett; er ist ein **Zusaetzlich**-Eingang, kein Ersatz. Wer die
+   Cookie-Kette entfernt, macht `remote-code.<domain>` ungeschuetzt — die
+   injizierte `header_up Authorization` ist kein Ersatz fuer ein Gate, weil der
+   Browser das Passwort nie zu sehen bekommt. Ebenso §11 unveraendert lassen.
+   Begruendung und die verworfene Alternative („Domain selbst als Tailscale-
+   Endpunkt"): `TAILSCALE-PLAN.md` Abschnitt 6.
+
+### Was der Tailnet-Weg sichtbar macht — und was nicht
+
+Sichtbar: jeder Port, auf dem in **`code-dev` selbst** etwas lauscht. Der
+Userspace-Netzstack leitet auf das Loopback *dieses* Containers weiter.
+
+Nicht sichtbar: `dind` und seine Testcontainer (`db:5432`, `mailpit:8025`) sowie
+`code-auth-remote:8081` — andere Netzraeume, siehe §7. Wer von aussen auf eine
+DB im DinD will, braucht einen Forwarder **in** `code-dev`, nicht `extra_hosts`.
+
+### Ist `/tmp/opencode` nicht beschreibbar?
+
+`/tmp/opencode` (Scratch der Agent-Tools) wird **root:root 755** angelegt, nicht
+als `dev`. Das Image setzt deshalb `mkdir -p /tmp/opencode && chmod 1777
+/tmp/opencode` — 1777 wie `/tmp` selbst mit Sticky Bit, damit uid 1000 schreiben
+kann, ohne die Rechte anderer zu gefaehrden. Wer das entfernt, sperrt jeden
+Schreibzugriff darauf als `dev`; im laufenden Container laesst es sich einmalig
+mit `sudo chmod 1777 /tmp/opencode` nachziehen, bis das naechste Image gebaut ist.

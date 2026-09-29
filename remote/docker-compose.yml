@@ -33,6 +33,16 @@
 #   DIND_MEMSWAP_LIMIT  default 3g: RAM+Swap gesamt fuer den dind-Daemon
 #                         (1,7 GB Swap fuer Builds im Daemon)
 #   DIND_CPU_CORES      default 2: CPU-Quota fuer den dind-Daemon
+#   TS_AUTHKEY          optional: Tailscale-Auth-Key. LEER = Stack laeuft ohne
+#                         Tailnet. Setzen erlaubt den privaten Zugriff auf
+#                         lokal gestartete Dev-Server in code-dev
+#                         (Begruendung und Sicherheitsregeln: TAILSCALE-PLAN.md)
+#   TS_TAILSCALE_HOSTNAME default code-dev: MagicDNS-Name im Tailnet
+#
+# Tailscale laeuft im Userspace-Modus: KEIN /dev/net/tun, KEINE Capabilities,
+# KEIN Root, KEIN Port-Publishing. Der Weg umgeht Caddy komplett und aendert
+# nichts am oeffentlichen Weg (Caddy -> forward_auth -> code-auth-remote).
+# forward_auth wird NICHT abgeschaltet — Grund: TAILSCALE-PLAN.md Abschnitt 6.
 #
 # KEIN HOST_GATEWAY / extra_hosts mehr (entfernt 2026-09-26, siehe
 # remote/README.md Abschnitt "Warum es kein extra_hosts gibt").
@@ -86,6 +96,12 @@ services:
       - OPENCODE_UPDATE_RESTART=${OPENCODE_UPDATE_RESTART:-idle}
       - DOCKER_HOST=tcp://dind:2375
       - PORT=8080
+      # Tailscale (privater Zugang zu lokal gestarteten Dev-Servern, Userspace-Modus).
+      # LEER lassen = Stack laeuft ohne Tailnet, opencode serve startet normal.
+      # TS_AUTHKEY nie ins Image und nie ins Repo, nur hier (Portainer-Stack-Env).
+      # Nicht ephemer: der Node soll seine Tailnet-IP dauerhaft behalten.
+      - TS_AUTHKEY=${TS_AUTHKEY}
+      - TS_TAILSCALE_HOSTNAME=${TS_TAILSCALE_HOSTNAME:-code-dev}
     # Bewusst KEIN extra_hosts: 127.0.0.1 ist im Container der Container,
     # nicht der VPS. host-gateway loest dieses Problem nicht, es oeffnet
     # nur den Host. Ein Dev-Server (z. B. `pnpm dev`) laeuft direkt in
@@ -111,6 +127,11 @@ services:
       - opencode-data:/home/dev/.local/share/opencode
       - opencode-config:/home/dev/.config/opencode
       - opencode-state:/home/dev/.local/state/opencode
+      # Node-Identitaet des Tailnet. Ohne dieses Volume waere die 100.x-Adresse
+      # nach jedem Recreate eine neue (AGENTS.md §8: Named Volumes ueberleben
+      # Image-Upgrades). Befoellert tailscaled mit uid 1000, darum im
+      # Entrypoint in der Chown-Liste.
+      - tailscale-state:/home/dev/.local/share/tailscale
     networks:
       - code-remote
     depends_on:
@@ -524,6 +545,8 @@ volumes:
   opencode-data:
   opencode-config:
   opencode-state:
+  # Tailscale-Node-Identitaet (siehe Volume-Mount bei code-dev).
+  tailscale-state:
   # Eigenes Volume fuer den rootless-Daemon (2026-09-26). Das alte
   # 'dind-data' war root:root (0:0) und ist fuer rootless unbrauchbar:
   # der Daemon laeuft als uid 1000 und kann dort nicht schreiben. Ein
