@@ -144,6 +144,48 @@ Build. Deshalb zwei getrennte Limits: so stirbt ein runaway Build nur
 dind-Container greifen fuer die inneren Container mit (gleicher cgroup, live
 gemessen), Limits an inneren Containern greifen nicht (kein systemd im Container).
 
+**`code-dev` hat kein „harmloses Opfer" — sein groesster Prozess ist PID 1.**
+Dieselbe OOM-Logik wie beim DinD, nur dass der Treffer hier `opencode serve` ist
+und der laeuft als **PID 1**. PID 1 killen = der Container stirbt =
+`restart: unless-stopped` = **die Sitzung ist weg**. Am 2026-09-29 gemessen: 8
+OOM-Kills in 24 h, Ausloeser jedes Mal `cargo build` (parallele `rustc` mit
+220–920 MB pro Instanz bei 3 Cores). Opfer-Bilanz: 3x rustc, aber **5x PID 1**.
+Deshalb war die Erscheinung von aussen „nicht regelmaessig" — sie hing nur
+daran, OB gerade Rust kompiliert wurde. Limits deshalb von 2g/5g auf
+**3g/6g** angehoben (README, *RAM- und Swap-Limits*).
+
+Merksatz fuer die naechste Anpassung: **`code-dev` ist interaktiv, also darf hier
+nichts den PID-1-Pfad ausloesen.** Ein Weg, den jemand „zur Haushalts-
+optimierung" vorschlaegt und der erst beim naechsten `cargo build` auffaellt.
+
+### `vm.swappiness=0` macht den Swap-Deckel hier zur Dekoration
+
+Auf diesem Host steht `vm.swappiness=0`. Der Kernel swapped damit erst, wenn
+RAM **global** knapp wird — nicht, wenn ein einzelnes cgroup an seiner Decke
+scheitert. Live gemessen am 2026-09-29: `memory.swap.current` stand auf **0**,
+obwohl `memswap_limit` 3 GB erlaubt waren und der OOM-Killer parallel feuerte.
+
+Also: `memswap_limit` auf diesem Host **deckelt nur**, er puffert nicht. Der
+RAM-Deckel ist die einzige wirksame Stellschraube. `vm.swappiness` zu aendern
+waere der naechste logische Schritt, wird aber **nicht** gemacht: es wirkt
+hostweit, also auch auf Caddy und die MariaDB der Produktion, und die gehoeren
+nicht zu diesem Stack. Wenn das jemand vorschlaegt, ist das eine Entscheidung
+ueber den **Host**, nicht ueber `remote/` — und gehoert dann ins Globals.
+
+### Akute OOM-Lage ohne Recreate entschaerfen
+
+`memory.max` ist im laufenden cgroup schreibbar. Fuer eine akute Lage, in der
+gerade gearbeitet wird, ist das der einzige Weg, der niemanden bricht:
+
+```sh
+CG=/sys/fs/cgroup/system.slice/docker-$(docker inspect -f '{{.Id}}' code-dev).scope
+echo 3221225472 > "$CG/memory.max"   # 3 GiB
+```
+
+**Nur eine Bruecke.** Beim naechsten Recreate (Watchtower, Stack-Deploy) ist der
+Wert weg; es zaehlt ausschliesslich, was in der Compose-Datei steht. Die
+Compose-Datei nachzuziehen ist Pflicht, nicht optional.
+
 ## 10. Autoupdate: SIGTERM an PID 1 ist der Mechanismus
 
 `entrypoint.sh` startet den Watcher, der bei neuem Binary **idle** per

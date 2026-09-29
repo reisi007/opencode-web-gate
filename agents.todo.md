@@ -5,6 +5,49 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
 
 ## 2026-09-29
 
+- [x] **`code-dev` restartete unregelmaessig — Ursache war der RAM-Deckel, nicht
+  die VM** (2026-09-29). Ausgangsfrage: „warum restartet die code-vm immer
+  wieder". **Erste Feststellung: es gibt keine VM.** `code-vm` ist der
+  Compose-Stack `dev-vm` (in Portainer `code-remote`), Container `code-dev`.
+  `virsh`/`libvirt`/`systemd-nspawn` existieren auf dem Host nicht.
+  **Drei unabhaengige Restart-Ursachen, alle by design:**
+  1. **cgroup-OOM-Kills (die unregelmaessigen, hier behoben).** 8 in 24 h, alle
+     in `code-dev`, kein anderer Container auffaellig (15 OOM-Events im
+     laufenden Kernel-Boot: 13 `code-dev`, 2 `code-remote-dind`). Ausloeser
+     jedes Mal `cargo build`: parallele `rustc` mit 220–920 MB pro Instanz bei
+     3 Cores. Der Kernel killt den **groessten** Prozess im cgroup — das ist
+     nicht der schuldige `rustc`, sondern `opencode serve`, und der laeuft als
+     **PID 1**. PID 1 stirbt = Container stirbt = `restart: unless-stopped` =
+     Sitzung weg. Opfer-Bilanz an einem Tag: 3x rustc, aber 5x PID 1. Genau
+     deshalb „nicht regelmaessig": es hing nur daran, OB gerade Rust
+     kompiliert wurde. Idle 700 MB, `memory.peak` 1558 MB — 2 GB waren knapp.
+  2. **Watchtower recreated `code-dev`**, weil der `:latest`-Tag von
+     `opencode-web-dev-baseline` ~taeglich (teils 3x am selben Tag) einen neuen
+     Digest bekommt. Live beobachtet am 29.09.: 11:19, 12:19, 13:19, jeweils
+     `Stopping /code-dev (SIGTERM)` → `Creating /code-dev`. Watchtower laeuft
+     mit `POLL_INTERVAL=3600` und **ohne Label-Filter**.
+  3. **Der In-Container-Auto-Updater** (`OPENCODE_AUTOUPDATE=true`, alle 20 min,
+     Fenster 07–23 Uhr) killt PID 1 per `kill -TERM 1`, wenn ein Update
+     anliegt und der Server idle ist. Seltenster der drei Pfade.
+  **Umgesetzt:** `mem_limit` 2g → **3g**, `memswap_limit` 5g → **6g**, in der
+  Repo-Compose **und** auf dem VPS (Backup
+  `docker-compose.yml.bak-memlimit-20260929-141149`). Wichtig: `MEMORY_LIMIT`/
+  `MEMSWAP_LIMIT` sind in `stack.env` **nicht** gesetzt, es griffen also die
+  Defaults aus der Compose-Datei — deshalb genügt die Datei-Aenderung.
+  **Live entschaerft ohne Recreate:** `memory.max` direkt ins laufende cgroup
+  geschrieben (3 GiB), weil zwei Sessions aktiv waren (eine war meine eigene).
+  Die Compose-Aenderung ist trotzdem Pflicht — beim naechsten Recreate waere
+  der Direktwert wieder weg. `remote/README.md` und `remote/AGENTS.md` §9
+  nachgezogen.
+  **Nebenbefund mit Relevanz:** das Swap-Sicherheitsnetz hat **nie gegriffen**
+  — `memory.swap.current` stand auf 0, obwohl 3 GB erlaubt waren. Ursache
+  `vm.swappiness=0` auf dem Host: der Kernel swapped erst bei **global** RAM-
+  Engpass (Host hatte 4,6 GB frei), also immer nach der cgroup-Grenze. Die
+  damalige Compose-Begruendung („Swap faengt Spitzen ab, statt Caddy/MariaDB zu
+  verdraengen") war damit faktisch nie in Kraft. **Bewusst nicht geaendert**,
+  weil hostweit — es ginge auch an Caddy/MariaDB der Produktion.
+  **Watchtower bewusst unveraendert** (Entscheidung des Menschen) — die
+  regelmaessigen Recreates bleiben.
 - [x] **Tailscale in `code-dev` — live verifiziert und deployed** (2026-09-29).
   Use case: **lokal in `code-dev` gestartete Dev-Server von aussen sehen**
   (`pnpm dev` o. ae.). Code stand schon im Repo (Commits `21fbb1d`,

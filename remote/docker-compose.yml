@@ -22,12 +22,17 @@
 #   SESSION_TTL         default 43200
 #   IMAGE               default ghcr.io/reisi007/opencode-web-dev-baseline:latest
 #   CPU_CORES           default 3: maximale CPU-Kerne fuer code-dev
-#   MEMORY_LIMIT        default 2g: RAM-Limit fuer code-dev
-#   MEMSWAP_LIMIT       default 5g: RAM+Swap GESAMT fuer code-dev (3 GB Swap).
+#   MEMORY_LIMIT        default 3g: RAM-Limit fuer code-dev
+#                         (2026-09-29 von 2g angehoben — 2g hat im Betrieb
+#                         reproduzierbar cgroup-OOM-Kills ausgeloest, siehe
+#                         README, Abschnitt "RAM- und Swap-Limits")
+#   MEMSWAP_LIMIT       default 6g: RAM+Swap GESAMT fuer code-dev (3 GB Swap).
 #                         MUSS groesser sein als MEMORY_LIMIT, weil Docker
 #                         memory.swap.max = MEMSWAP_LIMIT - MEMORY_LIMIT setzt.
 #                         Ohne diesen Wert ist der Swap-Deckel exakt
-#                         MEMORY_LIMIT. Details und Messwerte: README,
+#                         MEMORY_LIMIT. ACHTUNG: dieser Swap-Deckel hat noch
+#                         NIE gegriffen, weil vm.swappiness=0 auf dem Host
+#                         gesetzt ist. Details und Messwerte: README,
 #                         Abschnitt "RAM- und Swap-Limits".
 #   DIND_MEMORY_LIMIT   default 1300m: RAM-Limit fuer den dind-Daemon
 #   DIND_MEMSWAP_LIMIT  default 3g: RAM+Swap gesamt fuer den dind-Daemon
@@ -81,10 +86,34 @@ services:
     # memswap_limit setzt man, um das VERHaelTNIS zu bestimmen und den
     # Gesamt-Fussabd (RAM+Swap) hart zu deckeln — nicht um Swap zu eroeffnen.
     #
-    # 2g RAM + 3g Swap = 5g gesamt. Bei 1,4 GB anon realem Bedarf ist 2g RAM
-    # knapp, der Swap fängt Spitzen ab, statt Caddy/MariaDB zu verdrängen.
-    mem_limit: ${MEMORY_LIMIT:-2g}
-    memswap_limit: ${MEMSWAP_LIMIT:-5g}
+    # 3g RAM + 3g Swap = 6g gesamt. 2026-09-29 von 2g/5g angehoben.
+    #
+    # GRUND, gemessen am 2026-09-29 (8 OOM-Kills in 24 h, alle in DIESEM
+    # cgroup, kein anderer Container auffaellig): Mit 2g RAM hat der
+    # cgroup-OOM-Killer bei jedem `cargo build` gefeuert — parallele rustc
+    # liegen bei 220-920 MB pro Instanz, bei 3 CPU-Cores also mehrere davon
+    # gleichzeitig. Der Kernel killt im cgroup den GROESSTEN Prozess, und das
+    # ist nicht der schuldige rustc, sondern `opencode serve` — der laeuft
+    # als PID 1. PID 1 stirbt = der ganze Container stirbt =
+    # restart: unless-stopped = Sitzung weg. Opfer an einem Tag: 3x rustc,
+    # aber 5x opencode/PID 1. Genau deshalb war es von aussen "nicht
+    # regelmaessig": es hing daran, OB man gerade Rust kompilierte.
+    #
+    # WICHTIG: das Swap-Sicherheitsnetz hat NIE gegriffen. memory.swap.current
+    # stand auf 0, obwohl 3g Swap erlaubt waren. Grund ist vm.swappiness=0 auf
+    # dem Host — der Kernel swapped erst, wenn RAM GLOBAL knapp wird (Host
+    # hatte 4,6 GB frei), also immer NACH der 2g-cgroup-Grenze. Die 2 GB
+    # wurden nie erreicht, ohne dass vorher der OOM-Killer zuschlug. Swap
+    # bleibt damit Reserve, nicht Puffer; die RAM-Deckel ist die eigentliche
+    # Stellschraube. Wer den Swap wirklich nutzen will, muss vm.swappiness
+    # hostweit hochsetzen — das wirkt dann aber auch auf Caddy/MariaDB und
+    # ist deshalb hier nicht passiert.
+    #
+    # Rechnung gegen 7,5 GB Host-RAM: code-dev 3g + dind 1,3g + Portal ~0,5g
+    # + OS ~0,3g = ~5,1 GB, bleibt ~2,4 GB Reserve. 4g waere ebenfalls
+    # moeglich, laesst aber nur ~1,4 GB Luft fuer die Produktion.
+    mem_limit: ${MEMORY_LIMIT:-3g}
+    memswap_limit: ${MEMSWAP_LIMIT:-6g}
     environment:
       # OPENCODE_PASSWORD ist der aktuelle Name; OPENCODE_SERVER_PASSWORD bleibt
       # als Legacy-Fallback für Entrypoint/Caddy und ältere OpenCode-Versionen.
