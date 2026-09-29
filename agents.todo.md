@@ -5,61 +5,102 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
 
 ## 2026-09-29
 
-- [ ] **Tailscale in `code-dev` — live verifizieren** (Code im Repo, VPS noch
-  auf dem alten Image). Use case: **lokal in `code-dev` gestartete Dev-Server
-  von aussen sehen** (`pnpm dev` o. ae.). `Dockerfile`, `entrypoint.sh`,
-  `docker-compose.yml` und `.env.example` sind angepasst; Design und die
-  verworfene Alternative stehen in [`remote/TAILSCALE-PLAN.md`](remote/TAILSCALE-PLAN.md),
-  Regeln in `remote/AGENTS.md` §15.
-  **Warum Userspace und nicht TUN:** `tailscaled --tun=userspace-networking`
-  braucht kein `/dev/net/tun` und keine Capabilities. Live verifiziert am
-  laufenden `code-dev` (Stand vor der Aenderung):
-  ```
-  /.dockerenv vorhanden, PID 1 = opencode
-  /usr/local/bin/entrypoint.sh, DOCKER_HOST=tcp://dind:2375
-  ```
-  Ein TUN-Modus haette `cap_add: NET_ADMIN` plus `devices: /dev/net/tun`
-  gebraucht — genau die Tür, die §3/§4 geschlossen halten.
-  **Gegengeprüft, dass die Isolation hält** (YAML geparst, `code-dev`):
-  `cap_add` nein, `devices` nein, `ports` nein, `extra_hosts` nein,
-  `network_mode` nein, `privileged` nein.
-  **Bekannt und gewollt:** der Tailnet-Weg umgeht Caddy. `forward_auth`,
-  `code-auth-remote` und der oeffentliche DNS-Eintrag bleiben unberuehrt;
-  `remote-code.<domain>` antwortet nach dem Deploy **weiterhin ohne VPN**. Wer
-  das umkehrt erwartet, macht einen Fehltest.
-  **Nicht erreichbar vom Tailnet** (anderer Netzraum, §7): `dind` und seine
-  Testcontainer, `code-auth-remote:8081`.
-  **Entrypoint-Logik getestet, ausserhalb des Containers** — mit Attrappen fuer
-  `tailscaled`/`tailscale` (echter Unix-Socket) und der echten, extrahierten
-  Funktion. Vier Szenarien, alle mit Rueckgabe 0:
-  | Fall | `TS_AUTHKEY` | `BackendState` | Erwartung | Ist |
-  |---|---|---|---|---|
-  | Erstlauf | gesetzt | `NeedsLogin` | `up` mit Key + Host | wie erwartet |
-  | Recreate | gesetzt | `Running` | **kein** `up` | wie erwartet |
-  | kein Key | leer | `NoState` | uebersprungen | wie erwartet |
-  | `tailscaled` tot | gesetzt | – | Warnung, Start geht weiter | wie erwartet |
-  **Falle beim Nachbauen des Tests:** `tailscaled` legt einen Unix-**Socket**
-  an, keine Datei. `[ -f ]` oder ein `touch` in der Attrappe schlaegt fehl und
-  sieht wie ein Bug im Entrypoint aus. Richtig ist `[ -S ]`.
-  **Nebenbefund, mitgefixt:** `/tmp/opencode` (Scratch der Agent-Tools) wurde
-  **root:root 755** angelegt, war als uid 1000 also nicht beschreibbar. Das
-  Image setzt jetzt `mkdir -p /tmp/opencode && chmod 1777 /tmp/opencode` (1777
-  wie `/tmp` selbst, mit Sticky Bit). Per Test-Build verifiziert: uid 1000
-  schreibt. **Im laufenden Container einmalig nachgezogen** mit
-  `sudo chmod 1777 /tmp/opencode` — bis zum naechsten Image-Build haelt das nur.
-  **Zu tun:**
-  - Auth-Key (nicht ephemer) + ACL in der Tailscale-Admin-Console.
-  - `TS_AUTHKEY`/`TS_TAILSCALE_HOSTNAME` in `remote/.env.production` (gitignored,
-    Handarbeit, §1).
-  - Image bauen, `IMAGE` setzen, Stack in Portainer neu deployen.
-  - Live pruefen: `tailscale status`/`ip -4` im Container, `ss -ltnp` (welche
-    Ports ueberhaupt lauschen), von einem Client `curl` auf `100.x.x.x:<port>`.
-  - **Gegenproben, die schiefgehen MUESSEN:** `curl` auf `100.x.x.x:2375/_ping`
-    (dind) und `100.x.x.x:8081/` (code-auth-remote) darf **nicht** antworten.
-  - `remote-code.<domain>` ohne Cookie auf `/api/info` → weiterhin 401, nicht 200.
-  - Dev-Server im Tailnet ueber laengere Zeit offen halten (SSE bricht sonst
-    gern lautlos) und Tailnet-IP ueber einen Stack-Recreate hinweg vergleichen.
-  - Abnahme erst nach unabhaengigem Review der Live-Verifikation.
+- [x] **Tailscale in `code-dev` — live verifiziert und deployed** (2026-09-29).
+  Use case: **lokal in `code-dev` gestartete Dev-Server von aussen sehen**
+  (`pnpm dev` o. ae.). Code stand schon im Repo (Commits `21fbb1d`,
+  `5103bfd`, `4d2fe3a`), der VPS lief noch auf dem alten Image. Jetzt live.
+  **Live-Befund (alle Messungen vom 2026-09-29, 12:28–12:31 CEST):**
+  - Deploy **`--no-deps code-dev`** statt vollem `up -d`. Grund gemessen: der
+    Diff der Compose-Datei enthielt **genau vier** inhaltliche Zeilen
+    (`TS_AUTHKEY`, `TS_TAILSCALE_HOSTNAME`, Volume-Mount, Volume-Deklaration),
+    `code-auth-remote` und `dind` waren unveraendert. Ein volles `up -d` haette
+    `code-auth-remote` recreated — und **dann** waere die `$$`-Falle aus §2
+    scharf geworden, weil `docker compose --env-file` `$$` *nicht* unescaped.
+    `code-auth-remote` nicht angefasst (Started 27.09., restarts=0), beide
+    Sidecars weiterhin `$2a$14$…`.
+  - `org.opencontainers.image.revision` des laufenden Containers =
+    `4d2fe3a56c…` (HEAD), `tailscaled` v1.102.4 laeuft. **Kein Image-Neubau
+    noetig** — das CI-Image enthielt alles.
+  - Volume `dev-vm_tailscale-state` wurde beim Deploy angelegt, gemountet auf
+    `/home/dev/.local/share/tailscale`, Eigentuemer `dev:dev` (Chown-Liste
+    greift), State liegt in `…/state`.
+  - Entrypoint-Log: `git: Identitaet global gesetzt`, `git: push-Credentials
+    via gh-Token`, `gh auth: ok (reisi007)`, `tailscale: erstmalige Anmeldung
+    mit TS_AUTHKEY`, `angemeldet als code-dev`, `IP 100.110.99.127`.
+  - **Tailnet-Weg funktioniert:** vom Mac `curl http://100.110.99.127:8080/` →
+    **200**; `/api/info` → **401** (Caddy nicht beteiligt, wie erwartet).
+    Mac-Client war im Tailnet angemeldet (`BackendState: Running`); Gerätename
+    bewusst nicht festgehalten, der trägt zur Messung nichts bei.
+  - **Gegenproben, die schiefgehen MUSSTEN, und es taten:**
+    `100.110.99.127:2375/_ping` → `000`, `100.110.99.127:8081/` → `000`.
+    dind und code-auth-remote haengen weiter an `172.24.0.2/3`.
+  - `code-dev`: `health=healthy`, `restarts=0`, `oom=false`.
+  - **Portainer-DB gepatcht** (eigener Punkt unten) — die `TS_*`-Keys
+    ueberstehen jetzt einen spaeteren UI-Deploy.
+  **Praezisierung, die beim Messen auffiel:** der oeffentliche Weg antwortet
+  ohne Cookie auf `/api/info` mit **302 auf `/login.html`**, nicht mit 401.
+  **401** liefert `/api/me` — das ist die Aussage, die in §5 und in
+  `remote/AGENTS.md` §13 gemeint ist. Beides heisst „nicht authentifiziert“,
+  die Form ist aber verschieden. Kein Defekt, nur praeziser formuliert.
+- [ ] **`--accept-dns=false` sitzt nur an `tailscale up`, nicht am
+  `tailscaled`-Aufruf** (2026-09-29, gefunden beim Review der Commits).
+  `remote/AGENTS.md` §15.2 formuliert die Regel strenger als der Code es tut:
+  `entrypoint.sh` startet `tailscaled --tun=userspace-networking --statedir=…
+  --socket=…` **ohne** `--accept-dns=false`; das Flag steht erst an
+  `ts up --authkey=… --accept-dns=false`. Im Erstlauf-Fenster — Daemon laeuft,
+  `up` folgt Sekunden spaeter — ist die DNS-Vorliebe also noch nicht
+  persistiert. **Warum es live nicht auffiel:** der Userspace-Netzstack fasst
+  DNS gar nicht an, und `/etc/resolv.conf` blieb unveraendert (Docker-DNS
+  `127.0.0.11` hat weiter funktioniert, `opencode serve` startete normal).
+  **Offen, weil ungetestet, ob es je auffaellt.** **Zu tun:** das Flag
+  zusaetzlich an den `tailscaled`-Aufruf haengen, damit §15.2 wortgleich gilt.
+  Einzeiler, aber nicht von mir geaendert — dafuer braucht es eine Messung, die
+  `resolv.conf` im Container tatsaechlich beobachtet.
+- [ ] **Ein Portainer-UI-Deploy schreibt `compose/49/docker-compose.yml` neu —
+  die Env ist gepatcht, die Datei steht dort nicht** (2026-09-29).
+  Die `TS_*`-Keys sind jetzt in der Portainer-DB und ueberstehen einen
+  UI-Deploy. **Die Compose-Datei steht dort aber nicht:** Portainer 2.45.1
+  fuehrt fuer diesen Stack **kein** `FileContent` im Datensatz,
+  `ProjectPath=/data/compose/49`. Der Web-Editor laedt die Datei von der
+  Platte, ein UI-Deploy benutzt sie von dort. **Risiko:** wer im Editor `Save`
+  klickt, ohne vorher die aktuelle Datei aus dem Repo-HEAD einzufuegen,
+  deployt einen leeren Stack. **Zu tun:** Stack `dev-vm` in der UI nie ohne
+  vorheriges Einfuegen von `remote/docker-compose.yml` aus dem HEAD updaten.
+- [x] **Portainer-DB `dev-vm` um `TS_*` gepatcht** (2026-09-29, 12:30).
+  Grund: Portainer haelt die Stack-Env in seiner Datenbank und schreibt
+  `stack.env` bei jedem UI-Deploy daraus neu. Ohne den Patch haette der
+  naechste Browser-Deploy die `TS_*`-Keys wieder entfernt. **Entscheidung des
+  Menschen**, bewusst gegen die Empfehlung, den Stack zunaechst ohne Tailnet zu
+  deployen und das spaeter nachzuziehen.
+  **Vorher gemessen, nicht geraten** (Portainer 2.45.1, DB 1 MiB, BoltDB):
+  - **Bucket-Keys sind 8 Byte Big-Endian, kein ASCII.** `dev-vm` liegt unter
+    `00 00 00 00 00 00 00 31`. `Get([]byte("49"))` liefert **nichts** — wer
+    so sucht, schliesst faelschlich „Stack nicht gefunden“.
+  - **Der Stack-Datensatz hat kein `FileContent`.** Weder 0 Byte noch einen
+    leeren String — das Feld fehlt ganz. Die Compose-Datei existiert in der
+    DB **nicht** und liegt nur auf der Platte.
+  - Datensatz-Felder: `ProjectPath=/data/compose/49`, `EntryPoint=docker-compose.yml`,
+    `Type=2`, `EndpointId=3`, `Id=49`, 6 Env-Eintraege.
+  **Vorgehen:** Backup `portainer.db.bak-<ts>` → `docker stop portainer` →
+  **frisches** Backup des aktuellen Stands (Portainer schreibt im
+  5-Minuten-Takt, `SnapshotInterval: 5m`; eine aeltere Kopie haette seine
+  letzten Writes zurueckgerollt) → Schreib-Container als root auf dem Volume
+  (kein Go auf Mac und VPS, deshalb `golang:1.24-alpine` als Wegwerf-Container)
+  → `docker start portainer`.
+  **Kontrolle, die wirklich etwas wert ist:** vor **und** nach dem Schreiben je
+  ein Fingerabdruck ueber **alle 23 Keys aller uebrigen Buckets** — nach dem
+  Patch **identisch**. Der Stack-Datensatz wurde als `map[string]json.RawMessage`
+  gelesen und nur der Schluessel `Env` ersetzt, damit jedes andere Feld
+  byte-for-byte unangetastet bleibt.
+  **Ergebnis:** `Env` 6 → 8 Eintraege; nach dem Portainer-Neustart **noch
+  da** (verifiziert an einer Kopie des Post-Startup-Zustands, weil Portainer
+  die DB im Betrieb exklusiv sperrt); alle 7 Stacks unveraendert; Datei bleibt
+  `0600 root:root`, 1 MiB.
+  **Nebenbefund fuer den naechsten, der das macht:** Portainer haelt die DB
+  exklusiv gesperrt, ein zweiter Leser bekommt `timeout`. Zum Lesen muss
+  Portainer kurz runter und man nimmt eine Kopie. **Und:** `bbolt.Open` mit
+  `Timeout` blockiert, nicht bricht ab — ein 10-s-Timeout im eigenen Code
+  rettet da nicht, nur ein `db.Close()` vor der naechsten Oeffnung.
 
 - [x] **`/projects` auf einen 100-GB-Loopback (ext4) umgestellt** (2026-09-29).
   **Entscheidung des Menschen, ausdrücklich gegen die Empfehlung des Agenten.**

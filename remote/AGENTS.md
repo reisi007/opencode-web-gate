@@ -6,7 +6,7 @@ Hier nur die Regeln, die beim Aendern von `docker-compose.yml` / `entrypoint.sh`
 `.env.production` schon einmal eine Fehlermeldung oder ein Sicherheitsloch
 erzeugt haben. Allgemeine Auth-Regeln: [`../AGENTS.md`](../AGENTS.md).
 
-## 1. Deploy laeuft ueber Portainer, nicht ueber SSH
+## 1. Deploy: Portainer-UI ist der Normalfall, SSH ist der dokumentierte Ausweg
 
 `docker-compose.yml` wird in den Web-Editor gepastet, `.env.production` als
 Stack Environment. Ein File, kein Upload. Nach jeder Aenderung: Stack in
@@ -15,6 +15,30 @@ Portainer neu deployen — eine Datei im Repo aendert auf dem VPS **nichts**.
 `.env.production` ist gitignored und trotzdem die einzige Quelle fuer den
 laufenden Stack. `setup.sh` schreibt sie **nicht** (nur `.env`). Jede Zeile muss
 `KEY=WERT` ergeben, wenn sie eingefuegt wird.
+
+### Der SSH-Weg (am 2026-09-29 erstmals bewusst genutzt, Entscheidung des Menschen)
+
+```sh
+cd /var/lib/docker/volumes/portainer_data/_data/compose/49   # Stack dev-vm
+docker compose --env-file stack.env -p dev-vm up -d --no-deps code-dev
+```
+
+**Immer `--no-deps` und immer nur den einen Service, der sich wirklich
+geaendert hat.** Grund ist §2, nicht Bequemlichkeit: `docker compose
+--env-file` escaped `$$` **nicht**. Ein volles `up -d` recreated auch
+`code-auth-remote`, und der bekommt dann `$$2a$$14$$…` statt `$2a$14$…` —
+`ensure_bcrypt()` prueft auf `$2` und der Sidecar startet nicht. Am
+2026-09-29 gemessen: der Diff enthielt genau **vier** inhaltliche Zeilen, alle
+in `code-dev`; mit `--no-deps` blieb `code-auth-remote` auf `Started 27.09.`,
+beide Sidecars weiter `$2a$14$…`. **Vorher den Diff ansehen, dann entscheiden,
+welche Services betroffen sind** — nicht pauschal `up -d`.
+
+### Was ein SSH-Deploy NICHT pflegt: die Portainer-DB
+
+Portainer haelt die Stack-Env in seiner Datenbank und schreibt `stack.env` bei
+jedem **UI**-Deploy daraus neu. Ein per SSH deployter Stack laeuft also korrekt,
+verliert aber neue Env-Keys beim naechsten Browser-Klick. Siehe §17 fuer den
+Patchweg und fuer die Falle, dass die Compose-Datei gar nicht in der DB steht.
 
 ## 2. `AUTH_HASH` gehoert als `$$2a$14$…` in `.env.production`
 
@@ -337,3 +361,65 @@ als `dev`. Das Image setzt deshalb `mkdir -p /tmp/opencode && chmod 1777
 kann, ohne die Rechte anderer zu gefaehrden. Wer das entfernt, sperrt jeden
 Schreibzugriff darauf als `dev`; im laufenden Container laesst es sich einmalig
 mit `sudo chmod 1777 /tmp/opencode` nachziehen, bis das naechste Image gebaut ist.
+
+## 17. Die Portainer-DB ist eine Quelle der Wahrheit — und die haesslichste
+
+Gemessen an Portainer **2.45.1** (`portainer/portainer-ce:lts`, DB 1 MiB, BoltDB
+in `/var/lib/docker/volumes/portainer_data/_data/portainer.db`). Wer hier etwas
+aendert, beruehrt die Datei, in der **alle** Stacks liegen.
+
+**1. Bucket-Keys sind 8 Byte Big-Endian, kein ASCII.** `dev-vm` (ID 49) liegt
+unter `00 00 00 00 00 00 00 31`. Wer `Get([]byte("49"))` benutzt, bekommt
+**nichts** und schliesst faelschlich „Stack nicht gefunden". Immer iterieren
+und im JSON nach `Name` suchen.
+
+**2. Fuer Compose-Stacks existiert KEIN `FileContent`.** Das Feld fehlt im
+Datensatz ganz (nicht 0 Byte, nicht `""`). Die Compose-Datei liegt **nur** auf
+der Platte, `ProjectPath=/data/compose/<id>`. Folgen: (a) ein UI-Deploy laedt
+sie von dort, (b) wer im Editor `Save` klickt, ohne vorher die Datei aus dem
+Repo-HEAD einzufuegen, deployt einen **leeren** Stack.
+
+**3. Portainer sperrt die DB exklusiv.** `bbolt.Open` bekommt im Betrieb
+`timeout` — auch read-only. Zum Lesen: Portainer kurz stoppen, Kopie nehmen,
+wieder starten, die Kopie auswerten. **Und:** `Timeout` in bbolt **blockiert**,
+es bricht nicht ab. Ein `Timeout` im eigenen Code rettet nicht, nur ein
+`db.Close()` vor der naechsten `Open`.
+
+**4. Der Patch, wenn ein SSH-Deploy neue Env-Keys mitbringt** (2026-09-29 so
+gemacht, fuer `dev-vm` um `TS_AUTHKEY`/`TS_TAILSCALE_HOSTNAME`):
+
+```sh
+D=/var/lib/docker/volumes/portainer_data/_data
+cp -a "$D/portainer.db" "$D/portainer.db.bak-$(date +%Y%m%d-%H%M%S)"  # VOR dem Stop
+docker stop portainer
+cp -a "$D/portainer.db" "$D/portainer.db.bak-$(date +%Y%m%d-%H%M%S)"  # AKTUELLER Stand
+# Schreib-Container als root auf dem Volume; auf Mac und VPS ist kein Go
+# installiert, deshalb golang:1.24-alpine als Wegwerf-Container
+docker run --rm -v "$D:/data" -v /w:/w -w /w golang:1.24-alpine \
+  sh -c 'go get go.etcd.io/bbolt@v1.4.0 && go run . /data/portainer.db dev-vm KEY=WERT'
+docker start portainer
+```
+
+Der zweite Backup ist nicht ueberfluessig: Portainer schreibt im
+`SnapshotInterval` (5 min) auf die DB, und ein Patch auf einem aelteren Stand
+rolled seine letzten Writes zurueck.
+
+**5. Zwei Regeln, die den Patch gefahrlich machen, wenn man sie nicht kennt:**
+
+- **Nur ein Feld anfassen.** Den Datensatz als
+  `map[string]json.RawMessage` lesen und **ausschliesslich** den Schluessel
+  `Env` ersetzen. Ein Unmarshal/Marshal-Roundtrip ueber ein Struct kann Felder
+  umsortieren oder weglassen, und es sieht im Log harmlos aus.
+- **Vorher/nachher fingerabdrucken.** Ueber **alle** Keys aller uebrigen
+  Buckets einen SHA256 bauen und vergleichen; bei Abweichung abbrechen. Am
+  2026-09-29 waren das 23 Keys, nach dem Patch identisch. Ohne diese Kontrolle
+  ist ein "hat geklappt" keine Aussage.
+
+**6. Werkzeug:** es gibt auf keinem der beiden Rechner Go. `bbolt` als
+Wegwerf-Container ist der Weg; `strings` auf der DB findet zwar Klartext, taugt
+aber nicht zum Schreiben.
+
+**7. Was der Patch behebt und was nicht:** die **Env** ist danachpersistent. Die
+**Compose-Datei** ist es nicht — die steht nicht in der DB (Punkt 2). Nach
+einem UI-Deploy muss `remote/docker-compose.yml` aus dem HEAD trotzdem
+eingefuegt werden.
