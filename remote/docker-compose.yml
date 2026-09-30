@@ -22,19 +22,19 @@
 #   SESSION_TTL         default 43200
 #   IMAGE               default ghcr.io/reisi007/opencode-web-dev-baseline:latest
 #   CPU_CORES           default 3: maximale CPU-Kerne fuer code-dev
-#   MEMORY_LIMIT        default 4g: RAM-Limit fuer code-dev
-#                         (2026-09-29 zweimal angehoben: 2g -> 3g gegen die
-#                         OOM-Kills, dann 3g -> 4g, weil am 3g-Deckel
-#                         memory.peak die Decel exakt beruehrte. Details und
+#   MEMORY_LIMIT        default 5g: RAM-Limit fuer code-dev
+#                         (2026-09-29 zweimal, 2026-09-30 einmal angehoben:
+#                         2g -> 3g -> 4g -> 5g. Auch 4 GB hat PID 1 am
+#                         2026-09-30 um 08:46 wieder getoetet. Details und
 #                         Messwerte: README, Abschnitt "RAM- und Swap-Limits")
-#   MEMSWAP_LIMIT       default 8g: RAM+Swap GESAMT fuer code-dev (4 GB Swap).
+#   MEMSWAP_LIMIT       default 9g: RAM+Swap GESAMT fuer code-dev (4 GB Swap).
 #                         MUSS groesser sein als MEMORY_LIMIT, weil Docker
 #                         memory.swap.max = MEMSWAP_LIMIT - MEMORY_LIMIT setzt.
 #                         Ohne diesen Wert ist der Swap-Deckel exakt
-#                         MEMORY_LIMIT. ACHTUNG: dieser Swap-Deckel hat noch
-#                         NIE gegriffen, weil vm.swappiness=0 auf dem Host
-#                         gesetzt ist. Details und Messwerte: README,
-#                         Abschnitt "RAM- und Swap-Limits".
+#                         MEMORY_LIMIT. Der Swap ist echte Reserve, am
+#                         2026-09-30 mit 597 MB memory.swap.current belegt.
+#                         Details und Messwerte: README, Abschnitt
+#                         "RAM- und Swap-Limits".
 #   DIND_MEMORY_LIMIT   default 2.5g: RAM-Limit fuer den dind-Daemon
 #                         (2026-09-29 von 1300m angehoben — 2 OOM-Kills am
 #                         26.09.: dockerd und dd, beide im DinD-cgroup)
@@ -67,6 +67,16 @@ services:
     container_name: code-dev
     restart: unless-stopped
     cpus: ${CPU_CORES:-3}
+    # Watchtower fasst dieses Image NICHT an (Entscheidung des Menschen
+    # 2026-09-30). Ohne dieses Label hat watchtower code-dev im Log
+    # "23-mal recreated" — 1 bis 3 pro Tag, weil der :latest-Digest von
+    # opencode-web-dev-baseline taeglich neu gebaut wird. Jedes Recreate
+    # beendet die laufende Sitzung, egal ob jemand arbeitet.
+    # Gegenlabel: das Label muss am CONTAINER haengen, nicht am Image — ein
+    # Recreate uebernimmt es erst mit, es wirkt also erst ab dem naechsten
+    # Recreate (Entscheidung des Menschen).
+    labels:
+      - com.centurylinklabs.watchtower.enable=false
     logging:
       driver: json-file
       options:
@@ -103,15 +113,16 @@ services:
     # aber 5x opencode/PID 1. Genau deshalb war es von aussen "nicht
     # regelmaessig": es hing daran, OB man gerade Rust kompilierte.
     #
-    # WICHTIG: das Swap-Sicherheitsnetz hat NIE gegriffen. memory.swap.current
-    # stand auf 0, obwohl 3g Swap erlaubt waren. Grund ist vm.swappiness=0 auf
-    # dem Host — der Kernel swapped erst, wenn RAM GLOBAL knapp wird (Host
-    # hatte 4,6 GB frei), also immer NACH der 2g-cgroup-Grenze. Die 2 GB
-    # wurden nie erreicht, ohne dass vorher der OOM-Killer zuschlug. Swap
-    # bleibt damit Reserve, nicht Puffer; die RAM-Deckel ist die eigentliche
-    # Stellschraube. Wer den Swap wirklich nutzen will, muss vm.swappiness
-    # hostweit hochsetzen — das wirkt dann aber auch auf Caddy/MariaDB und
-    # ist deshalb hier nicht passiert.
+    # Der Swap ist ECHTE Reserve, kein Dekor. Eine fruehere Fassung dieses
+    # Kommentars behauptete, der Swap greife wegen vm.swappiness=0 nie. Das war
+    # eine Verwechslung: vm.swappiness ist 10 (persistiert in
+    # /etc/sysctl.conf), der gemessene 0 war vm.overcommit_memory. Gegengeprueft
+    # am 2026-09-30: memory.swap.current stand bei 597 MB von 4096 MB. Merksatz:
+    # die beiden Sysctls nicht verwechseln.
+    #
+    # 4 GB haben PID 1 trotz 4 GB RAM plus 4 GB Swap nicht gerettet
+    # (opencode, 2026-09-30 08:46). Der Grund ist anon-Druck aus der
+    # Rust-Toolchain plus Chrome, nicht fehlender Swap.
     #
     # NACHMESSUNG am 3g-Deckel (2026-09-29, 15:57-16:01): 0 OOM-Kills, aber
     # memory.peak = 3221229568 bei memory.max = 3221225472 — die Decel wurde
@@ -130,8 +141,8 @@ services:
     # Das Risiko wurde am 2026-09-29 bewusst so entschieden (Entscheidung des
     # Menschen) und nicht durch Senken von dind entschaerft. Wer es zurueck
     # nehmen will: dind auf 2g senken, dann bleiben ~0,3-0,5 GB Luft.
-    mem_limit: ${MEMORY_LIMIT:-4g}
-    memswap_limit: ${MEMSWAP_LIMIT:-8g}
+    mem_limit: ${MEMORY_LIMIT:-5g}
+    memswap_limit: ${MEMSWAP_LIMIT:-9g}
     environment:
       # OPENCODE_PASSWORD ist der aktuelle Name; OPENCODE_SERVER_PASSWORD bleibt
       # als Legacy-Fallback für Entrypoint/Caddy und ältere OpenCode-Versionen.
