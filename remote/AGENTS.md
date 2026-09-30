@@ -250,6 +250,35 @@ kein Swap-Problem, das ist anon-Druck aus der Rust-Toolchain plus Chrome.
 vorherige Kommando mitlesen, sonst wird die naechste Massnahme auf einer
 Verwechslung gebaut.
 
+### Zwei Faelle, in denen die DB gepatcht wird — und wann NICHT
+
+Nach dem Schema in §17.4 wird die DB in zwei Faellen angefasst:
+
+1. **Neuer Env-Key, der per SSH-Deploy kam.** Der Stack laeuft korrekt, aber
+   Portainer kennt den Key nicht und schreibt `stack.env` bei jedem UI-Deploy
+   ohne ihn neu. Beispiel 2026-09-29: `TS_AUTHKEY`/`TS_TAILSCALE_HOSTNAME`.
+2. **Sichtbarkeit.** Werte, die bisher nur als Compose-Default existierten, in
+   die Env heben, damit sie in der UI sichtbar und editierbar sind. Beispiel
+   2026-09-30: `MEMORY_LIMIT=5g` und `MEMSWAP_LIMIT=9g`.
+
+**Nicht** patchen, wenn nur ein Compose-Default geaendert wurde: der Default
+greift ohnehin, und der Weg durch die DB erzeugt nur eine zweite Quelle der
+Wahrheit. Der Nachteil von Fall 2 ist genau das — ab jetzt schlaegt der
+DB-Wert der Datei, still. Wer `mem_limit` in der Datei auf 6g aendert, waehrend
+die DB 5g sagt, deployt 5g und glaubt, es stimme.
+
+**Der vierte Schritt wird oft vergessen: `.env.production` mitziehen.** Die
+Datei ist die Paste-Vorlage fuer die UI (§1). Stehen die Keys nur in der DB
+und nicht in der Datei, loescht der naechste Paste sie wieder. Bei Fall 2 am
+2026-09-30 mitgemacht, sonst waere der Patch nach einem UI-Paste stillschweigend
+weg gewesen.
+
+Geprueft wurde am 2026-09-30 ausserdem Punkt 2 noch einmal: `FileContent`
+existiert im dev-vm-Record **nicht**, `ProjectPath` ist `/data/compose/49` — und
+`/data` ist im Portainer-Container genau das `portainer_data`-Volume. Der
+Web-Editor laedt also die Datei, die auf der Platte liegt. Ein UI-Recreate
+sieht die aktuelle Compose-Datei, nicht einen Stand aus der DB.
+
 ### Akute OOM-Lage ohne Recreate entschaerfen
 
 `memory.max` ist im laufenden cgroup schreibbar. Fuer eine akute Lage, in der
@@ -522,7 +551,13 @@ cp -a "$D/portainer.db" "$D/portainer.db.bak-$(date +%Y%m%d-%H%M%S)"  # AKTUELLE
 # Schreib-Container als root auf dem Volume; auf Mac und VPS ist kein Go
 # installiert, deshalb golang:1.24-alpine als Wegwerf-Container
 docker run --rm -v "$D:/data" -v /w:/w -w /w golang:1.24-alpine \
-  sh -c 'go get go.etcd.io/bbolt@v1.4.0 && go run . /data/portainer.db dev-vm KEY=WERT'
+  sh -c 'go mod init p >/dev/null 2>&1; go get go.etcd.io/bbolt@v1.4.0 && go run . /data/portainer.db dev-vm KEY=WERT'
+
+**Das `go mod init` ist Pflicht, nicht Kosmetik** (2026-09-30 gemessen). In
+`golang:1.24-alpine` bricht `go get` ohne Modul ab mit *"'go get' is no longer
+supported outside a module"* — der §17-Befehl stammt aus aelteren Go-Versionen
+und laeuft so nicht mehr. Ohne die Zeile passiert gar nichts und man haelt den
+Patch fuer misslungen.
 docker start portainer
 ```
 
