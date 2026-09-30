@@ -223,21 +223,32 @@ Merksatz fuer die naechste Anpassung: **`code-dev` ist interaktiv, also darf hie
 nichts den PID-1-Pfad ausloesen.** Ein Weg, den jemand „zur Haushalts-
 optimierung" vorschlaegt und der erst beim naechsten `cargo build` auffaellt.
 
-### `vm.swappiness=0` macht den Swap-Deckel hier zur Dekoration
+### Der Swap-Deckel funktioniert — eine falsche Diagnose ist hier korrigiert
 
-Auf diesem Host steht `vm.swappiness=0`. Der Kernel swapped damit erst, wenn
-RAM **global** knapp wird — nicht, wenn ein einzelnes cgroup an seiner Decke
-scheitert. Live gemessen am 2026-09-29: `memory.swap.current` stand auf **0**,
-obwohl `memswap_limit` 3 GB erlaubt waren und der OOM-Killer parallel feuerte.
+**Bis 2026-09-30 stand hier, der Swap-Deckel sei Dekoration, weil
+`vm.swappiness=0` sei. Das war falsch, und der Fehler war eine Verwechslung.**
 
-Also: `memswap_limit` auf diesem Host **deckelt nur**, er puffert nicht. Der
-Bei `code-dev` 4g/8g sind die vier Swap-GB damit eine Zahl und keine Reserve —
-wer sie als Absicherung verbucht, rechnet mit Luft, die es nicht gibt. Der
-RAM-Deckel ist die einzige wirksame Stellschraube. `vm.swappiness` zu aendern
-waere der naechste logische Schritt, wird aber **nicht** gemacht: es wirkt
-hostweit, also auch auf Caddy und die MariaDB der Produktion, und die gehoeren
-nicht zu diesem Stack. Wenn das jemand vorschlaegt, ist das eine Entscheidung
-ueber den **Host**, nicht ueber `remote/` — und gehoert dann ins Globals.
+`vm.swappiness` ist **10** (persistiert in `/etc/sysctl.conf`, mtime April,
+also seit langem). Was tatsaechlich `0` war: `vm.overcommit_memory` — ein
+voellig anderes Sysctl, das ich beim Messen im falschen Achsenfalsch
+mitgelesen und dann als swappiness ausgegeben habe. Die Beobachtung selbst
+war echt (`memory.swap.current` stand bei 0, waehrend der OOM-Killer feuerte),
+die Erklaerung darum war es nicht: es war schlicht **kein Swap noetig** in
+diesem Moment, nicht **Swap unmoeglich**.
+
+Live gegengeprueft am 2026-09-30: `memory.swap.current` im Container = **597 MB
+von 4096 MB** genutzt. Der Swap-Deckel greift also ganz normal.
+
+Konsequenz fuer die Groessenordnung: `memswap_limit` ist kein Dekor, sondern
+echte Reserve. Wer `code-dev` von 4 GB auf 5 GB RAM hebt, tut das gegen **9 GB
+Gesamtbudget**, nicht gegen 4 GB. Und umgekehrt — die 4 GB haben `opencode` als
+PID 1 am 2026-09-30 um 08:46 trotz 4 GB **plus** 4 GB Swap getoetet. Das ist
+kein Swap-Problem, das ist anon-Druck aus der Rust-Toolchain plus Chrome.
+
+**Merksatz fuer Messungen auf diesem Stack: `vm.overcommit_memory` und
+`vm.swappiness` sind zwei verschiedene Sysctls.** Bei RAM-Diagnosen immer das
+vorherige Kommando mitlesen, sonst wird die naechste Massnahme auf einer
+Verwechslung gebaut.
 
 ### Akute OOM-Lage ohne Recreate entschaerfen
 

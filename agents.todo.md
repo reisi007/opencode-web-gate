@@ -79,15 +79,23 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   greifen also die Defaults aus der Compose-Datei — deshalb genuegt die
   Datei-Aenderung, ein Portainer-DB-Patch ist nicht noetig (die DB haelt nur die
   Env, siehe §17). `remote/README.md` und `remote/AGENTS.md` §9 nachgezogen.
-  **Nebenbefund mit Relevanz:** das Swap-Sicherheitsnetz hat **nie gegriffen**
-  — `memory.swap.current` stand auf 0, obwohl 3 GB erlaubt waren. Ursache
-  `vm.swappiness=0` auf dem Host: der Kernel swapped erst bei **global** RAM-
-  Engpass (Host hatte 4,6 GB frei), also immer nach der cgroup-Grenze. Die
-  damalige Compose-Begruendung („Swap faengt Spitzen ab, statt Caddy/MariaDB zu
-  verdraengen") war damit faktisch nie in Kraft. **Bewusst nicht geaendert**,
-  weil hostweit — es ginge auch an Caddy/MariaDB der Produktion.
-  **Watchtower bewusst unveraendert** (Entscheidung des Menschen) — die
-  regelmaessigen Recreates bleiben.
+    **Nebenbefund, und eine Falschangabe darin (2026-09-30 korrigiert):** Ich
+    notierte, das Swap-Sicherheitsnetz habe „nie gegriffen" wegen
+    `vm.swappiness=0`. **Das war eine Verwechslung von zwei Sysctls:**
+    `vm.swappiness` ist **10** (persistiert in `/etc/sysctl.conf`, mtime
+    April), der gemessene `0` war `vm.overcommit_memory`. Die Beobachtung
+    (`memory.swap.current` = 0 waehrend OOM) war echt, die Erklaerung nicht —
+    es war schlicht kein Swap noetig in dem Moment. Gegengeprueft am
+    2026-09-30: **597 MB von 4096 MB Swap genutzt**, der Deckel greift also.
+    **Diese falsche Diagnose stand zwei Tage in AGENTS.md, README und Compose
+    und ist jetzt in allen drei berichtigt.** Auswirkung auf die Groessenordnung:
+    4g/8g war ein 8-GB-Gesamtbudget, kein 4-GB-Deckel mit Zierdekel.
+    **Watchtower fuer dieses Image ausgenommen** (Entscheidung des Menschen,
+    umgesetzt 2026-09-30): `com.centurylinklabs.watchtower.enable=false` am
+    code-dev-Service. Grund: **23 Recreates** in 6 Tagen, 1-3 pro Tag, weil der
+    `:latest`-Digest des Baseline-Images taeglich neu gebaut wird — und jedes
+    Recreate beendet die laufende Sitzung. Die anderen Container bleiben
+    weiterhin von watchtower erfasst.
 - [x] **Tailscale in `code-dev` — live verifiziert und deployed** (2026-09-29).
   Use case: **lokal in `code-dev` gestartete Dev-Server von aussen sehen**
   (`pnpm dev` o. ae.). Code stand schon im Repo (Commits `21fbb1d`,

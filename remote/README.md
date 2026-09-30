@@ -12,9 +12,10 @@
   begrenzt; über `CPU_CORES`, `MEMORY_LIMIT` und `MEMSWAP_LIMIT` im
   Stack-Environment anpassbar. Wichtig: `memswap_limit` muss größer sein als
   `mem_limit`, sonst ist der Swap-Deckel exakt so hoch wie das RAM-Limit.
-  Noch wichtiger: der Swap-Deckel **greift auf diesem Host nicht**, weil
-  `vm.swappiness=0` gesetzt ist — die RAM-Deckel ist die wirksame Stellschraube.
-  Siehe *RAM- und Swap-Limits*.
+  Wichtig für die Rechnung: `memswap_limit` ist der **Gesamt**-Deckel, bei 5g/9g
+  also 5 GB RAM plus 4 GB echte Swap-Reserve — beides belegt nachweislich
+  (`memory.swap.current` stand am 2026-09-30 bei 597 MB). Siehe *RAM- und
+  Swap-Limits*.
   **Kein Host-Zugriff:** `code-dev` hat bewusst *kein* `extra_hosts` und
   erreicht den VPS nicht. `127.0.0.1` ist der Container selbst — ein
   Dev-Server laeuft daher direkt in `code-dev` und ist sofort ueber
@@ -346,15 +347,22 @@ Daraus die Regeln:
   grep oom_kill $CG/memory.events
   ```
 
-**Der Swap-Deckel hat nie gegriffen:** `memory.swap.current` stand auf 0,
-obwohl 3 GB erlaubt waren. Ursache ist `vm.swappiness=0` auf dem Host — der
-Kernel swapped erst, wenn RAM **global** knapp wird, und der Host hatte 4,6 GB
-frei. Die cgroup-Grenze kommt also immer **vor** dem Swap, und der OOM-Killer
-feuert vorher. Der Swap-Deckel ist damit Reserve, kein Puffer; die RAM-Deckel ist
-die einzige wirksame Stellschraube. Bei 4 GB/8 GB ist das unverändert true —
-die vier Swap-GB sind eine Zahl, keine Reserve. `vm.swappiness` zu erhöhen wäre
-der nächste logische Schritt, wirkt aber **hostweit**, also auch auf Caddy und
-die MariaDB der Produktion, und ist deshalb bewusst nicht passiert.
+### Der Swap-Deckel greift — eine falsche Diagnose ist korrigiert
+
+Bis 2026-09-30 stand hier, der Swap habe „nie gegriffen", weil
+`vm.swappiness=0` sei. **Das war eine Verwechslung von zwei Sysctls.**
+`vm.swappiness` ist **10** (persistiert in `/etc/sysctl.conf`, mtime April).
+Der Wert `0`, den ich gemessen und falsch etikettiert hatte, war
+`vm.overcommit_memory`.
+
+Live gegengeprueft am 2026-09-30: `memory.swap.current` = **597 MB von 4096 MB
+genutzt**. `memswap_limit` ist also echte Reserve, keine Zahl.
+
+Das verschiebt die Groessenordnung: `code-dev` bei 4g/8g hatte ein **Gesamt-
+budget von 8 GB** — und `opencode serve` als PID 1 wurde am 30.09. um 08:46
+trotzdem getoetet. Der Grund ist also nicht der Swap, sondern anon-Druck:
+`rustc`/`rust-lld`/`clippy-driver` 220–920 MB pro Instanz, dazu Chrome aus
+Playwright-Läufen.
 
 ### Recreate ja, aber nicht um jeden Preis
 
@@ -514,8 +522,8 @@ hingegen spricht zuerst für das RAM-Limit, nicht für HTTP/2. Standard sind
 standen bis 2026-09-29 auf 2048/3072 und haben dabei reproduzierbar OOM-Kills
 ausgeloest, Grund und Messwerte siehe *RAM- und Swap-Limits*. Ein OOM bedeutet
 also **nicht**, dass beide erschöpft waren — der Swap-Deckel greift auf diesem
-Host wegen `vm.swappiness=0` gar nicht. Der schnellste Check, ob die RAM-Deckel
-die Ursache war:
+Host — der Swap-Deckel greift. Der schnellste Check, ob die RAM-Deckel die
+Ursache war:
 
 ```sh
 # Woerter "Killed process" im Kernel-Ringpuffer, mit cgroup-Zuordnung
