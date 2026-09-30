@@ -90,6 +90,30 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
     **Diese falsche Diagnose stand zwei Tage in AGENTS.md, README und Compose
     und ist jetzt in allen drei berichtigt.** Auswirkung auf die Groessenordnung:
     4g/8g war ein 8-GB-Gesamtbudget, kein 4-GB-Deckel mit Zierdekel.
+    **Portainer-DB gepatcht, damit die Werte in der UI sichtbar sind** (2026-09-30,
+    Fall 2 in `remote/AGENTS.md` §17.4): `MEMORY_LIMIT=5g` und
+    `MEMSWAP_LIMIT=9g` lagen nur als Compose-Defaults vor und waren in der UI
+    nicht zu sehen. Nach dem dokumentierten Verfahren: zwei Backups
+    (`portainer.db.bak-prepatch-`, `.bak-current-20260930-160451`), Portainer
+    gestoppt, nur das Feld `Env` ersetzt, Fingerprint ueber **alle** Buckets
+    vorher/nachher — `5309c01c31f41d1bd3276a60` == `5309c01c31f41d1bd3276a60`,
+    also ausschliesslich `Env` beruehrt. Live verifiziert: 10 Keys, `AUTH_HASH`
+    unveraendert 63 Zeichen (die `$$`-Form aus §2).
+    **Und der vierte Schritt, der sonst gefehlt haette:** `.env.production`
+    mitgezogen, weil sie die Paste-Vorlage ist — Keys nur in der DB waeren beim
+    naechsten UI-Paste wieder weg gewesen. `.env.example` ebenfalls von 4g auf
+    5g/9g nachgezogen (dort stand noch `MEMORY_LIMIT=4g`).
+    **Zwei Dinge am Weg, die beide in §17 jetzt stehen:**
+    `golang:1.24-alpine` braucht `go mod init` vor `go get`, sonst bricht der
+    §17-Befehl ab und man haelt den Patch fuer misslungen. Und mein erster
+    Fingerprint war falsch konstruiert — er hashte den kompletten
+    stacks-Record und meldete dadurch auch den legitimen Env-Change als
+    Abweichung. Richtig: `Env` aus dem Record entfernen, **dann** hashten. Ein
+    Fingerprint, der jeden gewollten Change als Abweichung meldet, wird
+    ignoriert — das ist gefaehrlicher als keiner.
+    **Nicht gepatcht (bewusst):** `CPU_CORES` und die `OPENCODE_UPDATE_*` bleiben
+    Compose-Defaults. Die braucht niemand in der UI, und jeder Key in der DB ist
+    eine zweite Wahrheit, die still schlagen kann.
     **Watchtower fuer dieses Image ausgenommen** (Entscheidung des Menschen,
     umgesetzt 2026-09-30): `com.centurylinklabs.watchtower.enable=false` am
     code-dev-Service. Grund: **23 Recreates** in 6 Tagen, 1-3 pro Tag, weil der

@@ -145,9 +145,37 @@ RUN groupadd -g "$DEV_GID" dev 2>/dev/null || true \
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
+# CARGO_BUILD_JOBS=2 (2026-09-30, RAM-Deckel war 2 GB und damit zu klein).
+#
+# Warum 2: der cgroup-OOM-Killer hat in diesem Stack wiederholt `opencode serve`
+# als PID 1 getoetet, also den GROSSEN Prozess im cgroup — ausgeloest wurde das
+# jedes Mal von `cargo build` und `cargo clippy`. Gemessene anon-RSS pro Instanz
+# (Rust-Toolchain, 2026-09-29/30):
+#   rustc          220-570 MB
+#   rust-lld       340-360 MB (+ bis 1 GB file-rss)
+#   clippy-driver  587 MB
+# Cargo startet so viele Compiler-Instanzen parallel, wie Cores da sind — hier
+# `cpus: 3`. Drei clippy-driver gleichzeitig sind ~1,8 GB anon, dazu Linker und
+# `opencode serve` mit 400-470 MB. Bei 2 Jobs sinkt der anon-Spitzenbedarf auf
+# ~1,2 GB, das passt mit Luft unter den 5-GB-Deckel.
+#
+# Bewusst als ENV im IMAGE und nicht als Stack-Env: es ist eine
+# Toolchain-Voreinstellung, die fuer JEDEN `cargo`/`clippy`-Aufruf in diesem
+# Container gilt, unabhaengig davon, wer ihn startet. Eine Stack-Env waere nur
+# ein zusaetzlicher Ort, der mit dem Image auseinanderlaufen kann — und sie
+# haette den Nachteil, dass sie laut ../AGENTS.md §1/§17 erst durch einen
+# Portainer-DB-Patch persistent wuerde.
+#
+# Ueberschreibbar per Stack-Env, falls ein einzelnes Projekt doch parallel
+# bauen soll: `environment:` schlaegt ENV aus dem Image.
+#
+# Kein Geheimnis, keine Netzwerk-Auswirkung. Haelt den Dauerzustand von
+# `cargo` auf 2 Jobs und ist in neueren Cargo-Versionen der uebliche Weg,
+# statt an jedem Build `CARGO_BUILD_JOBS` mitzugeben.
 ENV HOME=/home/dev \
     DOCKER_HOST=tcp://dind:2375 \
-    OPENCODE_DISABLE_AUTOUPDATE=true
+    OPENCODE_DISABLE_AUTOUPDATE=true \
+    CARGO_BUILD_JOBS=2
 
 # Git-Identitaet. Warum ENV und nicht `git config --global`:
 # ~/.gitconfig liegt NICHT in einem Volume (/home/dev ist selbst kein Mount),
