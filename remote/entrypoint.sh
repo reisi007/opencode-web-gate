@@ -290,5 +290,18 @@ PORT="${PORT:-8080}"
 if [ "${OPENCODE_AUTOUPDATE:-true}" = "true" ]; then
   watch_opencode_updates "$BIN" &
 fi
+
+# RAM-Waechter (2026-10-02): beendet PID 1 per SIGTERM, BEVOR der
+# cgroup-OOM-Killer es tut. Siehe die Begruendung im Dockerfile.
+#
+# Bewusst per RAM_WATCHDOG_ENABLED abschaltbar (default true): wenn jemand die
+# 2-GB-dind-Regel von Hand setzt und den Speicher selbst im Blick hat, ist ein
+# automatischer Neustart unerwartet. Die Abbruchbedingung ist bewusst NUR das
+# Fehlen des Skripts — kein Fehler beim Start, sonst blockiert der Waechter
+# niemals den Container-Start.
+if [ "${RAM_WATCHDOG_ENABLED:-true}" = "true" ] && [ -x /usr/local/bin/ram-watchdog.sh ]; then
+  /usr/local/bin/ram-watchdog.sh &
+fi
+
 echo "Starte: $BIN serve --hostname 0.0.0.0 --port $PORT (workdir /projects)"
 exec "$BIN" serve --hostname 0.0.0.0 --port "$PORT"
