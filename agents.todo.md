@@ -3,6 +3,84 @@
 Offene, nicht triviale Punkte und Blockaden. Einträge werden erst nach einem
 unabhängigen Review und erfolgreicher Verifikation entfernt.
 
+## 2026-10-02
+
+- [ ] **Trigger-Tests IMMER gegen einen Dummy-Prozess, nie gegen PID 1.**
+  Am 2026-10-02 bei der Verifikation des neuen `ram-watchdog.sh` gescheitert:
+  Der Wächter war bereits gegen einen Dummy-Prozess (`trap "" TERM`, also ein
+  Prozess, der SIGTERM ignoriert) erfolgreich geprüft — beide Stufen, sauberer
+  Shutdown und Eskalation auf SIGKILL. Für den letzten Test wurde die Schwelle
+  trotzdem auf 74 % gesetzt (real 75 %), um das Auslösen gegen die **echte**
+  cgroup zu zeigen. Der Wächter unterscheidet nicht zwischen „ich teste das"
+  und „das ist echt" — er hat `opencode serve` terminiert, `restart: unless-
+  stopped` hat neu gestartet, `RestartCount` 2 → 3. **Die laufende Session
+  war weg.** Das war genau die Klasse aller Abstürze, gegen die der Wächter
+  gebaut wird, ausgelöst durch die eigene Verifikation.
+
+  **Regel:** Ein Test, der `kill`/SIGTERM/SIGKILL oder einen Neustart auslösen
+  kann, läuft gegen `sleep`/`trap`-Dummys. Für den Triggernachweis gegen die
+  echte cgroup genügt es, die *Auslösebedingung* zu zeigen (Log-Zeile mit den
+  echten Byte-Werten) und den *Signalversand* am Dummy — beides zusammen, aber
+  nie am echten PID 1. Ein echter Neustart braucht ein ausdrückliches Okay des
+  Menschen, das nicht aus einem allgemeinen „verifiziere das" folgt.
+
+- [ ] **RAM-Wächter ist im Repo, aber noch nicht ausgerollt.** `ram-watchdog.sh`
+  liegt in `remote/`, ist im Dockerfile per `COPY` nach
+  `/usr/local/bin/ram-watchdog.sh` gelegt und wird in `remote/entrypoint.sh`
+  hinter dem Update-Watcher geforkt (`RAM_WATCHDOG_ENABLED`, default true).
+  Am laufenden Container **verifiziert**: findet PID 1, liest echte
+  cgroup-Werte, löst bei Schwelle aus, SIGTERM→sauber / SIGTERM ignoriert→
+  SIGKILL, überlebt das `exec` des Entrypoints. **Nicht verifiziert:** das
+  Verhalten unter echtem Speicherdruck — bei 75 % Last hätte der Wächter mit
+  Schwelle 90 % *nicht* ausgelöst, und ob er den Kernel-OOM rechtzeitig
+  abfängt, ist ungesehen.
+  **Rollout:** watchtower nimmt `code-dev` nicht an (Entscheidung vom
+  2026-09-30), also muss der Stack manuell neu deployed werden. Das beendet
+  die laufende Session — erst durchrollen, wenn keine Arbeit offen ist.
+
+- [ ] **Host-Budget ist rechnerisch weiterhin überzeichnet.** Nach der
+  dind-Senkung (2,5g → 2g, 2026-10-02): code-dev 5g + dind 2g + Portal ~0,7g
+  + OS ~0,7g = ~8,4 GB bei **7,47 GB** nutzbarem Host-RAM (8 GB minus OS/Docker)
+  — also weiterhin ~0,9 GB zu viel. Die Senkung hat den Fehlbetrag von ~1,25 GB
+  auf ~0,9 GB verkleinert, nicht behoben. **Strukturell nur mit mehr Host-RAM
+  lösbar.** Als Beleg, dass dind 2g sicher ist: `memory.peak` 419012608
+  (400 MB), `memory.current` 332775424 (317 MB) = 8,65 % des alten Deckels;
+  nach dem Neustart peak 93 MB, `oom_kill 0`.
+
+- [ ] **Zwei OOM-Kills am 2026-10-02, einer davon hat die Session gerissen.**
+  Live aus `dmesg`:
+  ```
+  13:11:22  Killed process 362704 (rustc)     anon-rss 977308 kB
+  13:21:33  Killed process 36964  (opencode)  anon-rss 427112 kB   ← PID 1
+  ```
+  Wichtig für die Bewertung: der zweite Kill war **korrektes OOM-Verhalten**,
+  kein Fehlgriff. Um 13:21 war der `rustc` aus 13:11 längst tot, `opencode`
+  war mit 427 MB schlicht der größte Prozess im cgroup. Die oft wiederholte
+  Erzählung „der Kernel killt immer den Falschen" trifft auf *diesen* Kill
+  nicht zu — er ist die Begründung dafür, dass `code-dev` den 5-g-Deckel
+  braucht, und nicht mehr. **Verworfen: `oom_score_adj = -500` auf PID 1.**
+  Zwei Gründe, beide gemessen: (a) der Wert wird an die Kinder vererbt, alle
+  wären dann gleich geschützt und die Schutzwirkung entfällt; (b) er braucht
+  `CAP_SYS_RESOURCE`, die der Container bewusst nicht hat (`CapEff: 0`). Ein
+  Schreibversuch auf `oom_score_adj` scheitert im Container an uid 1000 ohne
+  Capability. Der Wächter umgeht beides, weil er Signale statt Capabilities
+  nutzt.
+
+- [ ] **34 Zombie-Prozesse unter `opencode serve`, sichtbar nur auf dem HOST.**
+  `chrome-headless` und `MainThread` als `<defunct>`, Parent ist `opencode
+  serve` (PID 1), älteste 12169 s. Im **Container**-Namespace meldet `ps`
+  **0 Zombies** — sie existieren nur im PID-Namespace des Wirts. Ein
+  Zombie-Cleanup im Entrypoint ist damit wirkungslos; aufräumen kann nur, wer
+  sie erzeugt hat, also opencode selbst bei einem sauberen Neustart.
+  Speicher geben sie frei (Zombies sind nur Exit-Status-Einträge), sie kosten
+  einen PID-Slot; `pid_max` ist 4194304, aktuell 60 PIDs im Container.
+  **Ursache unbekannt** — die chrome-headless-Kinder sind nicht im Log
+  identifiziert. Nicht verfolgt.
+
+- [x] **RAM-Wächter implementiert und verifiziert** (2026-10-02). Siehe oben,
+  Eintrag „RAM-Wächter ist im Repo, aber noch nicht ausgerollt" für den
+  offenen Rollout und die offene Druck-Frage.
+
 ## 2026-09-29
 
 - [x] **`code-dev` restartete unregelmaessig — Ursache war der RAM-Deckel, nicht

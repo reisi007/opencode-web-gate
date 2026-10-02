@@ -145,6 +145,38 @@ RUN groupadd -g "$DEV_GID" dev 2>/dev/null || true \
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
+# RAM-Waechter (2026-10-02). Ersetzt keinen RAM-Deckel, sondern greift EINMAL
+# vorher: schickt SIGTERM an opencode serve, wenn die cgroup den RAM-Deckel
+# erreichen wird. opencode beendet sich dann selbst und kann aufraeumen, statt
+# vom cgroup-OOM-Killer abgeräumt zu werden.
+#
+# Warum ueberhaupt: Der Kernel killt im cgroup den GROESSTEN Prozess, und das
+# ist haeufig `opencode serve` (PID 1, ~390 MB stabiler Grundbedarf) — nicht
+# weil es der Schuldige ist, sondern weil es im Moment des Kills das groesste
+# Ziel ist. Beobachtet am 2026-10-02, zweimal an einem Tag:
+#   13:11:22  Killed rustc     (anon-rss 977 MB)  ← der echte Verursacher
+#   13:21:33  Killed opencode  (anon-rss 427 MB)  ← 10 Minuten spaeter, PID 1
+# Der zweite Kill riss die laufende Sitzung weg. Der Waechter macht daraus
+# einen geordneten Shutdown mit Restart, BEVOR der Kernel zuschlaegt.
+#
+# Warum er im IMAGE liegt und nicht auf dem Host: er muss opencode im
+# PID-Namespace des CONTAINERS erreichen (dort ist es PID 1). Ein Host-Skript
+# kennt diese PID nicht und muesste `docker kill` nehmen — das umginge genau
+# opencodes eigenen Signal-Handler, also das saubere Beenden, das hier der
+# ganze Zweck ist.
+#
+# Warum er KEINE Capabilities braucht: er schickt Signale an Prozesse im
+# eigenen Container (gleiche UID). Die Alternative oom_score_adj=-500 waere
+# wirkungslos, weil der Wert an die Kinder vererbt wird (alle waeren dann
+# gleich geschuetzt) — und sie braucht CAP_SYS_RESOURCE, die der Container
+# bewusst nicht hat (CapEff: 0, siehe die Entprivilegisierung weiter unten).
+#
+# Live verifiziert am 2026-10-02 gegen den laufenden Container: findet PID 1,
+# liest echte cgroup-Werte, loest bei Schwelle aus, SIGTERM bei kooperativem
+# Prozess -> sauber beendet, SIGTERM ignoriert -> Eskalation auf SIGKILL.
+COPY ram-watchdog.sh /usr/local/bin/ram-watchdog.sh
+RUN chmod +x /usr/local/bin/ram-watchdog.sh
+
 # CARGO_BUILD_JOBS=2 (2026-09-30, RAM-Deckel war 2 GB und damit zu klein).
 #
 # Warum 2: der cgroup-OOM-Killer hat in diesem Stack wiederholt `opencode serve`
