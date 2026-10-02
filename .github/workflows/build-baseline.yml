@@ -12,6 +12,11 @@ on:
     paths:
       - "remote/Dockerfile"
       - "remote/entrypoint.sh"
+      # Beim RAM-Waechter (2026-10-02) zuerst vergessen: ohne diese Zeile baut
+      # die CI bei einer Aenderung NUR an der Waechter-Datei nicht, obwohl sie
+      # per COPY im Image landet. Jede per COPY/Dockerfile eingebundene Datei
+      # gehoert hierher, sonst driftet das Image von der Quelle weg.
+      - "remote/ram-watchdog.sh"
       - ".github/workflows/build-baseline.yml"
 
 permissions:
