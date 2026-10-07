@@ -3,6 +3,33 @@
 Offene, nicht triviale Punkte und Blockaden. Einträge werden erst nach einem
 unabhängigen Review und erfolgreicher Verifikation entfernt.
 
+## 2026-10-07
+
+- [x] **`CORS_ORIGIN` war dokumentiert, aber nicht gemappt — der ganze CORS-Pfad
+  war ein No-Op.** Commit `62ea52a` hat in `remote/entrypoint.sh` die Logik fuer
+  `${CORS_ORIGIN}` -> `--cors` eingebaut und in `remote/docker-compose.yml` nur
+  einen Kommentar dazu geschrieben, aber **kein** `- CORS_ORIGIN=...` im
+  `environment:`-Block von `code-dev`. **Entscheidung:** `CORS_ORIGIN` =
+  `https://ocweb.all-the.rest` (Browser-Origin der PWA). **Fix:** Mapping als
+  Zeile im `environment:`-Block ergaenzt, direkt nach `TS_TAILSCALE_HOSTNAME`,
+  **ohne** Default-Logik in Compose — leerer Wert bleibt harmlos, der Entrypoint
+  behandelt leer als „kein `--cors`" (`if [ -n "${CORS_ORIGIN:-}" ]`).
+  **Live verifiziert, warum es vorher wirkungslos war:** `stack.env` liefert nur
+  Interpolationswerte fuer `${...}`, es erzeugt **kein** Container-Env — ohne
+  Mapping sieht der Container die Variable nie. Geprueft: kein CORS-Eintrag in
+  der laufenden Compose-Datei, `CORS_ORIGIN` nicht im Container-Env.
+  Regel dazu: `remote/AGENTS.md` §18.
+
+- [ ] **Offen auf dem VPS (nicht Teil dieses Fixes):** `CORS_ORIGIN` in
+  `stack.env` und in `remote/.env.production` eintragen, sonst bleibt der Wert
+  leer.
+- [ ] Portainer-DB-Patch nach `remote/AGENTS.md` §9 **Fall 1** (neuer Env-Key,
+  der per SSH-Deploy kam), Schema §17.4, plus der vierte Schritt
+  (`.env.production` mitziehen) — sonst schreibt der naechste UI-Deploy den
+  Key wieder weg.
+- [ ] Erst danach ein `--no-deps code-dev`-Deploy und Gegenprobe im Log:
+  `CORS: erlaube Origin https://ocweb.all-the.rest`.
+
 ## 2026-10-02
 
 - [ ] **Trigger-Tests IMMER gegen einen Dummy-Prozess, nie gegen PID 1.**

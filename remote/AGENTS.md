@@ -584,3 +584,34 @@ aber nicht zum Schreiben.
 **Compose-Datei** ist es nicht — die steht nicht in der DB (Punkt 2). Nach
 einem UI-Deploy muss `remote/docker-compose.yml` aus dem HEAD trotzdem
 eingefuegt werden.
+
+## 18. Ein dokumentierter Env-Key ohne Mapping ist kein Container-Env
+
+`stack.env` (und jede andere Stack-Env-Quelle) liefert **nur Interpolationswerte**
+fuer `${VAR}` in der Compose-Datei. Es erzeugt **kein** Container-Env. Eine
+Variable sieht der Container nur, wenn sie im `environment:`-Block des Service
+**explizit gemappt** ist — also genau dort, wo `OPENCODE_PASSWORD`,
+`TS_AUTHKEY` und `PORT` stehen.
+
+**Beleg (2026-10-07):** `CORS_ORIGIN`. `entrypoint.sh` baut daraus
+`--cors ${CORS_ORIGIN}`, die Datei dokumentierte den Key im Env-Kopf — aber im
+`environment:`-Block von `code-dev` stand nichts. Der Key existierte damit
+**nur als Entrypoint-Logik plus Kommentar**, in **keiner** Env-Datei: `.env`,
+`remote/.env.production` und Commit `62ea52a` enthalten null `CORS_ORIGIN`-
+Zeilen. Im Container war er also **nicht vorhanden**, `--cors` nie gesetzt,
+der PWA-Zugriff blieb blockiert. Live geprueft: kein CORS-Eintrag in der
+laufenden Compose-Datei, `CORS_ORIGIN` nicht im Container-Env.
+
+**Eingetragen wird ausschliesslich die eigene PWA-Origin**
+`https://ocweb.all-the.rest` (Entscheidung 2026-10-07). Keine fremden Origins —
+der Key gehoert nicht als Sammel- oder Wildcard-Liste in den Stack.
+
+**Regel:** Wer eine Env oben in der Datei dokumentiert, mappt sie im selben
+Commit. Umgekehrt gilt fuer jede neue Zeile im `environment:`-Block: **leer
+muss harmlos bleiben.** Ein verhaltensaendernder Fallback gehoert in
+`entrypoint.sh`, nicht in die Compose-Datei — in der Compose-Datei darf nichts
+stehen, das Zugriff oeffnet. Fuer `CORS_ORIGIN` heisst das: Mapping ohne `:-`,
+leer bleibt leer. Die bestehenden `:-`-Defaults in der Datei bleiben
+unberuehrt; sie greifen beim Rendern und stehen im gerenderten Config sehr
+wohl im Container-Env (so entstehen die Defaults, die §9 Fall 2 zur
+Sichtbarkeit in die Env hebt).
