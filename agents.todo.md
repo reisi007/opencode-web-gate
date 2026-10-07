@@ -34,11 +34,11 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   nicht geraten. Zu entscheiden: Live-Werte ins Repo uebernehmen oder VPS auf
   Repo zuruecksetzen — bis dahin keine der beiden Dateien „angleichen".
 
-- [ ] **Blanket-OPTIONS im Caddy-Fragment vor dem Catch-all** (beide Wege).
-  **Eingetragen, `caddy validate` ✅ (Docker, `caddy:2` via `caddyfile/sync.sh:11`,
-  „Valid configuration") — offen bleiben Deploy via `sync.sh` und der
-  Platzhalter-grep auf dem VPS.** Der Block ist in beiden Fragmenten und beiden
-  Site-Bloecken der globalen Caddyfile geschrieben, live ist er noch nicht.
+- [x] **Blanket-OPTIONS deployed und verifiziert 2026-10-07.** `sync.sh`:
+  validate ✅, Sync + Reload ✅, live == Repo (Diff), 0 Platzhalter live.
+  Preflight-Gegenprobe beide Domains: **`HTTP/2 204`,
+  `access-control-allow-origin: https://ocweb.all-the.rest`,
+  `access-control-allow-credentials: true`.**
   **Warum, gemessen (Pre-Deploy-Baseline, Live-Stand 2026-10-07):**
   `curl -sSI -X OPTIONS -H 'Origin: https://ocweb.all-the.rest' -H
   'Access-Control-Request-Method: POST' https://remote-code.all-the.rest/api/info
