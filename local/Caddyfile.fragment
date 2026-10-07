@@ -1,6 +1,10 @@
 # Fragment: in die globale Caddyfile einfuegen (Platzhalter MANUELL fuellen:
 # source .env && printf 'opencode:%s' "$OPENCODE_PASSWORD" | base64),
-# dann dort ./sync.sh (validate + reload). Nicht als eigenes Caddyfile nutzen.
+# Platzhalter zum Ersetzen: __CODE_DOMAIN__, __CODE_SITE__, __OPENCODE_BASIC__,
+# __CORS_ORIGIN__ (nur die eigene PWA-Origin). Unersetzt ist die Datei trotzdem
+# syntaktisch gueltiges Caddy und liefert still
+# `Access-Control-Allow-Origin: __CORS_ORIGIN__` — der Browser lehnt die
+# Response ab, ohne dass im Caddy-Log etwas auffaellt.
 # dann dort ./sync.sh (validate + reload). Nicht als eigenes Caddyfile nutzen.
 # Voraussetzung: Portainer-Stack code-auth laeuft, SSH-Tunnel Mac -> VPS auf 172.18.0.1:18731.
 __CODE_DOMAIN__ {
@@ -30,6 +34,43 @@ __CODE_DOMAIN__ {
 	handle /sw.js {
 		header Content-Type "application/javascript"
 		respond `/* service worker disabled */` 200
+	}
+
+	# CORS-Preflight (PWA __CORS_ORIGIN__): OPTIONS traegt nie Cookies,
+	# forward_auth antwortete mit 302 und der Browser brach den Preflight ab
+	# (gemessen 2026-10-07). Deshalb hier beantworten, bevor das Catch-all
+	# greift. ACAO an echten Responses SOLL opencode serve --cors liefern
+	# (run.sh, Key CORS_ORIGIN in .env) — unbelegt, s. remote/AGENTS.md §19.
+	#
+	# Grenze: die pfadspezifischen Handles DARUEBER (/login.html, /api/login,
+	# /api/me, /api/logout, /sw.js) stehen vor diesem Block. Das ist
+	# Quellreihenfolge per stabilem Sort, keine Absicht: der Pfad-Sub-Sort
+	# (sortRoutes in caddyconfig/httpcaddyfile/directives.go) greift nur, wenn
+	# BEIDE Routen genau einen Single-Path-Matcher haben; @options matcht per
+	# method, also sagt der Comparator nur "beide haben einen Matcher" = gleich.
+	# Ein OPTIONS darauf trifft diesen Block NIE:
+	#   /api/login|me|logout -> Sidecar, kennt nur do_GET/do_POST, kein
+	#     do_OPTIONS (Beleg: remote/docker-compose.yml) -> 501 ohne CORS-Header
+	#   /sw.js               -> das eigene respond 200, ohne CORS-Header
+	#   /login.html          -> file_server, ohne CORS-Header
+	# Heute harmlos (Login ist same-origin, kein Preflight noetig), latente
+	# Falle sobald das Login cross-origin wird.
+	#
+	# Reichweite: dieses Blanket-OPTIONS umgeht forward_auth fuer ALLE
+	# uebrigen Pfade. Das ist statisch und bodyless, der Upstream sieht
+	# nichts davon, es ist nichts preisgegeben. Aber kuenftige Endpunkte, die
+	# selbst OPTIONS tragen (WebDAV-Discovery o.ae.), wuerden hier maskiert.
+	#
+	# OFFEN: die Allow-Headers-Liste ist geraten. Aus dem echten
+	# Access-Control-Request-Headers ableiten (DevTools-Netz-Tab der PWA).
+	@options method OPTIONS
+	handle @options {
+		header Access-Control-Allow-Origin "__CORS_ORIGIN__"
+		header Access-Control-Allow-Methods "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+		header Access-Control-Allow-Headers "Authorization, Content-Type"
+		header Access-Control-Allow-Credentials "true"
+		header Access-Control-Max-Age "86400"
+		respond "" 204
 	}
 
 	# alles andere: Cookie pruefen, dann SSH-Tunnel zum Mac.

@@ -115,6 +115,21 @@ port_pid() { lsof -nP -iTCP:"$LOCAL" -sTCP:LISTEN -t 2>/dev/null | head -1; }
 # OpenCode-Web sicherstellen (Pflicht — nie manuell starten).
 # Ueber .env aenderbar: OPENCODE_CMD="..."
 OPENCODE_CMD="${OPENCODE_CMD:-opencode serve --hostname 127.0.0.1 --port $LOCAL}"
+# CORS-Opt-in fuer die Browser-PWA (https://ocweb.all-the.rest), Key CORS_ORIGIN
+# in derselben .env, die oben gesourced wird. LEER = kein --cors, der Weg
+# verhaelt sich dann exakt wie bisher. Nur die eigene PWA-Origin, keine Liste.
+# Angehaengt nur, wenn OPENCODE_CMD nicht schon selbst ein --cors traegt, sonst
+# bekommt ein eigener OPENCODE_CMD zwei Origins. Pruefung per POSIX-case, laeuft
+# auch unter sh.
+case "$OPENCODE_CMD" in
+  *--cors*) : ;;
+  *)
+    if [ -n "${CORS_ORIGIN:-}" ]; then
+      OPENCODE_CMD="$OPENCODE_CMD --cors $CORS_ORIGIN"
+      echo "CORS: erlaube Origin ${CORS_ORIGIN} (opencode serve --cors)"
+    fi
+    ;;
+esac
 ensure_opencode() {
   if port_up; then
     echo "OpenCode-Web laeuft bereits auf :$LOCAL."

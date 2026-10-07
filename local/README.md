@@ -82,7 +82,7 @@ ist der Punkt, ein einzelnes `launchctl bootout` reicht nicht:
    `bootstrap.sh` macht `launchctl enable` vor `launchctl bootstrap`.
 2. **`bootout`** nimmt den Job samt `KeepAlive` weg. launchd SIGTERMt dabei die
    **Prozessgruppe** — das ist auch der superviste `opencode serve` (Kind von
-   `run.sh`, `run.sh:127`), danach ist `:8080` zu. Gewollt: kein Tunnel, kein
+   `run.sh`, `run.sh:140`), danach ist `:8080` zu. Gewollt: kein Tunnel, kein
    Server. `serve --service` (PPID 1) und laufende TUI-Sessions bleiben unberührt.
 3. **Aufräumen** der Waisen (`autossh`/`ssh` mit dem Forward, Master-Socket).
    Nach dem Agent-Pfad ist nichts mehr übrig; nötig ist der Schritt für den

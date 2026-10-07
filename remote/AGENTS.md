@@ -321,10 +321,17 @@ Autoupdate des Servers, nicht diesen Block.
 - Upstream auf HTTP/1.1 mit `keepalive 4s`: OpenCode antwortet mit
   `Keep-Alive: timeout=5`, Cadys 2h-Default wuerde abgelaufene Sockets
   wiederverwenden (502/WS-Resets).
-- `__REMOTE_DOMAIN__` / `__CODE_SITE__` / `__OPENCODE_BASIC__` sind Platzhalter
+- `__REMOTE_DOMAIN__` / `__CODE_SITE__` / `__OPENCODE_BASIC__` /
+  `__CORS_ORIGIN__` sind Platzhalter
   und werden von Hand in die **globale** Caddyfile uebernommen. Der
-  `__OPENCODE_BASIC__`-Wert gehoert nie ins Repo. Voraussetzung: der `caddy`-
-  Service haengt an `webnet` **und** `code-remote`, beide `external: true`.
+  `__OPENCODE_BASIC__`-Wert gehoert nie ins Repo. `__CORS_ORIGIN__` ist die
+  eigene PWA-Origin (`https://ocweb.all-the.rest`), keine Liste. Voraussetzung:
+  der `caddy`-Service haengt an `webnet` **und** `code-remote`, beide
+  `external: true`. Ein unersetzter Platzhalter ist kein Log-Fehler:
+  `__CORS_ORIGIN__` ergibt syntaktisch gueltiges Caddy und liefert still
+  `Access-Control-Allow-Origin: __CORS_ORIGIN__`, was der Browser ablehnt —
+  `sync.sh validate` faengt das nicht, also mit
+  `grep -n '__[A-Z_]*__' Caddyfile` gegenpruefen.
 
 ## 12. `AUTH_HASH` ist bcrypt oder PBKDF2 — kein Klartext-Fallback
 
@@ -615,3 +622,86 @@ leer bleibt leer. Die bestehenden `:-`-Defaults in der Datei bleiben
 unberuehrt; sie greifen beim Rendern und stehen im gerenderten Config sehr
 wohl im Container-Env (so entstehen die Defaults, die §9 Fall 2 zur
 Sichtbarkeit in die Env hebt).
+
+## 19. OPTIONS wird vor `forward_auth` beantwortet — Blanket, mit benannten Grenzen
+
+Entscheidung vom 2026-10-07, gilt fuer **beide** Sites (`code` **und**
+`remote-code`). Vor dem Catch-all-`handle` steht ein
+`@options method OPTIONS`-Block mit statischem 204 und den
+`Access-Control-Allow-*`-Headern.
+
+**Warum.** Ein Preflight traegt per Spezifikation nie Cookies. `forward_auth`
+sieht damit keinen `auth`-Cookie, antwortet 401, `handle_response @denied`
+macht daraus `redir * /login.html 302` — und der Browser bricht den Preflight
+ab, bevor die eigentliche Anfrage rausgeht. Gemessen am 2026-10-07 gegen den
+Live-Stand, **vor** dem Deploy dieses Blocks:
+
+```sh
+curl -sSI -X OPTIONS -H 'Origin: https://ocweb.all-the.rest' \
+  -H 'Access-Control-Request-Method: POST' \
+  https://remote-code.all-the.rest/api/info | grep -iE 'HTTP/|access-control'
+# => HTTP/2 302          (location: /login.html, KEIN ACAO)
+```
+
+Derselbe Pfad ohne `-X OPTIONS` liefert ebenfalls `HTTP/2 302` — die 302 ist
+der `forward_auth`-Redirect, nicht etwas an OPTIONS. Der Preflight-Block ist
+darum die einzige Stelle, an der die Origin ohne Cookie durchgelassen werden
+kann. **ACAO an echten Responses soll** separat aus `opencode serve --cors`
+kommen (§18 / `local/run.sh`) — das ist **unbelegt**: gemessen ist nur die
+Preflight-Baseline oben, `--cors` ist nur als Flag-Parsing in `entrypoint.sh`
+gelesen. Nichts darueber behaupten, siehe „Offen" unten.
+
+**Grenzen — beide sind gewollt und keine Bugs:**
+
+1. **Die pfadspezifischen Handles stehen davor — als Quellreihenfolge, nicht
+   als Absicht.** `/login.html`, `/api/login`, `/api/me`, `/api/logout` und
+   `/sw.js` sind exakte `handle`s und stehen im Fragment **vor** `@options`;
+   ihr OPTIONS trifft diesen Block **nie**. Der Grund ist Cadys Sortierlogik,
+   nicht eine Caddy-Regel „exakter Pfad gewinnt": der Pfad-Sub-Sort
+   in `sortRoutes` (`caddyconfig/httpcaddyfile/directives.go`, aufgerufen aus
+   `buildSubroute` in `httptype.go`) greift nur, wenn **beide** Routen genau
+   **einen** Single-Path-Matcher haben (Caddy-Issue #5037). `@options` matcht
+   per `method`, hat also keinen Pfad — damit faellt der Comparator auf
+   „hat einen Matcher"-ja/nein zurueck, was bei zwei gematchten Routen
+   „gleich" heisst, und `sort.SliceStable` behaelt so die Quellreihenfolge.
+   Wer die Reihenfolge nicht von der Quelle abhaengig haben will, muss
+   `route`-Bloecke oder `handle`-Reihenfolge bewusst setzen.
+   Was ein solches OPTIONS dann bekommt, ist pro Route verschieden und
+   **ohne** CORS-Header:
+   - `/api/login`, `/api/me`, `/api/logout` -> `reverse_proxy` auf den
+     Sidecar. Der implementiert nur `do_GET`/`do_POST`, **kein** `do_OPTIONS`
+     (Beleg: `remote/docker-compose.yml`, `class H(BaseHTTPRequestHandler)`)
+     — Python antwortet mit `501 Unsupported method`, ohne CORS-Header.
+   - `/sw.js` -> der `respond` dieses Blocks selbst, 200, ohne CORS-Header.
+   - `/login.html` -> `file_server`, ohne CORS-Header.
+
+   Heute harmlos, weil das Login same-origin laeuft und keinen Preflight
+   braucht. **Latente Falle:** sobald das Login selbst cross-origin wird, sind
+   genau die drei API-Routen betroffen und man braucht ein eigenes
+   `OPTIONS`-Handling an ihnen (nicht durch diesen Blanket-Block behebbar).
+2. **Der Blanket-OPTIONS umgeht `forward_auth` fuer alle uebrigen Pfade.**
+   Das ist unkritisch: die Antwort ist statisch, bodyless und
+   origin-gebunden (kein `*`), der Upstream sieht die Anfrage nie, es wird
+   nichts preisgegeben. **Aber** kuenftige Endpunkte, die selbst auf OPTIONS
+   antworten sollen (WebDAV-Discovery o.ae.), werden hier maskiert. Wer
+   `PROPFIND`/`OPTIONS`-Semantik braucht, muss den Matcher verengern
+   (`@options { method OPTIONS; not path /dav* }`), statt blind zu erweitern.
+
+**Offen:**
+
+- **Kein Beleg fuer ACAO/ACAC auf der echten Response.** Der 302-Preflight ist
+  gemessen, die Header einer **eingeloggten** Response nicht — das braucht eine
+  Session (DevTools oder `curl` mit Cookie). Nichts darueber behaupten;
+  `serve --help` schweigt zu den `--cors`-Interna. Messbar so:
+  ```sh
+  curl -sS -b 'auth=<HMAC-Cookie>' -H 'Origin: https://ocweb.all-the.rest' \
+    https://remote-code.all-the.rest/api/info | grep -i access-control
+  ```
+- **Die `Allow-Headers`-Liste (`Authorization, Content-Type`) ist geraten.**
+  Sie ist aus einem echten `Access-Control-Request-Headers` abzuleiten
+  (DevTools-Netz-Tab der PWA). Fehlt ein dort genannter Header, faellt der
+  Preflight trotz korrektem ACAO durch.
+- Der `CORS_ORIGIN`-Key braucht weiterhin den Portainer-DB-Patch (§9 Fall 1 /
+  §17.4), sonst schreibt der naechste UI-Deploy ihn weg.
+- Fuer den lokalen Weg fehlt noch ein `serve`-Neustart, damit `run.sh` das
+  `--cors` an den laufenden Prozess haengt.

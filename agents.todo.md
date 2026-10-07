@@ -34,6 +34,50 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   nicht geraten. Zu entscheiden: Live-Werte ins Repo uebernehmen oder VPS auf
   Repo zuruecksetzen — bis dahin keine der beiden Dateien „angleichen".
 
+- [ ] **Blanket-OPTIONS im Caddy-Fragment vor dem Catch-all** (beide Wege).
+  **Eingetragen, `caddy validate` ✅ (Docker, `caddy:2` via `caddyfile/sync.sh:11`,
+  „Valid configuration") — offen bleiben Deploy via `sync.sh` und der
+  Platzhalter-grep auf dem VPS.** Der Block ist in beiden Fragmenten und beiden
+  Site-Bloecken der globalen Caddyfile geschrieben, live ist er noch nicht.
+  **Warum, gemessen (Pre-Deploy-Baseline, Live-Stand 2026-10-07):**
+  `curl -sSI -X OPTIONS -H 'Origin: https://ocweb.all-the.rest' -H
+  'Access-Control-Request-Method: POST' https://remote-code.all-the.rest/api/info
+  | grep -iE 'HTTP/|access-control'` → **`HTTP/2 302`, `location: /login.html`,
+  kein `Access-Control-Allow-Origin`.** Derselbe Pfad ohne `-X OPTIONS` →
+  ebenfalls `302`, die 302 ist also der `forward_auth`-Redirect und nicht etwas
+  an OPTIONS. Ein Preflight traegt nie Cookies, also sieht `forward_auth` nichts,
+  macht 302, und der Browser bricht ab. ACAO an echten Responses **soll**
+  separat aus `opencode serve --cors` kommen (`local/run.sh`,
+  `remote/entrypoint.sh`) — das ist **unbelegt**, belegt sind nur die
+  Preflight-Baseline oben und das Flag-Parsing im Entrypoint; es kommt nicht
+  aus dem Caddy-Block. **Regel:** `remote/AGENTS.md` §19 (Grenzen: die
+  pfadspezifischen Handles `/login.html`, `/api/login|me|logout` + `/sw.js`
+  stehen davor, weil der Pfad-Sub-Sort (`sortRoutes`) nur greift, wenn BEIDE
+  Routen genau einen Single-Path-Matcher haben — `@options` matcht per
+  `method`, der stabile Sort behaelt also die Quellreihenfolge. Ihr OPTIONS
+  trifft den Block nie und kommt ohne CORS-Header: `501` nur auf
+  `/api/login|me|logout` (Sidecar ohne `do_OPTIONS`), auf `/sw.js` der
+  site-eigene `respond 200`, auf `/login.html` der `file_server`. Das Blanket
+  maskiert ausserdem kuenftige eigene OPTIONS-Endpunkte).
+- [ ] **`Access-Control-Allow-Origin`/`-Allow-Credentials` auf der echten
+  authentifizierten Response ist unbewiesen.** Der 302-Preflight ist gemessen,
+  die Header einer eingeloggten Response nicht — braucht eine Session
+  (DevTools oder `curl` mit Cookie). **Nichts** ueber die `--cors`-Interna
+  behaupten, `serve --help` schweigt dazu. Ergaenzung zu §19 „Offen":
+  ```sh
+  curl -sS -b 'auth=<HMAC-Cookie>' -H 'Origin: https://ocweb.all-the.rest' \
+    https://remote-code.all-the.rest/api/info | grep -i access-control
+  ```
+- [ ] **`Allow-Headers`-Liste ist geraten** (`Authorization, Content-Type`).
+  Aus dem echten `Access-Control-Request-Headers` ableiten (DevTools-Netz-Tab
+  der PWA). Fehlt dort ein Header, faellt der Preflight trotz korrektem ACAO
+  durch. Als Kommentar in beiden `@options`-Bloecken notiert.
+- [ ] **Lokaler Weg braucht noch einen `serve`-Neustart**, damit `run.sh` das
+  `--cors` an den laufenden Prozess haengt (`local/run.sh:117` baut die
+  Kommandozeile, der CORS-Append steht in Z. 118-132; wirkt erst beim
+  naechsten Start durch). Der `CORS_ORIGIN`-Key selbst ist lokal in `.env`
+  gesetzt, der Remote-Key braucht weiterhin den Portainer-DB-Patch siehe oben.
+
 ## 2026-10-02
 
 - [ ] **Trigger-Tests IMMER gegen einen Dummy-Prozess, nie gegen PID 1.**

@@ -30,7 +30,7 @@ Ein manuell gestarteter `opencode serve` konkurriert mit dem supervisten um
 ihn dann ohne Neustart. `OPENCODE_CMD` in `.env` ueberschreiben **nur** die
 Kommandozeile, nicht die Pflicht.
 
-Er ist zugleich ein Kind von `run.sh` (`run.sh:127`, `&` im Vordergrund) und
+Er ist zugleich ein Kind von `run.sh` (`run.sh:140`, `&` im Vordergrund) und
 teilt dessen Prozessgruppe. Ein `launchctl bootout` nimmt die Gruppe mit, der
 superviste Serve also mit — siehe §12. Das ist kein Fehler, aber eine Aussage
 wie "opencode laeuft weiter" nach einem Stopp waere falsch.
@@ -153,11 +153,20 @@ Diese Zeile nicht entfernen, sonst findet der Doppelklick `opencode` nicht.
 
 ## 10. `Caddyfile.fragment` ist eine Vorlage, kein Caddyfile
 
-Platzhalter `__CODE_DOMAIN__`, `__CODE_SITE__`, `__OPENCODE_BASIC__` werden von
+Platzhalter `__CODE_DOMAIN__`, `__CODE_SITE__`, `__OPENCODE_BASIC__`,
+`__CORS_ORIGIN__` werden von
 Hand in die **globale** Caddyfile auf dem VPS uebernommen, danach `./sync.sh`
 (validate + reload). `__OPENCODE_BASIC__` ist `base64("opencode:$OPENCODE_PASSWORD")`
-— der echte Wert gehoert **nie** ins Repo. Die Datei laeuft nicht als eigenes
-Caddyfile, sie wird nicht deployed, sie ist Text.
+— der echte Wert gehoert **nie** ins Repo. `__CORS_ORIGIN__` ist die eigene
+PWA-Origin (`https://ocweb.all-the.rest`), keine Liste. Die Datei laeuft nicht
+als eigenes Caddyfile, sie wird nicht deployed, sie ist Text.
+
+**Ein unersetzter Platzhalter ist kein Fehler im Log.** `__CORS_ORIGIN__` als
+Wert ergibt syntaktisch gueltiges Caddy; die Antwort traegt dann
+`Access-Control-Allow-Origin: __CORS_ORIGIN__`, und der Browser lehnt sie ab,
+ohne dass Caddy irgendetwas meldet. Platzhalter deshalb nach dem Uebernehmen
+mit `grep -n '__[A-Z_]*__' Caddyfile` gegenpruefen — die `validate`-Stufe von
+`sync.sh` faengt das nicht.
 
 Nicht entfernen: `health_headers { Authorization … }` im Healthcheck. Ohne den
 Header ist `/api/info` durch das Basic-Passwort 401 und der Healthcheck meldet
@@ -247,7 +256,8 @@ Drei Fallen, jeweils mit derselben Ursache — die Erkennung ist absichtlich eng
 `forward_auth` zuerst: `https://CODE_DOMAIN/` liefert `302 → /login.html`, mit
 und ohne Tunnel. Den Tunnel sieht erst ein *angemeldeter* Request — dann 502 aus
 dem Proxy, und `handle_errors` liefert `tunnel-down.html`
-(`Caddyfile.fragment` Z. 91-100). Ebenso der aktive Healthcheck: 30 s Intervall,
-3 Fehlschlaege, dann Upstream `down` (Z. 61-66). Wer nach dem Stopp
+(`Caddyfile.fragment` Z. 134-141, `rewrite` Z. 138). Ebenso der aktive
+Healthcheck: 30 s Intervall, 3 Fehlschlaege, dann Upstream `down`
+(Z. 104-109). Wer nach dem Stopp
 `curl -o /dev/null -w '%{http_code}' https://CODE_DOMAIN/` laufen laesst und
 502 erwartet, hat das Gate und nicht den Tunnel gemessen.
