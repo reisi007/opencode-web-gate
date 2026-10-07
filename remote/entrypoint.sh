@@ -303,5 +303,13 @@ if [ "${RAM_WATCHDOG_ENABLED:-true}" = "true" ] && [ -x /usr/local/bin/ram-watch
   /usr/local/bin/ram-watchdog.sh &
 fi
 
-echo "Starte: $BIN serve --hostname 0.0.0.0 --port $PORT (workdir /projects)"
-exec "$BIN" serve --hostname 0.0.0.0 --port "$PORT"
+# CORS: Browser-Clients (z.B. PWA https://ocweb.all-the.rest) brauchen
+# --cors, sonst blockt der Browser cross-origin Requests mit "Failed to fetch".
+# Origin kommt aus Portainer-Env CORS_ORIGIN (Default: PWA).
+CORS_ARG=""
+if [ -n "${CORS_ORIGIN:-}" ]; then
+  CORS_ARG="--cors ${CORS_ORIGIN}"
+  echo "CORS: erlaube Origin ${CORS_ORIGIN}"
+fi
+echo "Starte: $BIN serve --hostname 0.0.0.0 --port $PORT $CORS_ARG (workdir /projects)"
+exec "$BIN" serve --hostname 0.0.0.0 --port "$PORT" $CORS_ARG

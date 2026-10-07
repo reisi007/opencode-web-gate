@@ -6,6 +6,9 @@
 #
 # Env in Portainer (oder Stack-Env):
 #   OPENCODE_PASSWORD   Pflicht (Serverpasswort, Caddy injiziert es upstream, Browser sieht es nie)
+#   CORS_ORIGIN         optional: Browser-Origin fuer --cors (z.B. https://ocweb.all-the.rest).
+#                         Ohne diesen Wert blockt der Browser cross-origin Requests
+#                         mit "Failed to fetch" (PWA-Zugriff auf den Server).
 #   OPENCODE_AUTOUPDATE   default true: holt beim Containerstart das neueste
 #                         opencode-Binary (V2 releast teils mehrmals taeglich);
 #                         mit false deaktivieren (Image-Stand + CI-Updates only)
