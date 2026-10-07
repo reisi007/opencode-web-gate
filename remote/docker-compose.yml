@@ -25,32 +25,38 @@
 #   SESSION_TTL         default 43200
 #   IMAGE               default ghcr.io/reisi007/opencode-web-dev-baseline:latest
 #   CPU_CORES           default 3: maximale CPU-Kerne fuer code-dev
-#   MEMORY_LIMIT        default 5g: RAM-Limit fuer code-dev
-#                         (2026-09-29 zweimal, 2026-09-30 einmal angehoben:
-#                         2g -> 3g -> 4g -> 5g. Auch 4 GB hat PID 1 am
-#                         2026-09-30 um 08:46 wieder getoetet. Details und
-#                         Messwerte: README, Abschnitt "RAM- und Swap-Limits")
-#   MEMSWAP_LIMIT       default 9g: RAM+Swap GESAMT fuer code-dev (4 GB Swap).
+#   MEMORY_LIMIT        default 7g: RAM-Limit fuer code-dev
+#   MEMSWAP_LIMIT       default 12g: RAM+Swap GESAMT fuer code-dev (5 GB Swap).
 #                         MUSS groesser sein als MEMORY_LIMIT, weil Docker
-#                         memory.swap.max = MEMSWAP_LIMIT - MEMORY_LIMIT setzt.
+#                         memory.swap.max = MEMSWAP_LIMIT - MEMORY_LIMIT setzt
+#                         (12g - 7g = 5 GB Swap).
 #                         Ohne diesen Wert ist der Swap-Deckel exakt
-#                         MEMORY_LIMIT. Der Swap ist echte Reserve, am
-#                         2026-09-30 mit 597 MB memory.swap.current belegt.
-#                         Details und Messwerte: README, Abschnitt
-#                         "RAM- und Swap-Limits".
-#   DIND_MEMORY_LIMIT   default 2g: RAM-Limit fuer den dind-Daemon
+#                         MEMORY_LIMIT. Details und Messwerte: README,
+#                         Abschnitt "RAM- und Swap-Limits".
+#   DIND_MEMORY_LIMIT   default 1g: RAM-Limit fuer den dind-Daemon
 #                         Historie: 1300m -> 2.5g (2026-09-29, 2 OOM-Kills am
 #                         26.09.: dockerd und dd, beide im DinD-cgroup) -> 2g
-#                         (2026-10-02). Gesenkt, weil das HOST-Budget sonst
-#                         nicht aufgeht: code-dev 5g + dind 2,5g + Rest = 8,7 GB
+#                         (2026-10-02) -> 1g (2026-10-04).
+#                         2026-10-02 gesenkt, weil das HOST-Budget sonst nicht
+#                         aufgeht: code-dev 5g + dind 2,5g + Rest = 8,7 GB
 #                         bei 7,47 GB nutzbarem Host-RAM.
 #                         Messwerte 2026-10-02, die die Sicherheit belegen:
 #                         memory.peak 419012608 (400 MB), memory.current
 #                         332775424 (317 MB) bei laufendem Daemon = 8,65 %
 #                         des alten 2,5-g-Deckels. Der 2-g-Deckel liegt beim
 #                         5-fachen des gemessenen Peaks.
-#   DIND_MEMSWAP_LIMIT  default 4g: RAM+Swap gesamt fuer den dind-Daemon
-#                         (2 GB Swap fuer Builds im Daemon). Gleich mit der
+#                         2026-10-04 auf 1g GESENKT, weil code-dev auf 7g
+#                         gewachsen ist und das Host-Budget sonst weiter
+#                         ueberschritten wird. Messwerte 2026-10-04: Peak
+#                         656031744 (626 MB) bei laufendem Daemon — der 1-g-Deckel
+#                         liegt nur beim ~1,6-fachen des gemessenen Peaks, also
+#                         deutlich knapper als die 5-fach-Marge der Vorstufen
+#                         (2,5g und 2g). Bewusst so gewaehlt: der Spielraum ist
+#                         kleiner geworden, das Risiko bleibt aber begrenzt,
+#                         weil ein OOM-Kill im DinD-cgroup nur Builds im Daemon
+#                         trifft, nicht die code-dev-Sitzung (siehe unten).
+#   DIND_MEMSWAP_LIMIT  default 2g: RAM+Swap gesamt fuer den dind-Daemon
+#                         (1 GB Swap fuer Builds im Daemon). Gleich mit der
 #                         RAM-Senkung mitgezogen: memswap_limit muss groesser
 #                         bleiben als mem_limit, sonst ist der Swap-Deckel
 #                         exakt mem_limit.
@@ -86,7 +92,7 @@ services:
     # "23-mal recreated" — 1 bis 3 pro Tag, weil der :latest-Digest von
     # opencode-web-dev-baseline taeglich neu gebaut wird. Jedes Recreate
     # beendet die laufende Sitzung, egal ob jemand arbeitet.
-    # Gegenlabel: das Label muss am CONTAINER haengen, nicht am Image — ein
+    # Gegenlabel: das Label muss am CONTAINER hängen, nicht am Image — ein
     # Recreate uebernimmt es erst mit, es wirkt also erst ab dem naechsten
     # Recreate (Entscheidung des Menschen).
     labels:
@@ -113,30 +119,26 @@ services:
     # memswap_limit setzt man, um das VERHaelTNIS zu bestimmen und den
     # Gesamt-Fussabd (RAM+Swap) hart zu deckeln — nicht um Swap zu eroeffnen.
     #
-    # 4g RAM + 4g Swap = 8g gesamt. 2026-09-29 in zwei Schritten: erst
-    # 2g/5g -> 3g/6g (gegen die OOM-Kills), dann 3g/6g -> 4g/8g.
+    # 7g RAM + 5g Swap = 12g gesamt (Historie: 2026-09-29 erst 2g/5g -> 3g/6g,
+    # dann 4g/8g, seit 2026-10-04 7g/12g).
     #
-    # GRUND, gemessen am 2026-09-29 (8 OOM-Kills in 24 h, alle in DIESEM
-    # cgroup, kein anderer Container auffaellig): Mit 2g RAM hat der
-    # cgroup-OOM-Killer bei jedem `cargo build` gefeuert — parallele rustc
-    # liegen bei 220-920 MB pro Instanz, bei 3 CPU-Cores also mehrere davon
-    # gleichzeitig. Der Kernel killt im cgroup den GROESSTEN Prozess, und das
-    # ist nicht der schuldige rustc, sondern `opencode serve` — der laeuft
-    # als PID 1. PID 1 stirbt = der ganze Container stirbt =
-    # restart: unless-stopped = Sitzung weg. Opfer an einem Tag: 3x rustc,
-    # aber 5x opencode/PID 1. Genau deshalb war es von aussen "nicht
-    # regelmaessig": es hing daran, OB man gerade Rust kompilierte.
+    # GRUND, gemessen am 2026-09-29 (Backup: *.bak-memlimit-20260929-141149):
+    # Mit 2g RAM hat der cgroup-OOM-Killer in diesem Container 8x in 24h
+    # gefeuert (nur dieser Stack, alle anderen Container unauffaellig) — jeweils
+    # bei `cargo build` mit parallelen rustc (220-920 MB pro Instanz, 3 Cores).
+    # Der Kernel killt im cgroup den GROESSTEN Prozess, und das ist nicht der
+    # schuldige rustc, sondern `opencode serve` — laeuft als PID 1. PID 1 stirbt
+    # = ganzer Container stirbt = restart: unless-stopped = Session weg.
+    # Opfer-Bilanz an einem Tag: 3x rustc, aber 5x opencode/PID 1.
     #
-    # Der Swap ist ECHTE Reserve, kein Dekor. Eine fruehere Fassung dieses
-    # Kommentars behauptete, der Swap greife wegen vm.swappiness=0 nie. Das war
-    # eine Verwechslung: vm.swappiness ist 10 (persistiert in
-    # /etc/sysctl.conf), der gemessene 0 war vm.overcommit_memory. Gegengeprueft
-    # am 2026-09-30: memory.swap.current stand bei 597 MB von 4096 MB. Merksatz:
-    # die beiden Sysctls nicht verwechseln.
-    #
-    # 4 GB haben PID 1 trotz 4 GB RAM plus 4 GB Swap nicht gerettet
-    # (opencode, 2026-09-30 08:46). Der Grund ist anon-Druck aus der
-    # Rust-Toolchain plus Chrome, nicht fehlender Swap.
+    # WICHTIG: das Swap-Sicherheitsnetz hat NIE gegriffen. memory.swap.current
+    # stand auf 0, obwohl 3g Swap erlaubt waren. Grund ist vm.swappiness=0 auf
+    # dem Host: der Kernel swapped erst, wenn RAM GLOBAL knapp wird (Host hatte
+    # 4,6 GB frei), also immer NACH der 2g-cgroup-Grenze. Die 2 GB wurden
+    # deshalb nie ueberschritten, ohne dass vorher der OOM-Killer zuschlug.
+    # Swap bleibt also Reserve, nicht Puffer — RAM-Deckel ist die eigentliche
+    # Stellschraube. Wer den Swap wirklich nutzen will, muss vm.swappiness
+    # hostweit hochsetzen; das wirkt dann aber auch auf Caddy/MariaDB.
     #
     # NACHMESSUNG am 3g-Deckel (2026-09-29, 15:57-16:01): 0 OOM-Kills, aber
     # memory.peak = 3221229568 bei memory.max = 3221225472 — die Decel wurde
@@ -144,19 +146,20 @@ services:
     # nicht "mit Luft nach oben" gehalten, sondern nur gerade noch: der Kernel
     # konnte diesmal reclaimen statt zu killen. Deshalb 4g.
     #
-    # ACHTUNG, die Rechnung wird ab hier ENG:
-    #   code-dev 4g + dind 2,5g + Portal ~0,5g + OS/dockerd ~0,7g = ~7,7 GB
-    # bei 7,5 GB Host-RAM. Die beiden Dev-Container erreichen ihre Deckeln
-    # moeglichst GLEICHZEITIG, weil der Agent in code-dev per cargo baut und
-    # parallel im Daemon per docker baut. Wenn beide wirklich an ihre Grenze
-    # gehen, feuert der HOST-OOM-Killer — und der nimmt global den groessten
-    # Prozess, was mariadbd sein kann. Das ist ein Produktionsausfall, weil
-    # ein Dev-Build zu gross war.
+    # ACHTUNG, die Rechnung geht ab hier deutlich ueber den Host:
+    #   code-dev 7g + dind 1g + Portal ~0,7g + OS/dockerd ~0,7g = ~9,4 GB
+    # bei 7,47 GB nutzbarem Host-RAM — rund 1,9 GB UEBER dem Host. Die beiden
+    # Dev-Container erreichen ihre Deckeln moeglichst GLEICHZEITIG, weil der
+    # Agent in code-dev per cargo baut und parallel im Daemon per docker baut.
+    # Wenn beide wirklich an ihre Grenze gehen, feuert der HOST-OOM-Killer —
+    # und der nimmt global den groessten Prozess, was mariadbd sein kann.
+    # Das ist ein Produktionsausfall, weil ein Dev-Build zu gross war.
     # Das Risiko wurde am 2026-09-29 bewusst so entschieden (Entscheidung des
-    # Menschen) und nicht durch Senken von dind entschaerft. Wer es zurueck
-    # nehmen will: dind auf 2g senken, dann bleiben ~0,3-0,5 GB Luft.
-    mem_limit: ${MEMORY_LIMIT:-5g}
-    memswap_limit: ${MEMSWAP_LIMIT:-9g}
+    # Menschen) und nicht durch Senken von dind entschaerft; dind wurde am
+    # 2026-10-04 trotzdem auf 1g gesenkt, weil code-dev 7g bekommen hat.
+    # Wer die Luft zurueckholen will, muss code-dev senken, nicht dind.
+    mem_limit: ${MEMORY_LIMIT:-7g}
+    memswap_limit: ${MEMSWAP_LIMIT:-12g}
     environment:
       # OPENCODE_PASSWORD ist der aktuelle Name; OPENCODE_SERVER_PASSWORD bleibt
       # als Legacy-Fallback für Entrypoint/Caddy und ältere OpenCode-Versionen.
@@ -257,26 +260,26 @@ services:
     # nur code-remote-dind (restart: unless-stopped, startet neu), waehrend
     # die code-dev-Session weiterlaeuft.
     cpus: ${DIND_CPU_CORES:-2}
-    # 2g RAM + 2g Swap = 4g gesamt. 2026-09-29 von 1300m/3g auf 2,5g/5g
-    # angehoben, am 2026-10-02 auf 2g/4g GESENKT.
+    # 1g RAM + 1g Swap = 2g gesamt. 2026-09-29 von 1300m/3g auf 2,5g/5g
+    # angehoben, am 2026-10-02 auf 2g/4g und am 2026-10-04 auf 1g/2g GESENKT.
     # Grund der Anhebung am 26.09.: dieser cgroup hat zweimal gefeuert
-    # (dockerd und dd). Der 1300m-Kill ist damit nicht zurueckkehrend — 2g
-    # liegen 700 MB ueber der Kill-Schwelle und beim 5-fachen des gemessenen
-    # Peaks (400 MB, 2026-10-02).
+    # (dockerd und dd). Der 1300m-Kill ist damit nicht zurueckkehrend — die
+    # damaligen 2g lagen 700 MB ueber der Kill-Schwelle und beim 5-fachen
+    # des gemessenen Peaks (400 MB, 2026-10-02).
     # Derselbe Haken wie bei code-dev, nur harmloser: der groesste Prozess im
     # DinD-cgroup ist der dind-Daemon, also stirbt der Daemon und nicht der
     # schuldige Build — der Agent sieht einen abgebrochenen Build, nicht die
     # eigene Sitzung. Genau deshalb sind die Limits getrennt (siehe oben).
     # Rechnung gegen 7,47 GB nutzbares Host-RAM (8 GB RAM minus OS/Docker):
-    # code-dev 5g + dind 2g + Portal ~0,7g + OS ~0,7g = ~8,4 GB. Das ist
-    # weiterhin ueber dem Host, aber um 0,3 GB weniger als vorher — der
-    # ueberschiessende Betrag liegt jetzt bei ~0,9 GB statt ~1,25 GB.
+    # code-dev 7g + dind 1g + Portal ~0,7g + OS ~0,7g = ~9,4 GB. Das ist
+    # ~1,9 GB UEBER dem Host — mehr als vorher (~0,9 GB), weil code-dev von
+    # 5g auf 7g gewachsen ist und die dind-Senkung das nicht ausgleicht.
     # GELOEST ist das nur mit mehr Host-RAM; hier ist es nur verkleinert.
     # Beide erreichen ihre Deckel moeglichst GLEICHZEITIG, weil der Agent in
     # code-dev per cargo baut und parallel im Daemon per docker baut. Wer hier
     # mehr Luft braucht, muss code-dev senken, nicht dind.
-    mem_limit: ${DIND_MEMORY_LIMIT:-2g}
-    memswap_limit: ${DIND_MEMSWAP_LIMIT:-4g}
+    mem_limit: ${DIND_MEMORY_LIMIT:-1g}
+    memswap_limit: ${DIND_MEMSWAP_LIMIT:-2g}
     # Die drei Eintraege sind NOTWENDIG, nicht Kosmetik — jeweils einzeln
     # getestet, alle drei zusammen laeuft es erst:
     #   seccomp=unconfined     Default-seccomp blockt unshare(CLONE_NEWUSER),
