@@ -120,7 +120,17 @@ __REMOTE_DOMAIN__ {
 	# dieselbe Comparator-Klasse („hat einen Matcher"), ihre Reihenfolge haengt
 	# allein an der Quelle. @api VOR @options gemessen: OPTIONS /api/info → 401
 	# statt 204, der Preflight stirbt lautlos. Beim Umbau nicht vertauschen.
-	@api path /api/*
+	# ACHTUNG: NUR wenn ein Authorization-Header mitkommt. Die Web-UI laeuft
+	# auf derselben Domain und ruft /api/* cookie-authentifiziert auf — ohne
+	# diesen Zusatz laeuft sie ins Basic-Gate, bekommt 401 + WWW-Authenticate
+	# und der Browser zeigt seinen nativen Passwort-Dialog (gemessen
+	# 2026-10-07, Live-Folge des ersten Deploys). Ohne Authorization-Header
+	# faellt der Request hier durch in den Catch-all mit forward_auth, also
+	# in das Cookie-Gate — das ist der Browser-Weg.
+	@api {
+		path /api/*
+		header Authorization *
+	}
 	handle @api {
 		basic_auth {
 			__OPENCODE_USER__ __OPENCODE_BASIC_HASH__

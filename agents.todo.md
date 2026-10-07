@@ -77,6 +77,11 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   Kommandozeile, der CORS-Append steht in Z. 118-132; wirkt erst beim
   naechsten Start durch). Der `CORS_ORIGIN`-Key selbst ist lokal in `.env`
   gesetzt, der Remote-Key braucht weiterhin den Portainer-DB-Patch siehe oben.
+- [ ] **Echte Basic-Credentials in `caddyfile/Caddyfile` (Heads 441/451/562/573,
+  vorbestehend, nicht aus einem Task-Diff).** Entscheidung 2026-10-07:
+  **Später** — eigenes Ticket: rotieren (beide Wege + Portainer + `.env`) und
+  History-Rewrite, sonst liegen die Klartext-Credentials dauerhaft in der
+  Git-Historie. Fund aus Caddy-Verify N7, dort nicht angefasst.
 
 ## 2026-10-02
 
