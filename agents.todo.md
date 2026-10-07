@@ -20,15 +20,19 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   der laufenden Compose-Datei, `CORS_ORIGIN` nicht im Container-Env.
   Regel dazu: `remote/AGENTS.md` §18.
 
-- [ ] **Offen auf dem VPS (nicht Teil dieses Fixes):** `CORS_ORIGIN` in
-  `stack.env` und in `remote/.env.production` eintragen, sonst bleibt der Wert
-  leer.
+- [x] **Erledigt 2026-10-07:** `CORS_ORIGIN` in `stack.env` und in
+  `remote/.env.production` eingetragen (Backup `stack.env.bak-cors-*`).
 - [ ] Portainer-DB-Patch nach `remote/AGENTS.md` §9 **Fall 1** (neuer Env-Key,
-  der per SSH-Deploy kam), Schema §17.4, plus der vierte Schritt
-  (`.env.production` mitziehen) — sonst schreibt der naechste UI-Deploy den
-  Key wieder weg.
-- [ ] Erst danach ein `--no-deps code-dev`-Deploy und Gegenprobe im Log:
-  `CORS: erlaube Origin https://ocweb.all-the.rest`.
+  der per SSH-Deploy kam), Schema §17.4 — sonst schreibt der naechste UI-Deploy
+  den Key wieder weg. (`.env.production` ist bereits mitgezogen.)
+- [x] **Deployed und verifiziert 2026-10-07:** `--no-deps code-dev`-Recreate,
+  Log `CORS: erlaube Origin https://ocweb.all-the.rest`, `--cors` aktiv,
+  Image-Revision `62ea52a`, `/api/info` 200, Sidecars unberuehrt.
+- [ ] **Drift VPS vs. Repo bei den RAM-Limits (gefunden 2026-10-07).** Live:
+  code-dev 7g/12g, dind 1g/2g (Stand 2026-10-04). Repo (`remote/docker-compose.yml`,
+  `remote/.env.production`): 5g/9g, 2g/4g. Die VPS-Datei wurde am Diff belegt,
+  nicht geraten. Zu entscheiden: Live-Werte ins Repo uebernehmen oder VPS auf
+  Repo zuruecksetzen — bis dahin keine der beiden Dateien „angleichen".
 
 ## 2026-10-02
 
