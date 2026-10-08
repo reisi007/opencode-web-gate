@@ -39,7 +39,7 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   das reversible base64 der **Login-Kennung** — dasselbe History-Rewrite-Ticket
   deckt ihn mit ab.
 
-- [ ] **SICHERHEITSFUND 2026-10-08: das PUBLIC Repo (`reisi007/opencode-web-gate`)
+- [x] **SICHERHEITSFUND 2026-10-08: das PUBLIC Repo (`reisi007/opencode-web-gate`)
   hat echte Credentials in der Git-History.** Der Arbeitsbaum (HEAD) ist sauber,
   aus der History aber rekonstruierbar:
   - **opencode-Serverpasswort** (`OPENCODE_PASSWORD`) als base64 in
@@ -51,8 +51,19 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   (Werte nie ausgegeben).
   **Folge:** da die Edge-Gate jetzt `base64("admin:<Login-Passwort>")` prueft,
   untergraebt der geleakte bcrypt-Hash genau diese Gate (Crack -> Login-Kennung).
-  **Behebung:** **Rotation** (macht die alten Werte wertlos) + optional
-  History-Rewrite (force-push). Ergaenzt das Rotations-Ticket 2026-10-07.
+  **Entscheidung 2026-10-08 (Mensch): History-Rewrite, KEINE Rotation.**
+  Durchgefuehrt mit `git filter-repo --replace-text` (opencode-base64, jede
+  `Basic`-Kennung, jeder echte bcrypt-Hash -> `***REMOVED***`), dann
+  force-push nach `origin/main` (`--force-with-lease`).
+  **Belegt:** Tip-Tree vor/nach identisch (`90aab3b`); frischer Clone zeigt
+  0 Treffer in der History; GitHub liefert den alten Tip-Commit `bd13aa5`
+  nicht mehr aus ("not our ref"). Backup der Vor-Rewrite-History:
+  `~/dev/opencode-web-gate-pre-rewrite-20261008-144005.bundle` (enthaelt die
+  Secrets noch — nicht weitergeben).
+  **Verworfen:** Rotation der Credentials (der Mensch hielt die Werte nicht
+  fuer noetig). **Restrisiko:** der Wert war public; Caches/Forks koennen ihn
+  behalten — ein Rewrite ist keine Garantie, Rotation waere der echte Fix.
+  Ergaenzt das Rotations-Ticket 2026-10-07 (caddyfile, privat).
   Lokale ignorierte Kopien mit Secrets: `.env`, `remote/.env.production`,
   `.env.bak-authhash-*` (alle gitignored).
 
