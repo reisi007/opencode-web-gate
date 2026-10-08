@@ -39,6 +39,23 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   das reversible base64 der **Login-Kennung** — dasselbe History-Rewrite-Ticket
   deckt ihn mit ab.
 
+- [ ] **SICHERHEITSFUND 2026-10-08: das PUBLIC Repo (`reisi007/opencode-web-gate`)
+  hat echte Credentials in der Git-History.** Der Arbeitsbaum (HEAD) ist sauber,
+  aus der History aber rekonstruierbar:
+  - **opencode-Serverpasswort** (`OPENCODE_PASSWORD`) als base64 in
+    `22e89a6:.__caddy_check` und `77e62db:caddy/Caddyfile.fragment` — reversibel,
+    also das *aktuelle* Prod-Serverpasswort.
+  - **Login-Passwort-Hash** (`AUTH_HASH`, bcrypt) in `ca4986f:.bla`.
+  Beide Dateien sind heute aus dem Baum entfernt, die Werte bleiben in der
+  History. Belegt mit `git log --all -S "<wert>"` + `git grep -l <wert> <commit>`
+  (Werte nie ausgegeben).
+  **Folge:** da die Edge-Gate jetzt `base64("admin:<Login-Passwort>")` prueft,
+  untergraebt der geleakte bcrypt-Hash genau diese Gate (Crack -> Login-Kennung).
+  **Behebung:** **Rotation** (macht die alten Werte wertlos) + optional
+  History-Rewrite (force-push). Ergaenzt das Rotations-Ticket 2026-10-07.
+  Lokale ignorierte Kopien mit Secrets: `.env`, `remote/.env.production`,
+  `.env.bak-authhash-*` (alle gitignored).
+
 ## 2026-10-07
 
 - [x] **`CORS_ORIGIN` war dokumentiert, aber nicht gemappt — der ganze CORS-Pfad
