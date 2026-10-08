@@ -1,10 +1,15 @@
 # Fragment: in die globale Caddyfile einfuegen (Platzhalter MANUELL fuellen:
-# source .env && printf 'opencode:%s' "$OPENCODE_PASSWORD" | base64),
-# Platzhalter zum Ersetzen: __CODE_DOMAIN__, __CODE_SITE__, __OPENCODE_BASIC__,
-# __CORS_ORIGIN__ (nur die eigene PWA-Origin). Unersetzt ist die Datei trotzdem
-# syntaktisch gueltiges Caddy und liefert still
-# `Access-Control-Allow-Origin: __CORS_ORIGIN__` — der Browser lehnt die
-# Response ab, ohne dass im Caddy-Log etwas auffaellt.
+# __EDGE_BASIC__     = base64("<AUTH_USER>:<Login-Passwort>") — die Login-Kennung
+#   der Login-Seite, NICHT das opencode-Server-Passwort (Root-AGENTS.md §4):
+#   source .env && printf '%s:%s' "$AUTH_USER" '<Login-Passwort>' | base64
+# __OPENCODE_BASIC__ = base64("opencode:<OPENCODE_PASSWORD>") — Upstream-Injektion:
+#   source .env && printf 'opencode:%s' "$OPENCODE_PASSWORD" | base64),
+# Platzhalter zum Ersetzen: __CODE_DOMAIN__, __CODE_SITE__, __EDGE_BASIC__,
+# __OPENCODE_BASIC__, __CORS_ORIGIN__ (nur die eigene PWA-Origin). Unersetzt ist
+# die Datei trotzdem syntaktisch gueltiges Caddy und liefert still
+# `Access-Control-Allow-Origin: __CORS_ORIGIN__` bzw. einen 401 an der Edge
+# (@api_ok matcht nie) — der Browser lehnt die Response ab, ohne dass im
+# Caddy-Log etwas auffaellt.
 # dann dort ./sync.sh (validate + reload). Nicht als eigenes Caddyfile nutzen.
 # Voraussetzung: Portainer-Stack code-auth laeuft, SSH-Tunnel Mac -> VPS auf 172.18.0.1:18731.
 __CODE_DOMAIN__ {
@@ -71,6 +76,68 @@ __CODE_DOMAIN__ {
 		header Access-Control-Allow-Credentials "true"
 		header Access-Control-Max-Age "86400"
 		respond "" 204
+	}
+
+	# /api/* for the PWA: edge gate on the EMBEDDED credential — exact match
+	# on the full base64 header. No username lookup, no password hash to
+	# maintain at the edge. The edge credential (__EDGE_BASIC__, the login
+	# credential the PWA sends per request) and the upstream server password
+	# (__OPENCODE_BASIC__, what opencode expects) are independent strings and
+	# rotate independently: changing OPENCODE_PASSWORD only touches the
+	# header_up lines, changing the login credential only touches the @api_ok
+	# matcher below.
+	#
+	# Cookie gate untouched: /api/login, /api/me, /api/logout stay ABOVE
+	# (source order, stable sort) on forward_auth, and requests WITHOUT an
+	# Authorization header fall through to the catch-all cookie gate — that
+	# is the browser Web-UI path.
+	#
+	# ORDERING (load-bearing): @options > @api_ok > @api_denied. All three
+	# matchers fall in the same comparator class (has a matcher), so source
+	# order is kept. @api_ok BEFORE @api_denied: allowed requests match both,
+	# but handles are exclusive, first match wins. Either of them ABOVE
+	# @options kills the preflight (OPTIONS carries no Authorization).
+	@api_ok {
+		path /api/*
+		header Authorization "Basic __EDGE_BASIC__"
+	}
+	handle @api_ok {
+		reverse_proxy 172.18.0.1:18731 {
+			header_up Authorization "Basic __OPENCODE_BASIC__"
+			transport http {
+				versions 1.1
+				keepalive 4s
+			}
+			stream_timeout 24h
+			stream_close_delay 5m
+		}
+
+		# ACAO/ACAC on the real responses (sibling of reverse_proxy, NOT
+		# inside it — header is no reverse_proxy subdirective). defer lets
+		# proxy responses override later-set headers.
+		header {
+			Access-Control-Allow-Origin "__CORS_ORIGIN__"
+			Access-Control-Allow-Credentials "true"
+			Vary Origin
+			defer
+		}
+	}
+
+	# Wrong credential WITH an Authorization header -> direct 401 WITH ACAO
+	# (never the cookie gate: that would 302 and the PWA would see a CORS
+	# failure instead of Unauthorized). No WWW-Authenticate header here, so
+	# the browser never pops its native password dialog on this path.
+	@api_denied {
+		path /api/*
+		header Authorization *
+	}
+	handle @api_denied {
+		header {
+			Access-Control-Allow-Origin "__CORS_ORIGIN__"
+			Access-Control-Allow-Credentials "true"
+			Vary Origin
+		}
+		respond "Unauthorized" 401
 	}
 
 	# alles andere: Cookie pruefen, dann SSH-Tunnel zum Mac.

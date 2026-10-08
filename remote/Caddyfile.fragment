@@ -1,20 +1,25 @@
 # Fragment ZWEITER Weg: __REMOTE_DOMAIN__ (VPS-nativ, Mac-Tunnel bleibt).
 # Ablage NUR als Vorlage hier — echte Secrets nie committen, Platzhalter
 # manuell fuellen (siehe Root-README: Passwoerter & Caddy-Basic).
-# Platzhalter zum Ersetzen: __REMOTE_DOMAIN__, __CODE_SITE__, __OPENCODE_BASIC__,
-# __CORS_ORIGIN__ (nur die eigene PWA-Origin), __OPENCODE_USER__,
-# __OPENCODE_BASIC_HASH__ (bcrypt des OPENCODE_PASSWORD, siehe @api-Block).
-# Achtung, zwei verschiedene Basic-Formate: __OPENCODE_BASIC__ ist
-# base64("user:pass") und wird per header_up INJIZIERT, __OPENCODE_BASIC_HASH__
-# ist ein bcrypt-Hash ($2a$...) und wird von basic_auth VERGLICHEN. Nicht
-# verwechseln, nicht base64-en.
+# Platzhalter zum Ersetzen: __REMOTE_DOMAIN__, __CODE_SITE__, __CORS_ORIGIN__
+# (nur die eigene PWA-Origin), __EDGE_BASIC__, __OPENCODE_BASIC__.
+#
+# Achtung, zwei VERSCHIEDENE Basic-Kennungen, beide base64 — NICHT angleichen:
+#   __EDGE_BASIC__     = base64("<AUTH_USER>:<Login-Passwort>") — wird vom
+#                        @api_ok-Matcher exakt VERGLICHEN. Das ist die
+#                        Login-Kennung der Login-Seite, NICHT das
+#                        opencode-Server-Passwort (Root-AGENTS.md §4).
+#   __OPENCODE_BASIC__ = base64("opencode:<OPENCODE_PASSWORD>") — wird per
+#                        header_up an den Upstream INJIZIERT. Die Caddy-Proxy-
+#                        Auth ist absichtlich nicht die des Zielservers.
 #
 # Unersetzt ist die Datei fuer __REMOTE_DOMAIN__/__CODE_SITE__/__OPENCODE_BASIC__/
-# __CORS_ORIGIN__ weiterhin syntaktisch gueltig und liefert still eine
-# unbrauchbare Response. __OPENCODE_BASIC_HASH__ ist die Ausnahme: Caddy
-# dekodiert alles ohne `$`-Praefix als base64 und bricht validate hart ab
-# ("illegal base64 data"). Das ist der bessere Ausgang — ein nicht
-# deploybarer Stack statt eines stillen Fehlschlags.
+# __EDGE_BASIC__/__CORS_ORIGIN__ syntaktisch gueltiges Caddy und liefert still
+# eine unbrauchbare Response: falsche ACAO-Origin, und der @api_ok-Matcher
+# matcht nie -> jeder PWA-Request 401. Kein harter validate-Abbruch mehr (der
+# fruehere bcrypt-Wert (OPENCODE_BASIC_HASH) entfaellt; der Header-Matcher
+# dekodiert nichts, er vergleicht nur Strings). Platzhalter deshalb nach dem
+# Uebernehmen mit `grep -n '__[A-Z_]*__' Caddyfile` gegenpruefen.
 # Dann im caddyfile-Repo in Caddyfile uebernehmen + ./sync.sh (validate + reload).
 # Voraussetzung VPS: Stack `code-remote` laeuft (stack/docker-compose.remote.yml),
 # Caddy haengt zusaetzlich im externen Netz `code-remote` (siehe remote/README.md).
@@ -84,69 +89,33 @@ __REMOTE_DOMAIN__ {
 		respond "" 204
 	}
 
-	# /api/* fuer die PWA: Basic-Gate am Edge (Option B aus
-	# opencode-pwa features/06-remote-access.md), KEIN forward_auth. Das
-	# Cookie-Gate kann cross-origin nicht passieren (SameSite=Lax, gemessen),
-	# die PWA sendet aber per Request `Authorization: Basic` (features/02).
+	# /api/* for the PWA: edge gate on the EMBEDDED credential — exact match
+	# on the full base64 header. No username lookup, no password hash to
+	# maintain at the edge. The edge credential (__EDGE_BASIC__, the login
+	# credential the PWA sends per request) and the upstream server password
+	# (__OPENCODE_BASIC__, what opencode expects) are independent strings and
+	# rotate independently: changing OPENCODE_PASSWORD only touches the
+	# header_up lines, changing the login credential only touches the @api_ok
+	# matcher below.
 	#
-	# Warum nicht `forward_auth` mit durchgereichtem Cookie: Lax heisst, der
-	# Browser sendet das Cookie bei cross-site fetch gar nicht. Und warum nicht
-	# einfach den Client-Header durchreichen: `header_up Authorization` im
-	# Catch-all ersetzt ihn — das Client-Basic erreicht opencode nie, also
-	# muss Caddy es selbst pruefen und danach das Server-Passwort injizieren.
+	# Cookie gate untouched: /api/login, /api/me, /api/logout stay ABOVE
+	# (source order, stable sort) on forward_auth, and requests WITHOUT an
+	# Authorization header fall through to the catch-all cookie gate — that
+	# is the browser Web-UI path.
 	#
-	# Das Passwort ist OPENCODE_PASSWORD (Serverpasswort), NICHT AUTH_HASH
-	# (Login-Cookie) — die beiden duerfen pro Weg verschieden sein
-	# (Gate-AGENTS.md §4/§13). Der Hash kommt aus `caddy hash-password
-	# --plaintext "$OPENCODE_PASSWORD"`; die AUSGABE dieses Kommandos ist der
-	# Wert fuer __OPENCODE_BASIC_HASH__, unquoted und im Modular-Crypt-Format
-	# ($2a$...). Kein base64 — ein base64-Wert laeuft in Cadys base64-Zweig und
-	# bricht validate mit "illegal base64 data".
-	#
-	# Der User-Teil ist NICHT frei waehlbar: Cadys basic_auth macht einen
-	# Map-Lookup auf den Usernamen (caddyauth/basicauth.go), ein unbekannter
-	# User ist ein 401. __OPENCODE_USER__ muss exakt der Username sein, den
-	# die PWA im Vault fuer diesen Server hinterlegt hat
-	# (opencode-pwa features/02-api-contract.md: Basic pro Server aus dem
-	# Vault). Falscher Name = jeder PWA-Request laeuft ins 401.
-	#
-	# Reihenfolge/Abdeckung: die exakten Pfad-Handles /api/login, /api/me,
-	# /api/logout stehen DARUEBER und behalten ihre Quellreihenfolge (stabiler
-	# Sort, Begründung beim @options-Block) — sie gehen NICHT durch dieses
-	# Basic-Gate, sie bleiben am Cookie-Gate. Das ist Absicht: die Login-API
-	# des Sidecars kennt kein Basic.
-	#
-	# LADEN-TRAGEND: @api muss UNTER @options stehen. Beide Matcher fallen in
-	# dieselbe Comparator-Klasse („hat einen Matcher"), ihre Reihenfolge haengt
-	# allein an der Quelle. @api VOR @options gemessen: OPTIONS /api/info → 401
-	# statt 204, der Preflight stirbt lautlos. Beim Umbau nicht vertauschen.
-	# ACHTUNG: NUR wenn ein Authorization-Header mitkommt. Die Web-UI laeuft
-	# auf derselben Domain und ruft /api/* cookie-authentifiziert auf — ohne
-	# diesen Zusatz laeuft sie ins Basic-Gate, bekommt 401 + WWW-Authenticate
-	# und der Browser zeigt seinen nativen Passwort-Dialog (gemessen
-	# 2026-10-07, Live-Folge des ersten Deploys). Ohne Authorization-Header
-	# faellt der Request hier durch in den Catch-all mit forward_auth, also
-	# in das Cookie-Gate — das ist der Browser-Weg.
-	@api {
+	# ORDERING (load-bearing): @options > @api_ok > @api_denied. All three
+	# matchers fall in the same comparator class (has a matcher), so source
+	# order is kept. @api_ok BEFORE @api_denied: allowed requests match both,
+	# but handles are exclusive, first match wins. Either of them ABOVE
+	# @options kills the preflight (OPTIONS carries no Authorization).
+	@api_ok {
 		path /api/*
-		header Authorization *
+		header Authorization "Basic __EDGE_BASIC__"
 	}
-	handle @api {
-		basic_auth {
-			__OPENCODE_USER__ __OPENCODE_BASIC_HASH__
-		}
+	handle @api_ok {
 		reverse_proxy code-dev:8080 {
-			# Intern auf das Opcode-Passwort swappen: der Client schickt das
-			# Client-Basic, opencode erwartet sein eigenes. basic_auth prueft den
-			# EINGEHENDEN Request, header_up aendert den AUSGEHENDEN — die
-			# Reihenfolge der beiden ist dafuer unerheblich, die Pruefung kann
-			# dadurch nicht umgangen werden (belegt am Adapt-JSON).
-			header_up Authorization "__OPENCODE_BASIC__"
 			header_up Host code-dev
-
-			# Gleicher Upstream-Transport und dieselben Stream-Grenzen wie
-			# unten im Catch-all: HTTP/1.1 + kurzes Keepalive (opencode
-			# antwortet Keep-Alive: timeout=5), WebSocket 24h, SSE unberuehrt.
+			header_up Authorization "Basic __OPENCODE_BASIC__"
 			transport http {
 				versions 1.1
 				keepalive 4s
@@ -155,25 +124,32 @@ __REMOTE_DOMAIN__ {
 			stream_close_delay 5m
 		}
 
-		# ACAO/ACAC auf den echten Responses (Sibling von reverse_proxy, NICHT
-		# darin — `header` ist keine reverse_proxy-Subdirektive und macht die
-		# ganze Datei unadaptierbar, beide Sites tot). defer, damit
-		# Proxy-Responses spaeter gesetzte Header ueberschreiben koennen.
-		#
-		# BEGRENZT (gemessen): die 401 aus basic_auth traegt diese Header NICHT.
-		# basic_auth gibt bei Fehlschlag keinen normalen Response zurueck,
-		# sondern caddyhttp.Error, und der defer-Wrapper wird im Error-Pfad
-		# umgangen — die PWA sieht dann nur einen CORS-Fehler statt einer 401.
-		# Reparatur ist der ACAO-Zweig in handle_errors unten (Entscheidung
-		# 2026-10-07), NICHT dieser defer-Block.
-		# opencode --cors liefert ACAO auch (Key CORS_ORIGIN, §18) — das ist
-		# unbelegt, s. §19.
+		# ACAO/ACAC on the real responses (sibling of reverse_proxy, NOT
+		# inside it — header is no reverse_proxy subdirective). defer lets
+		# proxy responses override later-set headers.
 		header {
 			Access-Control-Allow-Origin "__CORS_ORIGIN__"
 			Access-Control-Allow-Credentials "true"
 			Vary Origin
 			defer
 		}
+	}
+
+	# Wrong credential WITH an Authorization header -> direct 401 WITH ACAO
+	# (never the cookie gate: that would 302 and the PWA would see a CORS
+	# failure instead of Unauthorized). No WWW-Authenticate header here, so
+	# the browser never pops its native password dialog on this path.
+	@api_denied {
+		path /api/*
+		header Authorization *
+	}
+	handle @api_denied {
+		header {
+			Access-Control-Allow-Origin "__CORS_ORIGIN__"
+			Access-Control-Allow-Credentials "true"
+			Vary Origin
+		}
+		respond "Unauthorized" 401
 	}
 
 	# alles andere: Cookie pruefen, dann VPS-Container (kein SSH-Tunnel).
@@ -227,24 +203,9 @@ __REMOTE_DOMAIN__ {
 	}
 
 	handle_errors {
-		# 401 des Basic-Gates an der PWA lesbar machen (2026-10-07). Ohne das
-		# sieht die PWA bei falschem Passwort "Failed to fetch" statt "401"
-		# (gemessen: der defer-Block am @api-Handle traegt die basic_auth-401
-		# nicht, weil basic_auth per caddyhttp.Error antwortet und der
-		# defer-Wrapper im Error-Pfad umgangen wird). Deshalb hier, im
-		# Error-Handler, wo die Antwort tatsaechlich entsteht.
-		#
-		# Abgegrenzt auf /api/*: die 401 des Cookie-Pfads (forward_auth) laeuft
-		# als handle_response-Redirect durch und erreicht handle_errors nicht.
-		@api401 expression `{err.status_code} == 401 && {path}.startsWith("/api/")`
-		handle @api401 {
-			header {
-				Access-Control-Allow-Origin "__CORS_ORIGIN__"
-				Access-Control-Allow-Credentials "true"
-				Vary Origin
-			}
-			respond "Unauthorized" 401
-		}
+		# No extra 401 branch: wrong PWA credentials are answered directly in
+		# @api_denied above (plain respond, already carrying ACAO) and never
+		# reach handle_errors.
 
 		@gw expression `{err.status_code} == 502 || {err.status_code} == 503 || {err.status_code} == 504`
 		handle @gw {
