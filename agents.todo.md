@@ -3,6 +3,42 @@
 Offene, nicht triviale Punkte und Blockaden. Einträge werden erst nach einem
 unabhängigen Review und erfolgreicher Verifikation entfernt.
 
+## 2026-10-08
+
+- [x] **API-Edge-Gate prueft jetzt die Login-Kennung statt des opencode-Werts
+  (Entscheidung 2026-10-08).** `@api_ok` in `caddyfile/Caddyfile` (beide
+  Bloecke) matcht exakt `base64("<AUTH_USER>:<Login-Passwort>")`
+  (`AUTH_USER=admin`, live verifiziert). `header_up Authorization` bleibt
+  **unveraendert** `base64("opencode:<OPENCODE_PASSWORD>")` — die
+  Caddy-Proxy-Auth ist absichtlich **nicht** die des Zielservers.
+  **Live verifiziert:** `sync.sh` validate ✅, Sync + Reload ✅, lokal == live
+  (`md5 7b6214844d9662825f07253d65cb4e4f`); `remote-code.all-the.rest/api/info`
+  mit der Login-Kennung → **200** (der Upstream bekam das opencode-Passwort,
+  sonst waere es 401), kein Auth → **302 `/login.html`**, falsche Creds →
+  **401 + ACAO**, Preflight → **204 + ACAO**. `code.all-the.rest` mit der
+  Login-Kennung → **502**, aber nur weil der Mac-Tunnel offline ist
+  (`172.18.0.1:18731` connect refused, Gate passiert). Regel: `AGENTS.md` §4.
+- [ ] **Verworfen (nicht nachtraeglich implementieren):** den opencode-Wert
+  zusaetzlich als OR-Wert im `@api_ok` stehenlassen (Caddy kann `Authorization`
+  mit mehreren Werten als OR — getestet). Der Nutzer wollte **ersetzen**,
+  nicht ergaenzen.
+- [ ] **Lokales `.env`-`AUTH_HASH` ist veraltet (Nebenbefund 2026-10-08).**
+  PHP `password_verify` gegen den lokalen Hash = `false` fuer das
+  Login-Passwort, gegen **beide** Live-Hashes (`code-auth`,
+  `code-auth-remote`) = `true`. Die drei Quellen aus §3 sind also nicht
+  synchron; betrifft nur lokal, Live ist korrekt. Lokales `.env` auf den
+  Live-Hash ziehen.
+- [ ] **`remote/Caddyfile.fragment` + `local/Caddyfile.fragment` driften vom
+  Live-Stand (2026-10-08).** Sie dokumentieren noch `basic_auth` +
+  `__OPENCODE_BASIC_HASH__` (bcrypt am Edge) und den opencode-Wert als
+  Edge-Kennung; live ist die Edge-Kennung die Login-Kennung. Zu portieren,
+  inkl. Platzhalter (`__OPENCODE_USER__`/`__OPENCODE_BASIC_HASH__` entfallen
+  zugunsten eines Edge-Credential-Platzhalters).
+- [ ] **Ergaenzung zum Credential-Rotations-Ticket (2026-10-07,
+  `caddyfile/Caddyfile` Heads 441/451/…):** der `@api_ok`-base64-Wert ist jetzt
+  das reversible base64 der **Login-Kennung** — dasselbe History-Rewrite-Ticket
+  deckt ihn mit ab.
+
 ## 2026-10-07
 
 - [x] **`CORS_ORIGIN` war dokumentiert, aber nicht gemappt — der ganze CORS-Pfad

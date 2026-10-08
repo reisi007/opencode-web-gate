@@ -96,6 +96,22 @@ injiziert pro Block den passenden Wert. **Der Login der Login-Seite hat damit
 nichts zu tun.** Ein 401 auf `/api/info` ist ein Basic-Problem, ein 401 auf
 `/api/login` ist ein `AUTH_HASH`-Problem.
 
+### Die API-Edge-Gate prueft die Login-Kennung, NICHT das Server-Passwort (2026-10-08)
+
+Die `/api/*`-Gate in `caddyfile/Caddyfile` (`@api_ok`, **beide** Bloecke)
+matcht exakt `Authorization: Basic base64("<AUTH_USER>:<Login-Passwort>")` —
+dieselbe Kennung wie die Login-Seite, nur base64-eingebettet. Der Upstream
+sieht davon nichts: `header_up Authorization` setzt weiterhin
+`base64("opencode:<OPENCODE_PASSWORD>")`. Edge-Kennung und Server-Passwort
+sind damit absichtlich **verschieden** und rotieren getrennt — die
+Caddy-Proxy-Auth ist nicht die des Zielservers. Das nicht „vereinheitlichen".
+
+Folge bei Rotation des Login-Passworts: **drei** Stellen nachziehen —
+`AUTH_HASH` (bcrypt, Sidecar), den `@api_ok`-base64-Wert in
+`caddyfile/Caddyfile` (**beide** Bloecke) und die App-/PWA-Konfiguration.
+Ein 401 auf `/api/*` bei korrektem Login-Passwort heisst: der base64-Wert im
+`@api_ok` passt nicht (User-Teil muss `AUTH_USER` sein).
+
 ## 5. Verifikations-Befehle (VPS, read-only)
 
 Vor Jeder Aussage "Login ist synchron" messen, nicht raten:
