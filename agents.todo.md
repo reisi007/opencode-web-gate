@@ -3,6 +3,37 @@
 Offene, nicht triviale Punkte und Blockaden. Einträge werden erst nach einem
 unabhängigen Review und erfolgreicher Verifikation entfernt.
 
+## 2026-10-09
+
+- [x] **Kein Trainingsprozess auf der VPS — die CPU ist gemessen ungenutzt
+  (Auftrag/Entscheidung 2026-10-09).** Gefragt war, ob auf
+  `root@reisinger.pictures` etwas wie Model Training laeuft und was gerade die
+  meiste CPU braucht. Befund: **kein Trainingsprozess** (`ps` nach
+  python/torch/cuda/vllm/ollama/jax/nccl → nur `firewalld` und `tuned`, je 0 %)
+  und es braucht **nichts** nennenswert CPU:
+  - 20s-Sample `/proc/stat`: BUSY **4,61 %** von 4 Kernen, IDLE 81,53 %,
+    user 15,36 %, iowait 0,01 %, **steal 0,00 %**.
+  - `vmstat 1 6`: `id 89–99 %`, `r 0–1`. Seit Boot (2 d 13 h) kumulativ
+    ≈ 3 % der Kapazitaet.
+  - Hoechster Verbraucher: `opencode serve` (PID 2099560, User `r1`, Container
+    `code-dev`) mit ~6 % **ueber 10 h gemittelt** — momentan ~0 %.
+  - **Nicht Drosselung, wirklich ungenutzt:** cgroup v2 `cpu.stat` →
+    `nr_periods 0, nr_throttled 0, throttled_usec 0` (keine Quota), KVM-Gast
+    mit steal 0. Kein `/proc/pressure/cpu` (kein PSI im Kernel) — Load-Verlauf
+    0,24 / 0,49 / 0,73 ist die Ersatz-Probe.
+  - Nebenbefund RAM: 5,1 Gi von 7,5 Gi verfuegbar, 2,3 Gi Swap alt belegt,
+    `si/so` ~10 KB/s — unkritisch.
+
+- [x] **Zombie-Leck im Container `code-dev` gefunden (2026-10-09) —
+  absichtlich NICHT angefasst.** `opencode serve` (PID 2099560) reapt seine
+  Kinder nicht: **1112 Zombies**, alle mit PPID 2099560, Rate ≈ 100/Std
+  (10 h 46 m Laufzeit). Kosten: **0 % CPU** (daher der niedrige Load), RAM nur
+  indirekt ueber Prozesstabellen-Eintraege. **Kein Engpass:**
+  `/proc/sys/kernel/pid_max` = 4.194.304 → 0,03 % belegt, Gesamtprozesse 1605.
+  **Entscheidung (Mensch 2026-10-09): nichts tun, nur dokumentieren** — weder
+  `docker restart` noch `kill` (Begruendung unter „Verworfen"). Damit ist der
+  Eintrag nur ein Protokoll; auftretende Zombies sind kein Fehlerbild.
+
 ## 2026-10-08
 
 - [x] **API-Edge-Gate prueft jetzt die Login-Kennung statt des opencode-Werts
@@ -652,6 +683,16 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
 
 Ansätze, die **bewusst zurückgezogen** wurden. Nicht erneut implementieren —
 wenn sich die Voraussetzungen ändern, zuerst neu bewerten.
+
+- **Die 1112 Zombies in `code-dev` per `docker restart code-dev` oder
+  `kill -9 2099560` wegräumen** (2026-10-09, vom Agenten angeboten, vom Mensch
+  abgelehnt mit „nichts tun, nur dokumentieren"). Begründung: **0 % CPU-Kosten**,
+  `pid_max` 4.194.304 → 0,03 % belegt, also kein PID-Engpass; und der Preis war
+  real — ein Restart kostet alle offenen Sessions auf Port 8080 (zu diesem
+  Zeitpunkt 0 Verbindungen offen, aber das Leck steht in ~11 Std wieder auf
+  demselben Stand), waehrend `kill -9` auf den Host-PID 2099560 den Container
+  `exited` haengen laesst statt ihn neu zu starten. Nicht erneut anbieten, nur
+  weil der Zombie-Zaehler gross aussieht — er ist ein Anzeiger, kein Crash.
 
 - **Loopback-Image in einem Docker-Volume-Pfad mounten** (`3d3a046` vom
   2026-09-26, verworfen mit `c5d3c7b`). Damals
