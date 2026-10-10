@@ -5,6 +5,28 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
 
 ## 2026-10-10
 
+- [x] **„Tunnel offline, Login war erfolgreich" — falsches Server-Passwort im
+  Tunnel-Block der Caddyfile (Entscheidung 2026-10-10).** Gewuenscht war: das
+  im Web eingegebene Login-Passwort ist **nicht** das OpenCode-Passwort; es wird
+  pro Block ein eigenes `opencode:<PASSWORT>` upstream injiziert. Befund
+  (gemessen, nicht geraten): Lauscher `172.18.0.1:18731` stand, durch den Tunnel
+  mit dem Mac-Wert **HTTP 200**, mit dem in der Live-Caddyfile hinterlegten Wert
+  **401** — der Healthcheck fiel auf `down`, `handle_errors` lieferte
+  `tunnel-down.html`. Ursache: Im Block `code.all-the.rest`
+  (`caddyfile/Caddyfile`, privat, `header_up` ×2 + `health_headers`) stand der
+  `code-dev`-Wert aus `remote/.env.production` statt des Mac-Werts aus `.env`.
+  **Fix:** Tunnel-Block auf `base64("opencode:<Mac-Passwort>")` korrigiert,
+  Kommentar dazugesetzt, `./sync.sh` (validate + reload) deployed; Live == Repo
+  (md5 identisch), `/api/info` und `/api/config` durch das Gate wieder HTTP 200.
+  `remote-code`-Block unberuehrt (gehoert zu `code-dev`). Regel in
+  `local/AGENTS.md` §9 + §10, zweite 401-Ursache in `AGENTS.md` §4.
+- [x] **`start-tunnel.command` brach mit `../.env: line 27: $2: unbound
+  variable` ab (2026-10-10).** `AUTH_HASH` in der lokalen `.env` stand ohne
+  Anfuehrungszeichen; `run.sh` & Co. sourcen die Datei unter `set -euo pipefail`,
+  wobei `$2a$14$…` als Parameter-Expandierung ausgewertet wird. Wert wie von
+  `setup.sh` erzeugt in einfache Quotes gesetzt; Hinweis in `.env.example` und
+  `local/AGENTS.md` §9 ergaenzt. Tunnel danach gestartet (LaunchAgent
+  `com.code-tunnel`, Autostart + Watchdog aktiv).
 - [ ] **HF-Zugang in `code-dev`: Live-Hotfix erledigt, Repo-Seite angepasst,
   Deploy fehlt (Entscheidung 2026-10-10).** Gewuenscht war `hf login` im
   Dev-Container auf dem Remote-VPS. **Live ohne Neustart erledigt:**

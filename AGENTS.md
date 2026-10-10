@@ -112,6 +112,15 @@ Folge bei Rotation des Login-Passworts: **drei** Stellen nachziehen —
 Ein 401 auf `/api/*` bei korrektem Login-Passwort heisst: der base64-Wert im
 `@api_ok` passt nicht (User-Teil muss `AUTH_USER` sein).
 
+**Zweite 401-Ursache, am 2026-10-10 gemessen:** der Tunnel-Block von
+`code.all-the.rest` in `caddyfile/Caddyfile` injizierte mit dem `code-dev`-Wert
+aus `remote/.env.production` statt mit dem Mac-Wert aus `.env`. Dann antwortet
+`opencode serve` 401, der Healthcheck markiert den Upstream `down` und
+`handle_errors` liefert `tunnel-down.html` — obwohl der Tunnel **steht** (Lauscher
+auf `172.18.0.1:18731`, durch den Tunnel mit dem richtigen Wert HTTP 200).
+Unterscheidung: `handle_errors`-Seite + Healthcheck-Log (`unexpected status code
+401`) statt `connection refused`. Regel in [`local/AGENTS.md`](local/AGENTS.md) §10.
+
 ## 5. Verifikations-Befehle (VPS, read-only)
 
 Vor Jeder Aussage "Login ist synchron" messen, nicht raten:

@@ -145,8 +145,13 @@ Diese Zeile nicht entfernen, sonst findet der Doppelklick `opencode` nicht.
 
 ## 9. Was in diesem Ordner escaped wird — und was nicht
 
-- `../.env`: **`AUTH_HASH` unescaped** (`$2a$14$…`). Hier laeuft kein
-  Portainer-Interpolationsschritt.
+- `../.env`: **`AUTH_HASH` unescaped** (`$2a$14$…`), aber in **einfache
+  Anfuehrungszeichen** gesetzt (`AUTH_HASH='$2a$14$…'`). Hier laeuft kein
+  Portainer-Interpolationsschritt — und `run.sh` & Co. sourcen die Datei unter
+  `set -euo pipefail`. Ohne Quotes expandiert Bash `$2` beim Sourcen und bricht
+  mit `../.env: line 27: $2: unbound variable` ab; der Tunnel startet dann
+  gar nicht mehr. `setup.sh` schreibt den Wert deshalb gequotet, genau so gehoert
+  er in die Datei.
 - `docker-compose.yml`: **`$$` im `command:`-Heredoc** — Compose sonst, weil der
   Wert im eingebetteten Python steht (`AUTH_HASH.startswith("$2")`). Das ist ein
   anderes `$$` als in `remote/.env.production` und bleibt unangetastet.
@@ -171,6 +176,21 @@ mit `grep -n '__[A-Z_]*__' Caddyfile` gegenpruefen — die `validate`-Stufe von
 Nicht entfernen: `health_headers { Authorization … }` im Healthcheck. Ohne den
 Header ist `/api/info` durch das Basic-Passwort 401 und der Healthcheck meldet
 dauerhaft unhealthy, obwohl alles laeuft.
+
+### `__OPENCODE_BASIC__` ist der **Mac**-Wert, nicht der Remote-Wert (Entscheidung 2026-10-10)
+
+Der Tunnel-Block `code.all-the.rest` in `caddyfile/Caddyfile` (privat)
+injiziert `base64("opencode:<OPENCODE_PASSWORD>")` aus **`../.env`**. Der
+`remote-code`-Block injected denselben Headertyp mit dem Wert aus
+`remote/.env.production` — die beiden Bloecke deshalb **nicht** angleichen. Am
+2026-10-10 stand im Tunnel-Block der `code-dev`-Wert: Symptom war nicht „Tunnel
+tot", sondern **„Login war erfolgreich, aber der Mac ist nicht erreichbar"**
+(`tunnel-down.html`). Gemessen: Lauscher auf `172.18.0.1:18731` stand, durch den
+Tunnel mit dem Mac-Passwort **HTTP 200**, mit dem eingetragenen Wert **401**;
+der Healthcheck faellt damit auf `down` und `handle_errors` liefert die
+Fehlerseite. Zwei Werte also getrennt rotieren; die Stellen im Tunnel-Block
+sind `header_up` (zweimal: `@api_ok` und die Cookie-Gate-Catch-all) plus
+`health_headers`.
 
 ## 11. `sync.sh` veroeffentlicht sofort
 
