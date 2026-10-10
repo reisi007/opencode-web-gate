@@ -705,3 +705,75 @@ gelesen. Nichts darueber behaupten, siehe „Offen" unten.
   §17.4), sonst schreibt der naechste UI-Deploy ihn weg.
 - Fuer den lokalen Weg fehlt noch ein `serve`-Neustart, damit `run.sh` das
   `--cors` an den laufenden Prozess haengt.
+
+## 20. Hugging Face: Token kommt als `HF_TOKEN`, nicht per `hf auth login`
+
+(2026-10-10, Auftrag des Menschen.) `hf` soll in `code-dev` Downloads aus dem Hub
+koennen. Der naheliegende Weg — `hf auth login` im Container — **haelt nicht**,
+und der Grund steht in §16 schon: `~/.cache` ist **kein** Volume. Nur die sechs
+Unterverzeichnisse aus §8/§15 sind gemountet, `/home/dev` selbst ist kein Mount. Der
+Token landet damit in `/home/dev/.cache/huggingface/token` und ist beim naechsten
+Recreate weg.
+
+Deshalb **drei** Stellen, nicht eine:
+
+1. **`HF_TOKEN` im `environment:`-Block** von `code-dev` (ohne `:-`, leer bleibt
+   leer — §18). Der Wert kommt aus der Stack-Env, die Compose-Datei
+   interpoliert ihn nur.
+2. **`HF_TOKEN` in `.env.production`** — Paste-Vorlage fuer die Portainer-UI,
+   gitignored, enthaelt das Token im Klartext. Kein `$$`-Escaping noetig, der
+   Token hat kein `$` (anders als `AUTH_HASH`, §2).
+3. **`huggingface_hub[cli]` im Image** (Dockerfile, per
+   `pip --break-system-packages` ins System-Python, nicht pipx). Sonst ist `hf`
+   nach jedem Recreate wieder weg.
+
+`huggingface_hub` liest `HF_TOKEN` aus der Env **vor** jedem gespeicherten Token
+— ein `hf auth login` ist damit weder noetig noch sinnvoll. `transformers` und
+`diffusers` sehen die Variable ebenfalls.
+
+### Der Live-Hotfix ohne Neustart (2026-10-10 so gemacht)
+
+Wer nicht auf den naechsten Deploy warten will, kann im **laufenden** Container
+arbeiten — beides liegt dann aber nur im Writable-Layer und ueberlebt keinen
+Recreate:
+
+```sh
+docker exec code-dev bash -lc 'sudo python3 -m pip install \
+  --break-system-packages --no-cache-dir "huggingface_hub[cli]"'
+```
+
+**`hf auth login` interaktiv im `docker exec` haengt** — gemessen: 90-s-Timeout,
+kein Token geschrieben. Die **Ursache ist Vermutung, nicht gemessen:** in 2.x ist
+der Default von `hf auth login` der Browser-OAuth-Flow (URL + Code abwarten),
+und der bleibt ohne TTY stehen; die Prompt-Eingabe per Pipe kommt dann erst gar
+nicht zum Zug. Beleg fehlt. Dokumentiert ist der nicht-interaktive Weg
+`hf auth login --token $HF_TOKEN` — im `docker exec` steht der Token dabei in der
+Prozessliste (`docker top`, `ps`), deshalb fuer den Live-Hotfix unten das Token
+direkt per stdin in die Token-Datei schreiben (0600) und mit `hf auth whoami`
+pruefen:
+
+```sh
+# lokal, Token nie in einer Prozessliste:
+printf '%s' "$HF_TOKEN" | ssh root@reisinger.pictures \
+  'docker exec -i code-dev bash -lc "umask 077 \
+     && cat > /home/dev/.cache/huggingface/token \
+     && chmod 600 /home/dev/.cache/huggingface/token"'
+ssh root@reisinger.pictures 'docker exec code-dev hf auth whoami'
+```
+
+Gemessen am 2026-10-10: `hf version` = 2.2.0, `hf auth whoami` = `reisi007`,
+`hf download hf-internal-testing/tiny-random-bert tokenizer.json` erfolgreich.
+Hinweis zur CLI-Syntax in 2.x: `hf auth login` / `hf auth whoami` /
+`hf download` — das alte `huggingface-cli login` gibt es nicht mehr.
+
+### Offen
+
+- **Die CLI ist live, aber noch nicht im Image.** Der Dockerfile-Eintrag wird
+  von der CI automatisch gebaut: `build-baseline.yml` hat einen Push-Trigger
+  auf `remote/Dockerfile` und baut taeglich (cron `0 4 * * *`). Bis der Push
+  dieses Commits durch ist, verliert ein Recreate `hf` wieder; wer es
+  beschleunigen will, baut manuell.
+- **Portainer-DB (§17):** `HF_TOKEN` ist ein neuer Env-Key, den die
+  Portainer-DB noch nicht kennt. Bis er dort steht, schreibt der naechste
+  Browser-Deploy `stack.env` ohne ihn (§9 Fall 1). Compose **und** Env in der
+  UI pasten oder nach §17.4 patchen — per SSH-Deploy allein reicht es nicht.

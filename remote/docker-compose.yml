@@ -9,6 +9,14 @@
 #   CORS_ORIGIN         optional: Browser-Origin fuer --cors (z.B. https://ocweb.all-the.rest).
 #                         Ohne diesen Wert blockt der Browser cross-origin Requests
 #                         mit "Failed to fetch" (PWA-Zugriff auf den Server).
+#   HF_TOKEN            optional: Hugging-Face-Token fuer Downloads aus dem Hub
+#                         (Modelle, Tokenizer, Datasets) aus code-dev heraus.
+#                         Read-only reicht. LEER = kein Token; Downloads und
+#                         transformers laufen dann anonym — einzelne API-Calls
+#                         (model_info u. ae.) liefern mit leerem String aber 401
+#                         (huggingface_hub#3445). Gehoert NIE ins Repo — Wert
+#                         nur in .env.production bzw. Portainer-Stack-Env; die
+#                         Compose-Datei interpoliert ihn nur. remote/AGENTS.md §20.
 #   OPENCODE_AUTOUPDATE   default true: holt beim Containerstart das neueste
 #                         opencode-Binary (V2 releast teils mehrmals taeglich);
 #                         mit false deaktivieren (Image-Stand + CI-Updates only)
@@ -183,6 +191,12 @@ services:
       # ${...}, es erzeugt kein Container-Env. Ein Kommentar im Kopf dieser
       # Datei tut das auch nicht — siehe AGENTS.md §18.
       - CORS_ORIGIN=${CORS_ORIGIN}
+      # Hugging-Face-Token (nur Download, Read-only reicht). Bewusst OHNE
+      # `:-`-Default: leer bleibt leer, ein fehlender Key ist kein Fehler
+      # (AGENTS.md §18). Wird von `hf`, huggingface_hub, `transformers` und
+      # `diffusers` gelesen — damit ist kein `hf auth login` noetig, und der
+      # Token liegt nicht in ~/.cache, das kein Volume ist.
+      - HF_TOKEN=${HF_TOKEN}
     # Bewusst KEIN extra_hosts: 127.0.0.1 ist im Container der Container,
     # nicht der VPS. host-gateway loest dieses Problem nicht, es oeffnet
     # nur den Host. Ein Dev-Server (z. B. `pnpm dev`) laeuft direkt in

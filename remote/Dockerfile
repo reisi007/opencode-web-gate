@@ -96,6 +96,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin pipx install 'markitdown[pdf,docx,pptx,xlsx,xls]' \
  && markitdown --version
 
+# Hugging Face CLI (`hf`, Paket huggingface_hub[cli]) — Downloads aus dem Hub:
+# Modelle, Tokenizer, Datasets. Kein Token-Store noetig: der Token kommt als
+# Container-Env `HF_TOKEN` aus der Stack-Env (siehe docker-compose.yml) und wird
+# von huggingface_hub, `transformers` und `diffusers` OHNE `hf auth login`
+# gelesen.
+#
+# Warum NICHT das pipx-Muster wie markitdown oben: pipx legt pro Tool ein
+# eigenes Venv an und lohnt sich ab zwei, drei Paketen. huggingface_hub ist
+# hier ein Einzelpaket — pip ins System-Python ist weniger bewegliche Teile und
+# kein Nachteil, weil es keine konkurrierenden Versionen gibt.
+#
+# Version floatet bewusst mit dem CI-Rebuild: build-baseline.yml baut taeglich
+# (cron 0 4 * * *) UND auf Push bei Aenderung an dieser Datei.
+RUN python3 -m pip install --break-system-packages --no-cache-dir 'huggingface_hub[cli]' \
+  && hf version
+
 # --- Tailscale: privater Zugang zu lokal gestarteten Dev-Servern --------------
 # Use case: ein in code-dev gestarteter Dev-Server (`pnpm dev`, `next dev`,
 # `vite` …) ist ueber keinen anderen Weg erreichbar — code-dev hat bewusst

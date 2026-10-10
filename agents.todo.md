@@ -3,6 +3,29 @@
 Offene, nicht triviale Punkte und Blockaden. Einträge werden erst nach einem
 unabhängigen Review und erfolgreicher Verifikation entfernt.
 
+## 2026-10-10
+
+- [ ] **HF-Zugang in `code-dev`: Live-Hotfix erledigt, Repo-Seite angepasst,
+  Deploy fehlt (Entscheidung 2026-10-10).** Gewuenscht war `hf login` im
+  Dev-Container auf dem Remote-VPS. **Live ohne Neustart erledigt:**
+  `huggingface_hub[cli]` 2.2.0 per `pip --break-system-packages` in `code-dev`
+  installiert, Token als `reisi007` hinterlegt — `hf auth whoami` =
+  `reisi007`, `hf download` eines kleinen Testfiles erfolgreich.
+  **Haelt nur bis zum naechsten Recreate:** beides liegt im Writable-Layer, und
+  `~/.cache` ist kein Volume (`remote/AGENTS.md` §16). Repo angepasst:
+  `remote/Dockerfile` (CLI ins Image), `remote/docker-compose.yml`
+  (`HF_TOKEN=${HF_TOKEN}`, dokumentiert im Kopf), `remote/.env.production`
+  (`HF_TOKEN=…`, gitignored), Regel in `remote/AGENTS.md` §20.
+- [ ] **Portainer-Deploy ausstaendig (der eigentliche naechste Schritt).**
+  `HF_TOKEN` ist ein neuer Env-Key, den die Portainer-DB noch nicht kennt
+  (§17). Compose **und** Env in der UI pasten (Stack `dev-vm` → Update), sonst
+  schreibt der naechste Browser-Deploy `stack.env` ohne ihn. Die `hf`-CLI
+  braucht danach keinen manuellen Rebuild: `build-baseline.yml` baut auf Push
+  von `remote/Dockerfile` automatisch neu (und taeglich per cron). Ein Recreate
+  vor beidem verliert `hf` und das Token wieder. `hf auth login` interaktiv im
+  `docker exec` ist unbrauchbar (haengt, 90-s-Timeout) — Weg in
+  `remote/AGENTS.md` §20.
+
 ## 2026-10-09
 
 - [x] **Kein Trainingsprozess auf der VPS — die CPU ist gemessen ungenutzt
