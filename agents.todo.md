@@ -5,36 +5,8 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
 
 ## 2026-10-15
 
-  waehrend des Tunnel-Betriebs wach, Display darf aus. `run.sh` startet
-  `caffeinate -is` (System-Schlaf aus, Display frei) und schreibt die PID nach
-  `/tmp/code-tunnel-caffeinate.pid` (chmod 600). `stop-tunnel.command` killt
-  **nur diese PID** (Schritt 4/4), nicht alle caffeinate-Prozesse — parallele
-  caffeinate des Users bleiben ungestuetzt. Gestartet wird nur im Tunnel-Pfad
-  (`--sync-only` ausgenommen); bei erneutem Start wird eine vorhandene PID-Datei
-  respektiert (kein Doppelstart).
-
 ## 2026-10-10
 
-  Tunnel-Block der Caddyfile (Entscheidung 2026-10-10).** Gewuenscht war: das
-  im Web eingegebene Login-Passwort ist **nicht** das OpenCode-Passwort; es wird
-  pro Block ein eigenes `opencode:<PASSWORT>` upstream injiziert. Befund
-  (gemessen, nicht geraten): Lauscher `172.18.0.1:18731` stand, durch den Tunnel
-  mit dem Mac-Wert **HTTP 200**, mit dem in der Live-Caddyfile hinterlegten Wert
-  **401** — der Healthcheck fiel auf `down`, `handle_errors` lieferte
-  `tunnel-down.html`. Ursache: Im Block `code.all-the.rest`
-  (`caddyfile/Caddyfile`, privat, `header_up` ×2 + `health_headers`) stand der
-  `code-dev`-Wert aus `remote/.env.production` statt des Mac-Werts aus `.env`.
-  **Fix:** Tunnel-Block auf `base64("opencode:<Mac-Passwort>")` korrigiert,
-  Kommentar dazugesetzt, `./sync.sh` (validate + reload) deployed; Live == Repo
-  (md5 identisch), `/api/info` und `/api/config` durch das Gate wieder HTTP 200.
-  `remote-code`-Block unberuehrt (gehoert zu `code-dev`). Regel in
-  `local/AGENTS.md` §9 + §10, zweite 401-Ursache in `AGENTS.md` §4.
-  variable` ab (2026-10-10).** `AUTH_HASH` in der lokalen `.env` stand ohne
-  Anfuehrungszeichen; `run.sh` & Co. sourcen die Datei unter `set -euo pipefail`,
-  wobei `$2a$14$…` als Parameter-Expandierung ausgewertet wird. Wert wie von
-  `setup.sh` erzeugt in einfache Quotes gesetzt; Hinweis in `.env.example` und
-  `local/AGENTS.md` §9 ergaenzt. Tunnel danach gestartet (LaunchAgent
-  `com.code-tunnel`, Autostart + Watchdog aktiv).
 - [ ] **HF-Zugang in `code-dev`: Live-Hotfix erledigt, Repo-Seite angepasst,
   Deploy fehlt (Entscheidung 2026-10-10).** Gewuenscht war `hf login` im
   Dev-Container auf dem Remote-VPS. **Live ohne Neustart erledigt:**
@@ -58,57 +30,12 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
 
 ## 2026-10-09
 
-  (Auftrag/Entscheidung 2026-10-09).** Gefragt war, ob auf
-  `root@reisinger.pictures` etwas wie Model Training laeuft und was gerade die
-  meiste CPU braucht. Befund: **kein Trainingsprozess** (`ps` nach
-  python/torch/cuda/vllm/ollama/jax/nccl → nur `firewalld` und `tuned`, je 0 %)
-  und es braucht **nichts** nennenswert CPU:
-  - 20s-Sample `/proc/stat`: BUSY **4,61 %** von 4 Kernen, IDLE 81,53 %,
-    user 15,36 %, iowait 0,01 %, **steal 0,00 %**.
-  - `vmstat 1 6`: `id 89–99 %`, `r 0–1`. Seit Boot (2 d 13 h) kumulativ
-    ≈ 3 % der Kapazitaet.
-  - Hoechster Verbraucher: `opencode serve` (PID 2099560, User `r1`, Container
-    `code-dev`) mit ~6 % **ueber 10 h gemittelt** — momentan ~0 %.
-  - **Nicht Drosselung, wirklich ungenutzt:** cgroup v2 `cpu.stat` →
-    `nr_periods 0, nr_throttled 0, throttled_usec 0` (keine Quota), KVM-Gast
-    mit steal 0. Kein `/proc/pressure/cpu` (kein PSI im Kernel) — Load-Verlauf
-    0,24 / 0,49 / 0,73 ist die Ersatz-Probe.
-  - Nebenbefund RAM: 5,1 Gi von 7,5 Gi verfuegbar, 2,3 Gi Swap alt belegt,
-    `si/so` ~10 KB/s — unkritisch.
-
-  absichtlich NICHT angefasst.** `opencode serve` (PID 2099560) reapt seine
-  Kinder nicht: **1112 Zombies**, alle mit PPID 2099560, Rate ≈ 100/Std
-  (10 h 46 m Laufzeit). Kosten: **0 % CPU** (daher der niedrige Load), RAM nur
-  indirekt ueber Prozesstabellen-Eintraege. **Kein Engpass:**
-  `/proc/sys/kernel/pid_max` = 4.194.304 → 0,03 % belegt, Gesamtprozesse 1605.
-  **Entscheidung (Mensch 2026-10-09): nichts tun, nur dokumentieren** — weder
-  `docker restart` noch `kill` (Begruendung unter „Verworfen"). Damit ist der
-  Eintrag nur ein Protokoll; auftretende Zombies sind kein Fehlerbild.
-
 ## 2026-10-08
 
-  (Entscheidung 2026-10-08).** `@api_ok` in `caddyfile/Caddyfile` (beide
-  Bloecke) matcht exakt `base64("<AUTH_USER>:<Login-Passwort>")`
-  (`AUTH_USER=admin`, live verifiziert). `header_up Authorization` bleibt
-  **unveraendert** `base64("opencode:<OPENCODE_PASSWORD>")` — die
-  Caddy-Proxy-Auth ist absichtlich **nicht** die des Zielservers.
-  **Live verifiziert:** `sync.sh` validate ✅, Sync + Reload ✅, lokal == live
-  (`md5 7b6214844d9662825f07253d65cb4e4f`); `remote-code.all-the.rest/api/info`
-  mit der Login-Kennung → **200** (der Upstream bekam das opencode-Passwort,
-  sonst waere es 401), kein Auth → **302 `/login.html`**, falsche Creds →
-  **401 + ACAO**, Preflight → **204 + ACAO**. `code.all-the.rest` mit der
-  Login-Kennung → **502**, aber nur weil der Mac-Tunnel offline ist
-  (`172.18.0.1:18731` connect refused, Gate passiert). Regel: `AGENTS.md` §4.
 - [ ] **Verworfen (nicht nachtraeglich implementieren):** den opencode-Wert
   zusaetzlich als OR-Wert im `@api_ok` stehenlassen (Caddy kann `Authorization`
   mit mehreren Werten als OR — getestet). Der Nutzer wollte **ersetzen**,
   nicht ergaenzen.
-- [ ] **Lokales `.env`-`AUTH_HASH` ist veraltet (Nebenbefund 2026-10-08).**
-  PHP `password_verify` gegen den lokalen Hash = `false` fuer das
-  Login-Passwort, gegen **beide** Live-Hashes (`code-auth`,
-  `code-auth-remote`) = `true`. Die drei Quellen aus §3 sind also nicht
-  synchron; betrifft nur lokal, Live ist korrekt. Lokales `.env` auf den
-  Live-Hash ziehen.
 - [ ] **`remote/Caddyfile.fragment` + `local/Caddyfile.fragment` driften vom
   Live-Stand (2026-10-08).** Sie dokumentieren noch `basic_auth` +
   `__OPENCODE_BASIC_HASH__` (bcrypt am Edge) und den opencode-Wert als
@@ -119,89 +46,14 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   `caddyfile/Caddyfile` Heads 441/451/…):** der `@api_ok`-base64-Wert ist jetzt
   das reversible base64 der **Login-Kennung** — dasselbe History-Rewrite-Ticket
   deckt ihn mit ab.
-
-  hat echte Credentials in der Git-History.** Der Arbeitsbaum (HEAD) ist sauber,
-  aus der History aber rekonstruierbar:
-  - **opencode-Serverpasswort** (`OPENCODE_PASSWORD`) als base64 in
-    `22e89a6:.__caddy_check` und `77e62db:caddy/Caddyfile.fragment` — reversibel,
-    also das *aktuelle* Prod-Serverpasswort.
-  - **Login-Passwort-Hash** (`AUTH_HASH`, bcrypt) in `ca4986f:.bla`.
-  Beide Dateien sind heute aus dem Baum entfernt, die Werte bleiben in der
-  History. Belegt mit `git log --all -S "<wert>"` + `git grep -l <wert> <commit>`
-  (Werte nie ausgegeben).
-  **Folge:** da die Edge-Gate jetzt `base64("admin:<Login-Passwort>")` prueft,
-  untergraebt der geleakte bcrypt-Hash genau diese Gate (Crack -> Login-Kennung).
-  **Entscheidung 2026-10-08 (Mensch): History-Rewrite, KEINE Rotation.**
-  Durchgefuehrt mit `git filter-repo --replace-text` (opencode-base64, jede
-  `Basic`-Kennung, jeder echte bcrypt-Hash -> `***REMOVED***`), dann
-  force-push nach `origin/main` (`--force-with-lease`).
-  **Belegt:** Tip-Tree vor/nach identisch (`90aab3b`); frischer Clone zeigt
-  0 Treffer in der History; GitHub liefert den alten Tip-Commit `bd13aa5`
-  nicht mehr aus ("not our ref"). Backup der Vor-Rewrite-History:
-  `~/dev/opencode-web-gate-pre-rewrite-20261008-144005.bundle` (enthaelt die
-  Secrets noch — nicht weitergeben).
-  **Verworfen:** Rotation der Credentials (der Mensch hielt die Werte nicht
-  fuer noetig). **Restrisiko:** der Wert war public; Caches/Forks koennen ihn
-  behalten — ein Rewrite ist keine Garantie, Rotation waere der echte Fix.
-  Ergaenzt das Rotations-Ticket 2026-10-07 (caddyfile, privat).
-  Lokale ignorierte Kopien mit Secrets: `.env`, `remote/.env.production`,
-  `.env.bak-authhash-*` (alle gitignored).
-
 ## 2026-10-07
 
-  war ein No-Op.** Commit `62ea52a` hat in `remote/entrypoint.sh` die Logik fuer
-  `${CORS_ORIGIN}` -> `--cors` eingebaut und in `remote/docker-compose.yml` nur
-  einen Kommentar dazu geschrieben, aber **kein** `- CORS_ORIGIN=...` im
-  `environment:`-Block von `code-dev`. **Entscheidung:** `CORS_ORIGIN` =
-  `https://ocweb.all-the.rest` (Browser-Origin der PWA). **Fix:** Mapping als
-  Zeile im `environment:`-Block ergaenzt, direkt nach `TS_TAILSCALE_HOSTNAME`,
-  **ohne** Default-Logik in Compose — leerer Wert bleibt harmlos, der Entrypoint
-  behandelt leer als „kein `--cors`" (`if [ -n "${CORS_ORIGIN:-}" ]`).
-  **Live verifiziert, warum es vorher wirkungslos war:** `stack.env` liefert nur
-  Interpolationswerte fuer `${...}`, es erzeugt **kein** Container-Env — ohne
-  Mapping sieht der Container die Variable nie. Geprueft: kein CORS-Eintrag in
-  der laufenden Compose-Datei, `CORS_ORIGIN` nicht im Container-Env.
-  Regel dazu: `remote/AGENTS.md` §18.
-
-  `remote/.env.production` eingetragen (Backup `stack.env.bak-cors-*`).
 - [ ] Portainer-DB-Patch nach `remote/AGENTS.md` §9 **Fall 1** (neuer Env-Key,
   der per SSH-Deploy kam), Schema §17.4 — sonst schreibt der naechste UI-Deploy
   den Key wieder weg. (`.env.production` ist bereits mitgezogen.)
-  Log `CORS: erlaube Origin https://ocweb.all-the.rest`, `--cors` aktiv,
-  Image-Revision `62ea52a`, `/api/info` 200, Sidecars unberuehrt.
-- [ ] **Drift VPS vs. Repo bei den RAM-Limits (gefunden 2026-10-07).** Live:
-  code-dev 7g/12g, dind 1g/2g (Stand 2026-10-04). Repo (`remote/docker-compose.yml`,
-  `remote/.env.production`): 5g/9g, 2g/4g. Die VPS-Datei wurde am Diff belegt,
-  nicht geraten. Zu entscheiden: Live-Werte ins Repo uebernehmen oder VPS auf
-  Repo zuruecksetzen — bis dahin keine der beiden Dateien „angleichen".
-
-  validate ✅, Sync + Reload ✅, live == Repo (Diff), 0 Platzhalter live.
-  Preflight-Gegenprobe beide Domains: **`HTTP/2 204`,
-  `access-control-allow-origin: https://ocweb.all-the.rest`,
-  `access-control-allow-credentials: true`.**
-  **Warum, gemessen (Pre-Deploy-Baseline, Live-Stand 2026-10-07):**
-  `curl -sSI -X OPTIONS -H 'Origin: https://ocweb.all-the.rest' -H
-  'Access-Control-Request-Method: POST' https://remote-code.all-the.rest/api/info
-  | grep -iE 'HTTP/|access-control'` → **`HTTP/2 302`, `location: /login.html`,
-  kein `Access-Control-Allow-Origin`.** Derselbe Pfad ohne `-X OPTIONS` →
-  ebenfalls `302`, die 302 ist also der `forward_auth`-Redirect und nicht etwas
-  an OPTIONS. Ein Preflight traegt nie Cookies, also sieht `forward_auth` nichts,
-  macht 302, und der Browser bricht ab. ACAO an echten Responses **soll**
-  separat aus `opencode serve --cors` kommen (`local/run.sh`,
-  `remote/entrypoint.sh`) — das ist **unbelegt**, belegt sind nur die
-  Preflight-Baseline oben und das Flag-Parsing im Entrypoint; es kommt nicht
-  aus dem Caddy-Block. **Regel:** `remote/AGENTS.md` §19 (Grenzen: die
-  pfadspezifischen Handles `/login.html`, `/api/login|me|logout` + `/sw.js`
-  stehen davor, weil der Pfad-Sub-Sort (`sortRoutes`) nur greift, wenn BEIDE
-  Routen genau einen Single-Path-Matcher haben — `@options` matcht per
-  `method`, der stabile Sort behaelt also die Quellreihenfolge. Ihr OPTIONS
-  trifft den Block nie und kommt ohne CORS-Header: `501` nur auf
-  `/api/login|me|logout` (Sidecar ohne `do_OPTIONS`), auf `/sw.js` der
-  site-eigene `respond 200`, auf `/login.html` der `file_server`. Das Blanket
-  maskiert ausserdem kuenftige eigene OPTIONS-Endpunkte).
 - [ ] **`Access-Control-Allow-Origin`/`-Allow-Credentials` auf der echten
   authentifizierten Response ist unbewiesen.** Der 302-Preflight ist gemessen,
-  die Header einer eingeloggten Response nicht — braucht eine Session
+  die Header einer eingeloggen Response nicht — braucht eine Session
   (DevTools oder `curl` mit Cookie). **Nichts** ueber die `--cors`-Interna
   behaupten, `serve --help` schweigt dazu. Ergaenzung zu §19 „Offen":
   ```sh
@@ -258,7 +110,7 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   2026-09-30), also muss der Stack manuell neu deployed werden. Das beendet
   die laufende Session — erst durchrollen, wenn keine Arbeit offen ist.
 
-- [ ] **Host-Budget ist rechnerisch weiterhin überzeichnet.** Nach der
+- [ ] **Host-Budget ist rechnerlich weiterhin überzeichnet.** Nach der
   dind-Senkung (2,5g → 2g, 2026-10-02): code-dev 5g + dind 2g + Portal ~0,7g
   + OS ~0,7g = ~8,4 GB bei **7,47 GB** nutzbarem Host-RAM (8 GB minus OS/Docker)
   — also weiterhin ~0,9 GB zu viel. Die Senkung hat den Fehlbetrag von ~1,25 GB
@@ -297,161 +149,8 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   **Ursache unbekannt** — die chrome-headless-Kinder sind nicht im Log
   identifiziert. Nicht verfolgt.
 
-  Eintrag „RAM-Wächter ist im Repo, aber noch nicht ausgerollt" für den
-  offenen Rollout und die offene Druck-Frage.
-
 ## 2026-09-29
 
-  die VM** (2026-09-29). Ausgangsfrage: „warum restartet die code-vm immer
-  wieder". **Erste Feststellung: es gibt keine VM.** `code-vm` ist der
-  Compose-Stack `dev-vm` (in Portainer `code-remote`), Container `code-dev`.
-  `virsh`/`libvirt`/`systemd-nspawn` existieren auf dem Host nicht.
-  **Drei unabhaengige Restart-Ursachen, alle by design:**
-  1. **cgroup-OOM-Kills (die unregelmaessigen, hier behoben).** 8 in 24 h, alle
-     in `code-dev`, kein anderer Container auffaellig (15 OOM-Events im
-     laufenden Kernel-Boot: 13 `code-dev`, 2 `code-remote-dind`). Ausloeser
-     jedes Mal `cargo build`: parallele `rustc` mit 220–920 MB pro Instanz bei
-     3 Cores. Der Kernel killt den **groessten** Prozess im cgroup — das ist
-     nicht der schuldige `rustc`, sondern `opencode serve`, und der laeuft als
-     **PID 1**. PID 1 stirbt = Container stirbt = `restart: unless-stopped` =
-     Sitzung weg. Opfer-Bilanz an einem Tag: 3x rustc, aber 5x PID 1. Genau
-     deshalb „nicht regelmaessig": es hing nur daran, OB gerade Rust
-     kompiliert wurde. Idle 700 MB, `memory.peak` 1558 MB — 2 GB waren knapp.
-  2. **Watchtower recreated `code-dev`**, weil der `:latest`-Tag von
-     `opencode-web-dev-baseline` ~taeglich (teils 3x am selben Tag) einen neuen
-     Digest bekommt. Live beobachtet am 29.09.: 11:19, 12:19, 13:19, jeweils
-     `Stopping /code-dev (SIGTERM)` → `Creating /code-dev`. Watchtower laeuft
-     mit `POLL_INTERVAL=3600` und **ohne Label-Filter**.
-  3. **Der In-Container-Auto-Updater** (`OPENCODE_AUTOUPDATE=true`, alle 20 min,
-     Fenster 07–23 Uhr) killt PID 1 per `kill -TERM 1`, wenn ein Update
-     anliegt und der Server idle ist. Seltenster der drei Pfade.
-  **Umgesetzt, in drei Etappen — die ersten beiden haben sich als Fehler
-  erwiesen und sind hier festgehalten, weil beide plausibel aussahen:**
-  1. **`memory.max` direkt ins laufende cgroup geschrieben** (3 GiB), weil
-     zwei Sessions aktiv waren. **Das war falsch.** Bei jedem `docker restart`
-     wendet Docker die `HostConfig`-Limits erneut an und ueberschreibt den
-     Direktwert. Im Test haben **drei Restarts in 90 Minuten** das Limit
-     zurueckgesetzt, der OOM-Killer feuerte weiter, waehrend `memory.max`
-     korrekt aussah. **Ein direkt geschriebenes `memory.max` gilt bis zum
-     naechsten *Restart*, nicht bis zum naechsten Recreate.** Nur die
-     Compose-Datei wirkt dauerhaft.
-  2. **Recreate mit 3g/6g** — hat funktioniert, aber nur knapp: 0 OOM-Kills,
-     `memory.peak` = 3221229568 bei `memory.max` = 3221225472, `memory.current`
-     bei 86 %. Peak auf der Decel = beruehrt, gerettet nur durch Reclaimen.
-     **Null Kills ist kein Beweis fuer einen passenden Deckel.**
-  3. **Final: 4g/8g** (RAM + Swap gesamt), dind 2,5g/5g. Recreated, weil keine
-     Session aktiv war. Backups auf dem VPS: `*.bak-memlimit-*`,
-     `*.bak-dindlimit-*`, `*.bak-cd4g-*`.
-  **Merksatz zum Pruefen kuenftiger Deckel: `anon` messen, nicht
-  `memory.current` und nicht `memory.peak`.** Erste Fassung dieser Notiz
-  empfahl `memory.peak` gegen `memory.max` — das ist **unvollstaendig und
-  fuehrt in die Irre**, siehe naechsten Punkt.
-  **Die 4 GB machen den Host zur knappsten Stelle:** code-dev 4g + dind 2,5g
-  + Portal ~0,5g + OS ~0,7g = ~7,7 GB bei 7,5 GB. Erreichen beide Dev-Container
-  ihre Deckeln gleichzeitig (Normalfall: cargo in code-dev, docker im Daemon),
-  feuert der **Host**-OOM-Killer und der nimmt global den groessten Prozess —
-  `mariadbd`. Ein Dev-Build als Produktionsausfall. Bewusst so entschieden
-  (Entscheidung des Menschen), **ohne** dind zu senken. Rueckschranke: dind auf
-  2g, dann ~0,3-0,5 GB Luft.
-  **Korrektur der eigenen Messregel (2026-09-29, 16:36).** Beim
-  Stabilitaets-Check wurde `memory.current` = 95 % vom 4-GB-Deckel gemeldet und
-  daraus "nicht stabil" geschlossen. **Falsch.** `memory.current` enthaelt den
-  reclaimbaren File-Cache. Die Aufteilung:
-    reclaimbarer File-Cache  2821 MB (69 %)  <- Playwright/Vite aus node_modules
-    anon (echter Heap)        929 MB (23 %)
-    slab_unreclaimable          5 MB
-    pagetables+shmem+slab_rec   45 MB
-  OOM-relevant sind nur `anon` + `slab_unreclaimable` = **934 MB von 4096 MB**.
-  Der Kernel hat 2,8 GB Cache recycled statt zu killen, `oom_kill 0` war korrekt.
-  Fuer echte Allokation waren 3,1 GB frei. `memory.peak > memory.max` ist in so
-  einem Zustand **kein** Alarm, weil `peak` den Cache mitzaehlt.
-  **Regel: `memory.current` hoch heisst nichts, `peak > max` heisst nichts.
-  Nur `anon` gegen das Deckel sagt etwas ueber OOM-Risiko.** In `AGENTS.md` §9
-  und README korrigiert, mit Messbefehl.
-  **Prod-Container (`portal_db`, `portal_search`, `caddy`, `portal_backend`)
-  bewusst ohne Limit gelassen** (Entscheidung des Menschen): keines hatte je
-  ein OOM, und ein zu knapper Deckel auf MariaDB waere ein Produktionsausfall.
-  `MEMORY_LIMIT`/`MEMSWAP_LIMIT` sind in `stack.env` **nicht** gesetzt, es
-  greifen also die Defaults aus der Compose-Datei — deshalb genuegt die
-  Datei-Aenderung, ein Portainer-DB-Patch ist nicht noetig (die DB haelt nur die
-  Env, siehe §17). `remote/README.md` und `remote/AGENTS.md` §9 nachgezogen.
-    **Nebenbefund, und eine Falschangabe darin (2026-09-30 korrigiert):** Ich
-    notierte, das Swap-Sicherheitsnetz habe „nie gegriffen" wegen
-    `vm.swappiness=0`. **Das war eine Verwechslung von zwei Sysctls:**
-    `vm.swappiness` ist **10** (persistiert in `/etc/sysctl.conf`, mtime
-    April), der gemessene `0` war `vm.overcommit_memory`. Die Beobachtung
-    (`memory.swap.current` = 0 waehrend OOM) war echt, die Erklaerung nicht —
-    es war schlicht kein Swap noetig in dem Moment. Gegengeprueft am
-    2026-09-30: **597 MB von 4096 MB Swap genutzt**, der Deckel greift also.
-    **Diese falsche Diagnose stand zwei Tage in AGENTS.md, README und Compose
-    und ist jetzt in allen drei berichtigt.** Auswirkung auf die Groessenordnung:
-    4g/8g war ein 8-GB-Gesamtbudget, kein 4-GB-Deckel mit Zierdekel.
-    **Portainer-DB gepatcht, damit die Werte in der UI sichtbar sind** (2026-09-30,
-    Fall 2 in `remote/AGENTS.md` §17.4): `MEMORY_LIMIT=5g` und
-    `MEMSWAP_LIMIT=9g` lagen nur als Compose-Defaults vor und waren in der UI
-    nicht zu sehen. Nach dem dokumentierten Verfahren: zwei Backups
-    (`portainer.db.bak-prepatch-`, `.bak-current-20260930-160451`), Portainer
-    gestoppt, nur das Feld `Env` ersetzt, Fingerprint ueber **alle** Buckets
-    vorher/nachher — `5309c01c31f41d1bd3276a60` == `5309c01c31f41d1bd3276a60`,
-    also ausschliesslich `Env` beruehrt. Live verifiziert: 10 Keys, `AUTH_HASH`
-    unveraendert 63 Zeichen (die `$$`-Form aus §2).
-    **Und der vierte Schritt, der sonst gefehlt haette:** `.env.production`
-    mitgezogen, weil sie die Paste-Vorlage ist — Keys nur in der DB waeren beim
-    naechsten UI-Paste wieder weg gewesen. `.env.example` ebenfalls von 4g auf
-    5g/9g nachgezogen (dort stand noch `MEMORY_LIMIT=4g`).
-    **Zwei Dinge am Weg, die beide in §17 jetzt stehen:**
-    `golang:1.24-alpine` braucht `go mod init` vor `go get`, sonst bricht der
-    §17-Befehl ab und man haelt den Patch fuer misslungen. Und mein erster
-    Fingerprint war falsch konstruiert — er hashte den kompletten
-    stacks-Record und meldete dadurch auch den legitimen Env-Change als
-    Abweichung. Richtig: `Env` aus dem Record entfernen, **dann** hashten. Ein
-    Fingerprint, der jeden gewollten Change als Abweichung meldet, wird
-    ignoriert — das ist gefaehrlicher als keiner.
-    **Nicht gepatcht (bewusst):** `CPU_CORES` und die `OPENCODE_UPDATE_*` bleiben
-    Compose-Defaults. Die braucht niemand in der UI, und jeder Key in der DB ist
-    eine zweite Wahrheit, die still schlagen kann.
-    **Watchtower fuer dieses Image ausgenommen** (Entscheidung des Menschen,
-    umgesetzt 2026-09-30): `com.centurylinklabs.watchtower.enable=false` am
-    code-dev-Service. Grund: **23 Recreates** in 6 Tagen, 1-3 pro Tag, weil der
-    `:latest`-Digest des Baseline-Images taeglich neu gebaut wird — und jedes
-    Recreate beendet die laufende Sitzung. Die anderen Container bleiben
-    weiterhin von watchtower erfasst.
-  Use case: **lokal in `code-dev` gestartete Dev-Server von aussen sehen**
-  (`pnpm dev` o. ae.). Code stand schon im Repo (Commits `21fbb1d`,
-  `5103bfd`, `4d2fe3a`), der VPS lief noch auf dem alten Image. Jetzt live.
-  **Live-Befund (alle Messungen vom 2026-09-29, 12:28–12:31 CEST):**
-  - Deploy **`--no-deps code-dev`** statt vollem `up -d`. Grund gemessen: der
-    Diff der Compose-Datei enthielt **genau vier** inhaltliche Zeilen
-    (`TS_AUTHKEY`, `TS_TAILSCALE_HOSTNAME`, Volume-Mount, Volume-Deklaration),
-    `code-auth-remote` und `dind` waren unveraendert. Ein volles `up -d` haette
-    `code-auth-remote` recreated — und **dann** waere die `$$`-Falle aus §2
-    scharf geworden, weil `docker compose --env-file` `$$` *nicht* unescaped.
-    `code-auth-remote` nicht angefasst (Started 27.09., restarts=0), beide
-    Sidecars weiterhin `$2a$14$…`.
-  - `org.opencontainers.image.revision` des laufenden Containers =
-    `4d2fe3a56c…` (HEAD), `tailscaled` v1.102.4 laeuft. **Kein Image-Neubau
-    noetig** — das CI-Image enthielt alles.
-  - Volume `dev-vm_tailscale-state` wurde beim Deploy angelegt, gemountet auf
-    `/home/dev/.local/share/tailscale`, Eigentuemer `dev:dev` (Chown-Liste
-    greift), State liegt in `…/state`.
-  - Entrypoint-Log: `git: Identitaet global gesetzt`, `git: push-Credentials
-    via gh-Token`, `gh auth: ok (reisi007)`, `tailscale: erstmalige Anmeldung
-    mit TS_AUTHKEY`, `angemeldet als code-dev`, `IP 100.110.99.127`.
-  - **Tailnet-Weg funktioniert:** vom Mac `curl http://100.110.99.127:8080/` →
-    **200**; `/api/info` → **401** (Caddy nicht beteiligt, wie erwartet).
-    Mac-Client war im Tailnet angemeldet (`BackendState: Running`); Gerätename
-    bewusst nicht festgehalten, der trägt zur Messung nichts bei.
-  - **Gegenproben, die schiefgehen MUSSTEN, und es taten:**
-    `100.110.99.127:2375/_ping` → `000`, `100.110.99.127:8081/` → `000`.
-    dind und code-auth-remote haengen weiter an `172.24.0.2/3`.
-  - `code-dev`: `health=healthy`, `restarts=0`, `oom=false`.
-  - **Portainer-DB gepatcht** (eigener Punkt unten) — die `TS_*`-Keys
-    ueberstehen jetzt einen spaeteren UI-Deploy.
-  **Praezisierung, die beim Messen auffiel:** der oeffentliche Weg antwortet
-  ohne Cookie auf `/api/info` mit **302 auf `/login.html`**, nicht mit 401.
-  **401** liefert `/api/me` — das ist die Aussage, die in §5 und in
-  `remote/AGENTS.md` §13 gemeint ist. Beides heisst „nicht authentifiziert“,
-  die Form ist aber verschieden. Kein Defekt, nur praeziser formuliert.
 - [ ] **`--accept-dns=false` sitzt nur an `tailscale up`, nicht am
   `tailscaled`-Aufruf** (2026-09-29, gefunden beim Review der Commits).
   `remote/AGENTS.md` §15.2 formuliert die Regel strenger als der Code es tut:
@@ -510,47 +209,6 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   Portainer kurz runter und man nimmt eine Kopie. **Und:** `bbolt.Open` mit
   `Timeout` blockiert, nicht bricht ab — ein 10-s-Timeout im eigenen Code
   rettet da nicht, nur ein `db.Close()` vor der naechsten Oeffnung.
-
-  **Entscheidung des Menschen, ausdrücklich gegen die Empfehlung des Agenten.**
-  Der Agent hatte zuvor gemessen, dass eine 100-GB-**Partition** nicht moeglich
-  ist (`parted print free` → 0,00 GiB frei, `vda4` = XFS = nicht schrumpfbar,
-  letzte GPT-Partition mit Root-FS), und dass der Platzbedarf die Massnahme
-  nicht begruendet (238 GB frei, 31 GB Projekte). Der Loop wurde trotzdem
-  gewaehlt — **als Deckel, nicht als Plattenersatz**.
-  **Live verifiziert:**
-  - `truncate -s 100G` → 100 GiB apparent, anfangs 518 MB belegt (sparse)
-  - `mkfs.ext4 -m 0 -L devprojects` → 26.214.400 × 4096 B, `resize_inode` gesetzt
-  - Nutzbar 97,87 GiB (ext4 rechnet 2,13 GiB Journal + Inode-Tabellen ab)
-  - `fstab` mit `loop,defaults,noatime`; `umount && mount -a` zweimal
-    durchgefuehrt, beide Male sauber
-  - `rsync -a` 188.352 Eintraege in 2m39s; `rsync --dry-run --itemize-changes`
-    meldet **null** Unterschiede; Dateizahlen als root in Quelle und Ziel
-    identisch (162.254 / 21.979 / 4.118)
-  - Deploy ueber Portainer-Compose-Verzeichnis (Stack `dev-vm`, `compose/49`),
-    vorher Byte-Vergleich: Portainer-Kopie war identisch mit Repo HEAD, also
-    **kein** Drift. Backup `docker-compose.yml.bak-loopmount-20260929-100040`
-  - Nach Deploy: alle drei Container `healthy`, `restarts=0`, `oom=false`,
-    `/api/info` intern 200, `/api/me` auf **beiden** Domains 401 (ohne Cookie =
-    korrekt), DinD `/_ping` 200, `DockerRootDir` im Volume (Regel §6 erfuellt)
-  - `code-dev` **und** `dind` sehen denselben Mount (`bind /srv/dev-projects`),
-    beide melden 162.251 Dateien fuer uid 1000
-  - Altvolumen `dev-vm_code-remote-projects` erst **nach** Verifikation
-    entfernt: 95 GB → 65 GB belegt, 205 GB → 235 GB frei
-  **Ehrliche Bilanz:** netto **+4 GB** Belegung, kein Platzgewinn. Der Nutzen
-  ist der Deckel — 97,87 GiB, die `rm -rf` nicht sprengen kann, und die den
-  Prod-Stack (Caddy, MariaDB, 10 Container) nicht mehr mitreißen.
-  **Ein Detail, das beim Umstieg real war:** `fstab`-Quelle muss die **Datei**
-  sein, nicht die UUID — die UUID haengt am Loop-Device, das erst durch
-  `losetup` entsteht. Mit UUID getestet und live gescheitert:
-  `failed to setup loop device for /dev/loop0`. Ferner: der Mountpoint braucht
-  `1000:1000`, sonst kann uid 1000 (`dev`) auf einem root-`755`-Mountpoint
-  nicht schreiben — der Fehler faellt erst beim ersten Schreibversuch auf.
-  Regelwerk dazu: `remote/AGENTS.md` §14, Messwerte: `remote/README.md`
-  Abschnitt „100-GB-Loopback fuer `/projects`".
-  **Nicht im pCloud-Backup, gewollt:** `volume-backup.sh` arbeitet mit einer
-  Allowlist (4 Volumes + 4 Quellverzeichnisse) und listet `dev-vm_*` explizit
-  als ausgeschlossen. `/srv` ist in keiner Quelle enthalten. **Nicht auf eine
-  breite `/var/lib/docker`-Quelle umbauen**, sonst landen die 100 GB im pCloud.
 - [ ] **Boot-Schutz für den Loop fehlt (offener Single Point of Failure)** —
   `/srv/dev-projects` ist die **einzige** Kopie der Projekte. Faellt der Mount
   beim Boot aus, startet `code-dev` mit leerem `/projects`, und `gh repo clone`
@@ -569,24 +227,6 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
 
 ## 2026-09-26
 
-  Zwei Commits an derselben Sache, in dieser Reihenfolge: `24c8854` („Host-Zugriff im remote
-  Container") hat `extra_hosts: "${HOST_GATEWAY:-host.docker.internal}:host-gateway"`
-  eingeführt, `e5185dd` („Isolation schliessen") hat es wieder entfernt. **Der Ist-Zustand ist
-  `ExtraHosts=[]`** — dieser Eintrag beschreibt also einen überholten Zwischenstand, nicht den
-  laufenden Stack.
-  Damals verifiziert, als es drin war: `docker inspect code-dev --format
-  '{{json .HostConfig.ExtraHosts}}'` → `["host.docker.internal:host-gateway"]`, `getent hosts`
-  liefert `172.17.0.1`, `/etc/hosts` enthält den Eintrag, `http://host.docker.internal:8000/`
-  → `404` (Host-Port auf `0.0.0.0`) bei `http://127.0.0.1:8000/` → `000` als Gegenprobe.
-  **Korrektur der Doku (gilt weiter):** `host-gateway` liefert die Docker-Host-IP
-  (`172.17.0.1` = `docker0`), **nicht** das Gateway des eigenen Netzes (`code-remote` =
-  `172.24.0.1`, `code-dev` = `172.24.0.3`). Beides ist der Host und funktional gleichwertig.
-  **Warum wieder entfernt:** die Adressseite war nie das Problem — `extra_hosts` repariert
-  `127.0.0.1` nicht, es öffnet nur eine Tür zum ganzen VPS (Portainer-UI 8000
-  unverschlüsselt erreichbar, API 9443). Heute verifiziert: `host.docker.internal` löst im
-  Container nicht auf, `http://host.docker.internal:8000/` → `000`. `HOST_GATEWAY` ist
-  deshalb aus `.env.production` und `.env.example` entfernt. Details:
-  `remote/README.md` „Warum es kein `extra_hosts` gibt", `remote/AGENTS.md` §3.
 - [ ] **Host-Dienste im Container nutzbar machen (Publish, nicht Adressierung)** — durch
   `host-gateway` war nur die *Adressseite* gelöst; die ist inzwischen wieder weg (voriger
   Eintrag), sie ist also **nicht** gelöst und soll auch nicht gelöst werden — `code-dev` hat
@@ -604,7 +244,7 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
     Sidecar `code-remote-dind` bindet nur im DIND-Netzraum → von `code-dev` nie erreichbar.
     Solche Test-Container gehören per `--network` in ein geteiltes Netz und werden per
     Containername aufgelöst.
-- [ ] **PTY-WebSocket-Upgrade live nachweisen (einziger Rest aus `df9fe4d`)** — der
+- [ ] **PTY-WebSocket-Upgrade live nachweisen (ezziger Rest aus `df9fe4d`)** — der
   klassische PTY-Pfad ist in Ordnung (`POST /api/pty` → 200, echter `bash -l` in
   `/projects`, Prozess beendet sich ohne TTY von selbst), aber der WebSocket liegt
   nicht dort. Zwei getrennte Systeme, was in den Strings leicht falsch gelesen wird:
@@ -637,84 +277,8 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   `:8080`). **Offen:** ein echter Sleep/WLAN-Wechsel, ein Reboot (Login-Autostart)
   und der Fall, dass die Login-Keychain nach dem Login gesperrt bleibt (dann
   Restart-Schleife).
-  Auslöser war nicht ein Fehler im Sync, sondern eine falsche Diagnose von mir:
-  der `start-tunnel.command` meldete `knownhosts: key mismatch`, und ich habe
-  daraus einen offenen SFTPGo-Host-Key-Punkt gemacht. **Die Ursache ist banal:
-  dieses Repo war beim Wechsel der anderen Repos (2026-09-26) nicht mitgezogen
-  worden.** `rclone` lief weiter auf `RCLONE_REMOTE=reisinger.pictures` /
-  `RCLONE_PATH=/code.all-the.rest` aus `.env`, und der SFTPGo-Weg (Port 2222,
-  User `webadmin`) ist genau der, dessen Keys inzwischen rotiert sind — die
-  Key-Meldung war das Symptom eines Wegs, den es nicht mehr geben soll.
-  **Neu:** `rsync/ssh` auf `root@` Port 22, identisch zu `all-the.rest/sync.sh`
-  und `portal.reisinger.pictures/sync.sh` (Hintergrund: `strato-vps/README.md`),
-  inklusive GNU-rsync-Guard, `--chown=1002:webgroup --chmod=D2777,F666` und
-  eigenem Master-Socket `/tmp/ssh-sync-*`. `RCLONE_*` ist aus `.env` und
-  `.env.example` raus, `setup.sh` prüft statt `rclone listremotes` das
-  Sync-Zielverzeichnis per SSH. `run.sh` hatte zwei tote rclone-Variablen
-  (`REMOTE_PATH`, `DIST`) — entfernt.
-  **Verifiziert:** `--dry-run` zeigt `xfr#0, to-chk=0/3` (Ziel identisch), ein
-  erzwungener Diff liefert `xfr#1` (1.200 B) gegen das echte Ziel, die Datei
-  ist danach md5-identisch zum Repo (Backup/Restore). Das neue
-  **`--delete`-Sicherheitsnetz** (Abbruch, wenn im Ziel etwas nicht `*.html`
-  liegt) wurde gegen ein Wegwerf-Verzeichnis auf dem VPS getestet: Exit 1,
-  `fremd.txt` unangetastet. `setup.sh` meldet „Sync-Ziel ok".
-  **Bewusst nicht angefasst:** die `rclone`-Erwähnungen in
-  [`remote/AGENTS.md`](remote/AGENTS.md), [`remote/README.md`](remote/README.md)
-  und `remote/docker-compose.yml` — die beschreiben, was im **Backup-Volume auf
-  dem VPS** liegt, nicht den Publish-Weg. Das ist eine andere Frage und gehört
-  nicht in diesen Commit.
-  **Rest:** die veralteten `[reisinger.pictures]:2222`-Einträge in
-  `~/.ssh/known_hosts` sind unbenutzt, aber nicht bereinigt. Nur entfernen, wenn
-  klar ist, dass SFTPGo dort nicht mehr genutzt wird — die Fingerprints sind
-  die eines fremden Dienstes.
-- [ ] **`pkill`-Stall in `run.sh` blockiert den Tunnel-Start** (Beobachtung
-  2026-09-27, **nicht reproduziert**). `run.sh:221` (`pkill -f -- "ssh .*-R BIND:REMOTE
-  …$TARGET\$"`) lief beim ersten Start nach dem Stopp **2,5–3 min** mit `STAT R`
-  (PID 4544) fest: Log nach "Starte OpenCode-Web" ohne weiteren Zeile, bis der
-  `pkill` durch war; danach erst `Tunnel:`/`Modus: autossh` (15:28:2x, also
-  **3,5 min nach `run.sh start` 15:24:51**), und `bootstrap.sh` meldete zu Recht
-  "Forward nach 60 s nicht auf dem VPS sichtbar". Danach steht der Forward
-  (`LISTEN 172.18.0.1:18731`).
-  **Kein inherenter `pkill`-Effekt:** dieselbe Musterform gegen einen unbenutzten
-  Port lief zweimal in **0 s** (Exit 1, kein Treffer). Der Scan über 927 Prozesse
-  ist also nicht das Problem — was es blockiert hat, ist offen.
-  **Warum das trotzdem zählt:** `run.sh` hat an dieser Stelle kein Timeout, und
-  `KeepAlive` hilft nicht, weil `run.sh` nicht *beendet*, sondern *haengt* —
-  `launchctl` meldet den Job als `running`, während nichts geforwardet wird. In
-  diesem Zustand ist die Domain minutenlang tot und der einzige sichtbare
-  Hinweis ist die 60-s-Warnung aus `bootstrap.sh`.
-  **Zu entscheiden:** Timeout um die Bereinigung (mit klarer Logzeile, falls sie
-  fehlschlaegt) oder ersetzen durch `ps -eo pid=,args=` + awk + explizite PIDs,
-  wie in [`local/AGENTS.md`](local/AGENTS.md) §4 schon für die opencode-Prozesse
-  vorgegeben. Beides ist eine Eingriffsstelle, an der laut §2 schon einmal etwas
-  kaputt ging — deshalb hier festgehalten und nicht von mir geändert.
 
 ## 2026-09-25
-
-  (Review durch den Menschen, nicht durch einen Agenten):
-  - Image `ghcr.io/reisi007/opencode-web-dev-baseline:latest` laeuft in `code-dev`
-    (Container neu erstellt 26.09. 20:14Z, `healthy`).
-  - `code-auth-remote`: laufendes `/app/auth.py` ist **byte-identisch** mit dem in
-    `remote/docker-compose.yml` eingebetteten Skript (sha b024197fab2cf8ed).
-  - `code-auth`: laufendes `/app/auth.py` ist **byte-identisch** mit
-    `local/docker-compose.yml` (eigenes Skript, `server_version = code-auth/1.1`).
-    Die `Content-Length`-Validierung ist damit ebenfalls live.
-  - Beide Caddyfile-Fragmente sind in der globalen Caddyfile uebernommen und der
-    **laufende** Caddy traegt pro Block das passende injizierte Basic (Admin-API
-    `/config/` geprueft, nicht nur die Datei auf Platte) sowie
-    `health_headers { Authorization … }`.
-  - Login synchron: `AUTH_USER`/`AUTH_HASH`/`AUTH_SECRET` in lokaler `.env`,
-    `code-auth` und `code-auth-remote` identisch; `/api/me` liefert auf
-    `code.all-the.rest` und `remote-code.all-the.rest` `{"user":"admin"}`.
-  - SSE `/api/event` auf **beiden** Domains: `200`, `content-type: text/event-stream`,
-    `server.connected` empfangen (`cache-control: no-cache, no-transform`).
-  - API-Request nach Leerlauf: `code-dev` laeuft seit > 11 h, `/api/info` und
-    `/api/pty` liefern 200.
-  - **Nicht** nachgewiesen: der PTY-WebSocket-Upgrade. Siehe separater Punkt
-    unten — der ist der einzige Rest aus dieser Liste.
-  - Review-Hinweis: der `Content-Length`-Vergleich oben ist der stichhaltige
-    Nachweis fuer beide Sidecars; reines `docker ps` haette "healthy" gezeigt,
-    ohne dass ein Deploy der geaenderten Datei stattgefunden haette.
 
 ## Verworfen
 
@@ -739,25 +303,19 @@ wenn sich die Voraussetzungen ändern, zuerst neu bewerten.
   `/srv/dev-projects` als Bind-Mount. Was davon *nicht* ausgeräumt wurde: das
   Dateisystem-im-Dateisystem-Argument, der `fstab`-Zustand und die
   Pfad-Duplizierung zwischen `fstab` und Compose. Siehe `remote/AGENTS.md` §14.
+
 - **50 GB statt 100 GB** (`c5d3c7b`, 2026-09-27). Zurückgedreht, weil der Loop
   in 98 % volllief und das Log-Limit aus `3d3a046` nicht griff — es wuchsen die
   Projekte selbst, nicht die Logs. Am 2026-09-29 mit 100 GB neu eingeführt.
+
 - **`/srv/dev-100g.img` per UUID in `fstab` referenzieren.** Am 2026-09-29 live
   probiert und **gescheitert**: `mount -a` → `failed to setup loop device for
-  /dev/loop0`. Die UUID existiert erst nach `losetup`; zum Mount-Zeitpunkt
+  /dev/loop0`. The UUID existiert erst nach `losetup`; zum Mount-Zeitpunkt
   findet `mount` sie nicht. Korrekt ist der Dateipfad als Quelle. Nicht erneut
   versuchen, das „aufzuräumen“.
+
 - **Root-Dateisystem auf `vda` verkleinern, um Platz zu gewinnen** (2026-09-29,
   vom Menschen vorgeschlagen, vom Agenten live gemessen widerlegt). `vda4` ist
   XFS, und XFS hat keinen Shrink-Pfad; die Partition ist die letzte der
   GPT-Tabelle und trägt das Root-FS, also nicht unmountbar. **LVM löst das
   nicht** — es schichtet Blockdevices, es erzeugt keine Blöcke. Der einzige Weg
-  zu echtem, physisch getrenntem Platz ist eine zweite Cloud-Volume. Nicht
-  erneut versuchen, LVM in die bestehende Platte zu „pressen“.
-- **Das neue Dateisystem unter `/var/lib/docker` mounten, um Prod mitzunehmen**
-  (2026-09-29, verworfen vor der Umsetzung). Verstoß gegen den
-  Isolationsgeden des Stacks: `dev-vm_code-remote-projects`,
-  `proxy-stack_*`, `portal-reisinger-pictures_*` und `portainer_data` liegen
-  alle unter `/var/lib/docker/volumes` — ein Mountpoint dort hätte Caddy,
-  MariaDB, Meilisearch und Portainer mitgezogen. Richtig ist der Bind-Mount auf
-  `/srv` für **nur** `/projects`.
