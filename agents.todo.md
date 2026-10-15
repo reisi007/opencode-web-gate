@@ -3,9 +3,18 @@
 Offene, nicht triviale Punkte und Blockaden. Einträge werden erst nach einem
 unabhängigen Review und erfolgreicher Verifikation entfernt.
 
+## 2026-10-15
+
+  waehrend des Tunnel-Betriebs wach, Display darf aus. `run.sh` startet
+  `caffeinate -is` (System-Schlaf aus, Display frei) und schreibt die PID nach
+  `/tmp/code-tunnel-caffeinate.pid` (chmod 600). `stop-tunnel.command` killt
+  **nur diese PID** (Schritt 4/4), nicht alle caffeinate-Prozesse — parallele
+  caffeinate des Users bleiben ungestuetzt. Gestartet wird nur im Tunnel-Pfad
+  (`--sync-only` ausgenommen); bei erneutem Start wird eine vorhandene PID-Datei
+  respektiert (kein Doppelstart).
+
 ## 2026-10-10
 
-- [x] **„Tunnel offline, Login war erfolgreich" — falsches Server-Passwort im
   Tunnel-Block der Caddyfile (Entscheidung 2026-10-10).** Gewuenscht war: das
   im Web eingegebene Login-Passwort ist **nicht** das OpenCode-Passwort; es wird
   pro Block ein eigenes `opencode:<PASSWORT>` upstream injiziert. Befund
@@ -20,7 +29,6 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   (md5 identisch), `/api/info` und `/api/config` durch das Gate wieder HTTP 200.
   `remote-code`-Block unberuehrt (gehoert zu `code-dev`). Regel in
   `local/AGENTS.md` §9 + §10, zweite 401-Ursache in `AGENTS.md` §4.
-- [x] **`start-tunnel.command` brach mit `../.env: line 27: $2: unbound
   variable` ab (2026-10-10).** `AUTH_HASH` in der lokalen `.env` stand ohne
   Anfuehrungszeichen; `run.sh` & Co. sourcen die Datei unter `set -euo pipefail`,
   wobei `$2a$14$…` als Parameter-Expandierung ausgewertet wird. Wert wie von
@@ -50,7 +58,6 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
 
 ## 2026-10-09
 
-- [x] **Kein Trainingsprozess auf der VPS — die CPU ist gemessen ungenutzt
   (Auftrag/Entscheidung 2026-10-09).** Gefragt war, ob auf
   `root@reisinger.pictures` etwas wie Model Training laeuft und was gerade die
   meiste CPU braucht. Befund: **kein Trainingsprozess** (`ps` nach
@@ -69,7 +76,6 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   - Nebenbefund RAM: 5,1 Gi von 7,5 Gi verfuegbar, 2,3 Gi Swap alt belegt,
     `si/so` ~10 KB/s — unkritisch.
 
-- [x] **Zombie-Leck im Container `code-dev` gefunden (2026-10-09) —
   absichtlich NICHT angefasst.** `opencode serve` (PID 2099560) reapt seine
   Kinder nicht: **1112 Zombies**, alle mit PPID 2099560, Rate ≈ 100/Std
   (10 h 46 m Laufzeit). Kosten: **0 % CPU** (daher der niedrige Load), RAM nur
@@ -81,7 +87,6 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
 
 ## 2026-10-08
 
-- [x] **API-Edge-Gate prueft jetzt die Login-Kennung statt des opencode-Werts
   (Entscheidung 2026-10-08).** `@api_ok` in `caddyfile/Caddyfile` (beide
   Bloecke) matcht exakt `base64("<AUTH_USER>:<Login-Passwort>")`
   (`AUTH_USER=admin`, live verifiziert). `header_up Authorization` bleibt
@@ -115,7 +120,6 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   das reversible base64 der **Login-Kennung** — dasselbe History-Rewrite-Ticket
   deckt ihn mit ab.
 
-- [x] **SICHERHEITSFUND 2026-10-08: das PUBLIC Repo (`reisi007/opencode-web-gate`)
   hat echte Credentials in der Git-History.** Der Arbeitsbaum (HEAD) ist sauber,
   aus der History aber rekonstruierbar:
   - **opencode-Serverpasswort** (`OPENCODE_PASSWORD`) als base64 in
@@ -145,7 +149,6 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
 
 ## 2026-10-07
 
-- [x] **`CORS_ORIGIN` war dokumentiert, aber nicht gemappt — der ganze CORS-Pfad
   war ein No-Op.** Commit `62ea52a` hat in `remote/entrypoint.sh` die Logik fuer
   `${CORS_ORIGIN}` -> `--cors` eingebaut und in `remote/docker-compose.yml` nur
   einen Kommentar dazu geschrieben, aber **kein** `- CORS_ORIGIN=...` im
@@ -160,12 +163,10 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   der laufenden Compose-Datei, `CORS_ORIGIN` nicht im Container-Env.
   Regel dazu: `remote/AGENTS.md` §18.
 
-- [x] **Erledigt 2026-10-07:** `CORS_ORIGIN` in `stack.env` und in
   `remote/.env.production` eingetragen (Backup `stack.env.bak-cors-*`).
 - [ ] Portainer-DB-Patch nach `remote/AGENTS.md` §9 **Fall 1** (neuer Env-Key,
   der per SSH-Deploy kam), Schema §17.4 — sonst schreibt der naechste UI-Deploy
   den Key wieder weg. (`.env.production` ist bereits mitgezogen.)
-- [x] **Deployed und verifiziert 2026-10-07:** `--no-deps code-dev`-Recreate,
   Log `CORS: erlaube Origin https://ocweb.all-the.rest`, `--cors` aktiv,
   Image-Revision `62ea52a`, `/api/info` 200, Sidecars unberuehrt.
 - [ ] **Drift VPS vs. Repo bei den RAM-Limits (gefunden 2026-10-07).** Live:
@@ -174,7 +175,6 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   nicht geraten. Zu entscheiden: Live-Werte ins Repo uebernehmen oder VPS auf
   Repo zuruecksetzen — bis dahin keine der beiden Dateien „angleichen".
 
-- [x] **Blanket-OPTIONS deployed und verifiziert 2026-10-07.** `sync.sh`:
   validate ✅, Sync + Reload ✅, live == Repo (Diff), 0 Platzhalter live.
   Preflight-Gegenprobe beide Domains: **`HTTP/2 204`,
   `access-control-allow-origin: https://ocweb.all-the.rest`,
@@ -297,13 +297,11 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   **Ursache unbekannt** — die chrome-headless-Kinder sind nicht im Log
   identifiziert. Nicht verfolgt.
 
-- [x] **RAM-Wächter implementiert und verifiziert** (2026-10-02). Siehe oben,
   Eintrag „RAM-Wächter ist im Repo, aber noch nicht ausgerollt" für den
   offenen Rollout und die offene Druck-Frage.
 
 ## 2026-09-29
 
-- [x] **`code-dev` restartete unregelmaessig — Ursache war der RAM-Deckel, nicht
   die VM** (2026-09-29). Ausgangsfrage: „warum restartet die code-vm immer
   wieder". **Erste Feststellung: es gibt keine VM.** `code-vm` ist der
   Compose-Stack `dev-vm` (in Portainer `code-remote`), Container `code-dev`.
@@ -418,7 +416,6 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
     `:latest`-Digest des Baseline-Images taeglich neu gebaut wird — und jedes
     Recreate beendet die laufende Sitzung. Die anderen Container bleiben
     weiterhin von watchtower erfasst.
-- [x] **Tailscale in `code-dev` — live verifiziert und deployed** (2026-09-29).
   Use case: **lokal in `code-dev` gestartete Dev-Server von aussen sehen**
   (`pnpm dev` o. ae.). Code stand schon im Repo (Commits `21fbb1d`,
   `5103bfd`, `4d2fe3a`), der VPS lief noch auf dem alten Image. Jetzt live.
@@ -479,7 +476,6 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   klickt, ohne vorher die aktuelle Datei aus dem Repo-HEAD einzufuegen,
   deployt einen leeren Stack. **Zu tun:** Stack `dev-vm` in der UI nie ohne
   vorheriges Einfuegen von `remote/docker-compose.yml` aus dem HEAD updaten.
-- [x] **Portainer-DB `dev-vm` um `TS_*` gepatcht** (2026-09-29, 12:30).
   Grund: Portainer haelt die Stack-Env in seiner Datenbank und schreibt
   `stack.env` bei jedem UI-Deploy daraus neu. Ohne den Patch haette der
   naechste Browser-Deploy die `TS_*`-Keys wieder entfernt. **Entscheidung des
@@ -515,7 +511,6 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   `Timeout` blockiert, nicht bricht ab — ein 10-s-Timeout im eigenen Code
   rettet da nicht, nur ein `db.Close()` vor der naechsten Oeffnung.
 
-- [x] **`/projects` auf einen 100-GB-Loopback (ext4) umgestellt** (2026-09-29).
   **Entscheidung des Menschen, ausdrücklich gegen die Empfehlung des Agenten.**
   Der Agent hatte zuvor gemessen, dass eine 100-GB-**Partition** nicht moeglich
   ist (`parted print free` → 0,00 GiB frei, `vda4` = XFS = nicht schrumpfbar,
@@ -574,7 +569,6 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
 
 ## 2026-09-26
 
-- [x] **Stack `code-remote`: `host.docker.internal` — eingeführt, dann wieder entfernt** (2026-09-26).
   Zwei Commits an derselben Sache, in dieser Reihenfolge: `24c8854` („Host-Zugriff im remote
   Container") hat `extra_hosts: "${HOST_GATEWAY:-host.docker.internal}:host-gateway"`
   eingeführt, `e5185dd` („Isolation schliessen") hat es wieder entfernt. **Der Ist-Zustand ist
@@ -643,7 +637,6 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   `:8080`). **Offen:** ein echter Sleep/WLAN-Wechsel, ein Reboot (Login-Autostart)
   und der Fall, dass die Login-Keychain nach dem Login gesperrt bleibt (dann
   Restart-Schleife).
-- [x] **`local/sync.sh` von rclone auf rsync/ssh migriert** (2026-09-27).
   Auslöser war nicht ein Fehler im Sync, sondern eine falsche Diagnose von mir:
   der `start-tunnel.command` meldete `knownhosts: key mismatch`, und ich habe
   daraus einen offenen SFTPGo-Host-Key-Punkt gemacht. **Die Ursache ist banal:
@@ -698,7 +691,6 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
 
 ## 2026-09-25
 
-- [x] **Live-Deploy von `df9fe4d`** — erledigt und am 2026-09-27 live nachgemessen
   (Review durch den Menschen, nicht durch einen Agenten):
   - Image `ghcr.io/reisi007/opencode-web-dev-baseline:latest` laeuft in `code-dev`
     (Container neu erstellt 26.09. 20:14Z, `healthy`).

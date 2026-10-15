@@ -221,6 +221,18 @@ fi
 watchdog_loop $$ &
 echo "[$(date '+%F %T')] watchdog: aktiv (Schwelle $((WATCHDOG_MAX_RSS_KIB / 1024)) MiB, Poll ${WATCHDOG_INTERVAL}s, beobachtet run.sh PID $$)"
 if [ "$MODE" != "--sync-only" ]; then
+  # Mac wach halten, solange der Tunnel laeuft (Display darf aus).
+  # Wird von stop-tunnel.command ueber `pkill caffeinate` beendet.
+  CAFFEINE_PID_FILE="/tmp/code-tunnel-caffeinate.pid"
+  if [ -f "$CAFFEINE_PID_FILE" ] && kill -0 "$(cat "$CAFFEINE_PID_FILE")" 2>/dev/null; then
+    echo "[$(date '+%F %T')] caffeinate: laeuft bereits (PID $(cat "$CAFFEINE_PID_FILE"))"
+  else
+    caffeinate -is &
+    echo $! > "$CAFFEINE_PID_FILE"
+    chmod 600 "$CAFFEINE_PID_FILE"
+    echo "[$(date '+%F %T')] caffeinate: aktiv (PID $!, verhindert System-Schlaf)"
+  fi
+
   # OpenCode-Web sicherstellen (Pflicht — nie manuell starten).
   ensure_opencode || exit 1
 

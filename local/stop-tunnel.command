@@ -103,7 +103,7 @@ kill_pids() {
   for p in $@; do kill "-$sig" "$p" 2>/dev/null || true; done
 }
 
-echo "== 1/3 LaunchAgent $LABEL =="
+echo "== 1/4 LaunchAgent $LABEL =="
 WAS_LOADED=0
 if agent_loaded; then
   WAS_LOADED=1
@@ -124,7 +124,7 @@ else
   ok "Agent nicht geladen (nichts zu entladen)"
 fi
 
-echo "== 2/3 run.sh + Forward-Traeger =="
+echo "== 2/4 run.sh + Forward-Traeger =="
 # Nach einem bootout ist die Prozessgruppe schon weg (Schritt 1) — dann gibt es
 # hier nichts zu tun, und genau das sagen wir auch, statt "lief nie". Der
 # Supervisor wird zuerst beendet, weil ein von ihm gestarteter Erfolgswaechter
@@ -163,13 +163,28 @@ else
   ok "kein Forward-Prozess mehr (VPS-Port $BIND:$REMOTE sollte frei sein)"
 fi
 
-echo "== 3/3 Master-Connection =="
+echo "== 3/4 Master-Connection =="
 # -p MUSS mit: %p im ControlPath wird sonst aus dem Default 22 expandiert und
 # die Bereinigung zeigt bei SSH_PORT != 22 auf den falschen Socket.
 if ssh -S "$MASTER_PATH" -p "$PORT" -O exit "$TARGET" >/dev/null 2>&1; then
   ok "Master-Connection geschlossen (/tmp/ssh-code-* weg)"
 else
   ok "keine Master-Connection offen (kein Control-Socket)"
+fi
+
+echo "== 4/4 caffeinate =="
+CAFFEINE_PID_FILE="/tmp/code-tunnel-caffeinate.pid"
+if [ -f "$CAFFEINE_PID_FILE" ]; then
+  CAFFEINE_PID="$(cat "$CAFFEINE_PID_FILE")"
+  if kill -0 "$CAFFEINE_PID" 2>/dev/null; then
+    kill "$CAFFEINE_PID" 2>/dev/null || true
+    ok "caffeinate beendet (PID $CAFFEINE_PID) — Mac kann wieder schlafen"
+  else
+    ok "caffeinate (PID $CAFFEINE_PID) lief nicht mehr"
+  fi
+  rm -f "$CAFFEINE_PID_FILE"
+else
+  ok "keine caffeinate-PID-Datei gefunden (lief nicht via run.sh)"
 fi
 
 # Gegencheck auf dem VPS, nur mit Key-Auth: sonst haengt der Doppelklick an
