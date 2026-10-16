@@ -89,6 +89,48 @@ gekauft.
   12-17 Prozessen, mehr als alle opencode-Prozesse zusammen. Zaehlen ja,
   wegkillen nein — das zerstoert die MCP-Verbindungen laufender Runs.
 
+### Die Schwelle liegt im Skript, die `.env` ist nur der Override (2026-10-16)
+
+`WATCHDOG_MAX_RSS_MIB` ist mit **4 GiB** vorbelegt (`run.sh`, gerechnet wird in
+KiB). Der Default steht im **Skript**, `.env.example` fuehrt den Key
+**auskommentiert** — eine aktive Zeile in `.env` waere eine zweite Quelle der
+Wahrheit, derselbe stille Drift wie `MEMORY_LIMIT` in der Portainer-DB
+(`remote/AGENTS.md` §9 Fall 2). Ein `.env`-Wert schlaegt den Skript-Default
+still und ist nur an `watchdog: aktiv (Schwelle … MiB)` in
+`/tmp/code-tunnel.log` zu sehen. Nicht-numerische Werte, fuehrende Nullen (`08`
+waere oktal und reisst unter `set -e` den Start mit) und alles unter 256 MiB
+fallen auf den Default zurueck.
+
+**Hier stand zuerst, die 2 GiB haetten "im Normalbetrieb nie ausgeloest". Das war
+falsch und wurde am selben Tag am Log widerlegt.** Am 2026-10-16 hat der
+Waechter zwischen 12:56 und 14:04 **15x** gefeuert (2051-2543 MiB RSS, also
+jedes Mal nur knapp ueber der Decel). Getroffen hat es **nie** den supervisten
+Serve auf `:8080` (Kind von `run.sh`, stabil um 500 MiB), sondern
+`serve --service` — das **Server-Kind der laufenden TUI**:
+
+| | |
+|---|---|
+| TUI (`opencode`, PPID = Shell) | PID 97753, seit ~08:14, ~1806 MiB |
+| deren Server-Kind (`opencode serve --service`) | PID 37916, 5 min alt, **1871 MiB** |
+| supervister Serve `:8080` (Kind von `run.sh`) | PID 20243, stabil ~500 MiB |
+
+Der Waechter startet so ein Kind **bewusst nicht** neu ("manueller Neustart
+noetig", §6), und trotzdem stand Sekunden nach jedem Kill ein neuer Prozess mit
+neuer PID — respawnt von der TUI. Das ist die von aussen sichtbare Erscheinung
+**"die Session wird staendig neu gestartet"**: es ist der lokale RSS-Waechter
+plus der Respawn der TUI, kein Container-Restart und kein Netzproblem.
+
+**4 GiB ist eine Entscheidung, keine Messung.** Belegt ist nur, dass diese
+Instanzen unter 2 GiB nicht zur Ruhe kommen (frisch respawnt: 1871 MiB nach
+5 min). Ob sie unter 4 GiB halten, ist **offen** — wenn nicht, wird die Churn
+seltener, aber nicht verschwinden. Wer hier nachmisst, misst `serve --service`
+(RSS pro Prozess), nicht die Summe (§4) und nicht `codegraph` (§4).
+
+Wirksam wird jeder neue Wert erst nach einem `run.sh`-Neustart:
+`launchctl kickstart -k gui/$(id -u)/com.code-tunnel` (nimmt den supervisten
+`opencode serve` als Kind der Prozessgruppe mit, §12) — die **TUI und ihr
+`serve --service`-Kind laufen dabei weiter**, die tauscht der Waechter nicht.
+
 ## 5. Watchdog: Bash 3.2 und die PID-Uebergabe
 
 macOS-Bash kennt kein `BASHPID`. `$$` in einer Subshell ist die PID des
@@ -109,9 +151,10 @@ deckt den anderen Fall ab (kill, Ctrl+C im Vordergrund).
 ## 6. Watchdog: das Restart-Budget ist Absicht
 
 `WATCHDOG_MAX_RESTARTS=3` pro `WATCHDOG_WINDOW=300`, danach pausiert der Watchdog
-statt zu feuern. Ein `serve`, der sofort wieder ueber 2 GiB springt, ist ein
+statt zu feuern. Ein `serve`, der sofort wieder ueber die Schwelle springt, ist ein
 **Speicherleck-Symptom**, kein Neustart-Bedarf. Die Schwelle nicht hochdrehen,
-damit die Logzeile verschwindet.
+damit die Logzeile verschwindet — eine bewusste Anhebung ist etwas anderes (4 GiB,
+§4) und darf dieses Budget nicht ersetzen.
 
 TUI-Sessions und die zweite Instanz `serve --service` werden bei Ueberschreitung
 **beendet, nicht neu gestartet** — es gibt kein TTY zum Nachfuellen, und die

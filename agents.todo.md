@@ -3,6 +3,33 @@
 Offene, nicht triviale Punkte und Blockaden. Einträge werden erst nach einem
 unabhängigen Review und erfolgreicher Verifikation entfernt.
 
+## 2026-10-16
+
+- [x] **Lokaler RAM-Waechter: Schwelle 2 GiB -> 4 GiB (Entscheidung des
+  Menschen), per `WATCHDOG_MAX_RSS_MIB` uebersteuerbar.** Anlass war die
+  Beobachtung "die Session wird sehr oft neu gestartet" — die Ursache steht im
+  Log: der lokale Waechter (`local/run.sh`) hat am selben Tag **15x** zwischen
+  12:56 und 14:04 zugeschlagen (2051-2543 MiB RSS), jedes Mal `serve --service`,
+  das Server-Kind der laufenden TUI — **nie** der superviste `:8080`-Serve
+  (PID 20243, stabil ~500 MiB, Kind von `run.sh`). Neu gestartet hat den Prozess
+  die TUI, nicht der Waechter (die Logzeile sagt "manueller Neustart noetig",
+  Sekunden spaeter stand trotzdem eine neue PID). Entscheidung: Default
+  **4096 MiB im Skript** (einzige Quelle der Wahrheit), `WATCHDOG_MAX_RSS_MIB`
+  **auskommentiert** in `.env.example` als bewusster Override — eine aktive
+  Zeile in `.env` waere der stille Drift aus `remote/AGENTS.md` §9 Fall 2.
+  Dazu Untergrenze 256 MiB und fuehrende Nullen entschaerft (`10#`, "08" waere
+  sonst oktal und reisst unter `set -e` den ganzen Start mit). Umgesetzt in
+  `local/run.sh`, dokumentiert in `local/AGENTS.md` §4 (inkl. der Widerlegung
+  meiner ersten Fassung "2 GiB hat nie ausgeloest") und §6. Live verifiziert:
+  `launchctl kickstart -k gui/$(id -u)/com.code-tunnel` am 2026-10-16 14:10 →
+  Log "watchdog: aktiv (Schwelle 4096 MiB)", Tunnel danach aktiv.
+- [ ] **OFFEN: haelt `serve --service` unter 4 GiB?** Gemessen ist nur, dass es
+  unter 2 GiB nicht zur Ruhe kommt (frisch respawnt: 1871 MiB nach 5 min). Der
+  Waechter wird also seltener feuern — ob die Churn aufhoert, ist offen. Nach-
+  messen ueber 1-2 h: `ps -o rss=` des TUI-Kinds gegen die Kill-Zeilen in
+  `/tmp/code-tunnel.log`. Reisst es wieder, ist nicht "die Zahl zu klein",
+  sondern ein Wachstum im Kind (dann melden, nicht weiter hochdrehen — §6).
+
 ## 2026-10-15
 
 ## 2026-10-10

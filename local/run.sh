@@ -60,7 +60,8 @@ echo "[$(date '+%F %T')] run.sh start (Modus: $MODE, Key-Auth: $([ "${#KEY_OPTS[
 export OPENCODE_SERVER_PASSWORD="$OPENCODE_PASSWORD"
 
 # ---------------------------------------------------------------------------
-# Speicher-Watchdog: opencode beendet, sobald der RSS ueber 2 GiB steigt.
+# Speicher-Watchdog: opencode beendet, sobald der RSS ueber die Schwelle steigt
+# (Default 4 GiB, per WATCHDOG_MAX_RSS_MIB in der .env uebersteuerbar).
 #
 # Das ist ein Runaway-Waechter, KEIN RAM-Budget und keine "RAM ist voll"-
 # Erkennung. Gemessen am 2026-09-27 ueber 10,6 h (648 Proben, minuetlich, ueber
@@ -93,9 +94,43 @@ export OPENCODE_SERVER_PASSWORD="$OPENCODE_PASSWORD"
 # Vorsicht bei der Interpretation: die SUMME des RSS mehrerer opencode-Prozesse
 # ist keine Speichermenge. Geteilte Seiten zaehlt macOS pro Prozess, eine
 # gemeinsam gemappte Bibliothek also mehrfach. Ehrlich ist der Footprint
-# (`top -l 1 -pid <pid> -stats mem`). Die 2-GiB-Schwelle pro Prozess ist
+# (`top -l 1 -pid <pid> -stats mem`). Die Schwelle pro Prozess ist
 # dagegen robust, weil sie geteilte Seiten nicht ueberzaehlt.
-WATCHDOG_MAX_RSS_KIB=$((2 * 1024 * 1024))   # 2 GiB, hart kodiert
+#
+# Der Default steht HIER und ist die einzige Quelle der Wahrheit; die .env setzt
+# WATCHDOG_MAX_RSS_MIB nur, wenn jemand bewusst abweicht. Ein gesetzter Env-Wert
+# schlaegt den Default still — wer die Zahl hier aendert, waehrend die .env eine
+# andere nennt, merkt das nur an der Zeile "watchdog: aktiv (Schwelle … MiB)".
+# Nicht-numerische Werte, fuehrende Nullen und alles unter 256 MiB fallen auf
+# den Default zurueck (siehe die drei Zeilen direkt unter dem Block, noetig
+# wegen `set -euo pipefail`).
+#
+# 2 GiB -> 4 GiB (2026-10-16, Entscheidung des Menschen). Die 2 GiB waren keine
+# theoretische Schwelle: am 2026-10-16 haben sie zwischen 12:56 und 14:04
+# **15x** gefeuert (PIDs 97754, 26851, 29100, 30291, 30655, 30792, 30926, 31053,
+# 32409, 32892, 33813, 34737, 35203, 36469, 36827), jedes Mal nur knapp ueber
+# der Decel (2051-2543 MiB).
+#
+# Getroffen hat es NIE den supervisten Serve auf :8080 (PID 20243, stabil um
+# 500 MiB, Kind von run.sh), sondern `serve --service` — das Server-Kind der
+# laufenden TUI. Der Waechter startet so einen Prozess bewusst NICHT neu (die
+# Logzeile sagt "manueller Neustart noetig"), und trotzdem stand Sekunden nach
+# jedem Kill ein neuer Prozess mit neuer PID: den respawnt die TUI. Genau das
+# ist die von aussen sichtbare Erscheinung "Session wird staendig neu gestartet".
+#
+# Der hoehere Wert ist ein bewusster Kompromiss und NICHT durch eine Messung
+# gedeckt: gemessen ist nur, dass die Instanzen unter 2 GiB nicht zur Ruhe
+# kommen (ein frisch respawnter Prozess stand nach 5 min bei 1871 MiB). Ob sie
+# unter 4 GiB halten, ist OFFEN — sonst wird die Churn seltener, aber nicht weg.
+# Die 3 Neustarts/300 s aus WATCHDOG_MAX_RESTARTS bleiben die Bremse.
+WATCHDOG_MAX_RSS_MIB="${WATCHDOG_MAX_RSS_MIB:-4096}"
+case "$WATCHDOG_MAX_RSS_MIB" in ''|*[!0-9]*) WATCHDOG_MAX_RSS_MIB=4096;; esac
+# 10# : "08" waere sonst oktal und $(( )) bricht unter set -e den ganzen Start ab.
+WATCHDOG_MAX_RSS_MIB=$((10#$WATCHDOG_MAX_RSS_MIB))
+# Untergrenze wie beim Update-Intervall in remote/entrypoint.sh: alles unter
+# 256 MiB ist ein Tippfehler und wuerde jeden Poll sofort killen.
+[ "$WATCHDOG_MAX_RSS_MIB" -lt 256 ] && WATCHDOG_MAX_RSS_MIB=4096
+WATCHDOG_MAX_RSS_KIB=$((WATCHDOG_MAX_RSS_MIB * 1024))
 WATCHDOG_INTERVAL=60                        # Poll-Abstand in Sekunden
 WATCHDOG_MAX_RESTARTS=3                     # Neustarts im Fenster ...
 WATCHDOG_WINDOW=300                         # ... bevor es kuenstlich pausiert
@@ -172,7 +207,7 @@ watchdog_loop() {
     fi
     local now; now=$(date +%s)
     # Restart-Fenster zuruecksetzen, statt eine Restart-Schleife zu fahren:
-    # ein serve, der sofort wieder ueber 2 GiB springt, ist ein Symptom, kein
+    # ein serve, der sofort wieder ueber die Schwelle springt, ist ein Symptom, kein
     # Kandidat fuer Autofeuer.
     if [ $((now - window_start)) -ge "$WATCHDOG_WINDOW" ]; then
       restarts=0; window_start=$now
@@ -189,7 +224,7 @@ watchdog_loop() {
       [ -n "$rss" ] || continue
       [ "$rss" -gt "$WATCHDOG_MAX_RSS_KIB" ] || continue
 
-      echo "[$(date '+%F %T')] watchdog: opencode PID $pid bei $((rss / 1024)) MiB > $((WATCHDOG_MAX_RSS_KIB / 1024)) MiB — SIGKILL"
+      echo "[$(date '+%F %T')] watchdog: opencode PID $pid bei $((rss / 1024)) MiB > ${WATCHDOG_MAX_RSS_MIB} MiB — SIGKILL"
       kill -9 "$pid" 2>/dev/null || true
       restarts=$((restarts + 1))
 
@@ -219,7 +254,7 @@ fi
 # erreicht die Zeile nie wieder den Code. $$ ist hier die PID dieses run.sh und
 # wird als Argument uebergeben (siehe Kommentar an watchdog_loop).
 watchdog_loop $$ &
-echo "[$(date '+%F %T')] watchdog: aktiv (Schwelle $((WATCHDOG_MAX_RSS_KIB / 1024)) MiB, Poll ${WATCHDOG_INTERVAL}s, beobachtet run.sh PID $$)"
+echo "[$(date '+%F %T')] watchdog: aktiv (Schwelle ${WATCHDOG_MAX_RSS_MIB} MiB, Poll ${WATCHDOG_INTERVAL}s, beobachtet run.sh PID $$)"
 if [ "$MODE" != "--sync-only" ]; then
   # Mac wach halten, solange der Tunnel laeuft (Display darf aus).
   # Wird von stop-tunnel.command ueber `pkill caffeinate` beendet.
