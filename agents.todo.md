@@ -192,6 +192,12 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   zusaetzlich an den `tailscaled`-Aufruf haengen, damit §15.2 wortgleich gilt.
   Einzeiler, aber nicht von mir geaendert — dafuer braucht es eine Messung, die
   `resolv.conf` im Container tatsaechlich beobachtet.
+- [ ] **Tailscale-/Tailnet-Weg live noch nicht verifiziert** (2026-09-29, Stand aus
+  `remote/AGENTS.md` §15). Der Userspace-Modus und die Erreichbarkeit von
+  `code-dev` ueber die Tailnet-IP sind beschrieben, aber noch nicht von einem
+  echten Client aus belegt. Zu zeigen: `code-dev` per 100.x-Adresse erreichbar,
+  ein lokal gestarteter Dev-Server (`pnpm dev`/`vite`) von Mac/Handy aus sichtbar,
+  und dass `/etc/resolv.conf` dabei unveraendert bleibt (§15.2).
 - [ ] **Ein Portainer-UI-Deploy schreibt `compose/49/docker-compose.yml` neu —
   die Env ist gepatcht, die Datei steht dort nicht** (2026-09-29).
   Die `TS_*`-Keys sind jetzt in der Portainer-DB und ueberstehen einen
