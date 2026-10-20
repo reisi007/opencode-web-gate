@@ -291,8 +291,12 @@ if [ "${OPENCODE_AUTOUPDATE:-true}" = "true" ]; then
   watch_opencode_updates "$BIN" &
 fi
 
-# RAM-Waechter (2026-10-02): beendet PID 1 per SIGTERM, BEVOR der
-# cgroup-OOM-Killer es tut. Siehe die Begruendung im Dockerfile.
+# RAM-Waechter (2026-10-02, am 2026-10-20 umgebaut): schuetzt inzwischen den
+# HOST, nicht den Container. Zwei Trigger: (A) cgroup-anon (ohne Page-Cache)
+# -> SIGTERM an PID 1, damit opencode geordnet beendet und der cgroup-OOM-Killer
+# nicht PID 1 abrupt killt; (B) Host-Druck (MemAvailable / Swap-Fuellstand) ->
+# erst Speicherfresser-Kinder beenden, erst als letzte Stufe PID 1.
+# Siehe die Begruendung im Dockerfile.
 #
 # Bewusst per RAM_WATCHDOG_ENABLED abschaltbar (default true): wenn jemand die
 # 2-GB-dind-Regel von Hand setzt und den Speicher selbst im Blick hat, ist ein

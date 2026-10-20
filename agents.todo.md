@@ -3,6 +3,144 @@
 Offene, nicht triviale Punkte und Blockaden. Einträge werden erst nach einem
 unabhängigen Review und erfolgreicher Verifikation entfernt.
 
+## 2026-10-20
+
+- [ ] **Host-Hänger am 2026-10-20, 16:05:52–16:08:36 CEST — die Ursache ist
+  gefunden, das Rollout steht aus.** Zeitleiste (aus `/var/log/messages`,
+  `/var/log/messages` überlebt, `journalctl` gab es noch nicht persistent):
+
+  | Zeit | Ereignis |
+  |---|---|
+  | 12:00–16:05 | `ram-watchdog` meldet `code-dev` dauerhaft bei 75–79 % von 7 GiB |
+  | 13:17:30 | Erste Auslösung (90 %) — opencode beendet, neu gestartet |
+  | 15:57:59 | `idle-check: 7 aktive Session(s) → vertagt` |
+  | 16:03:37–16:05:09 | Anstieg 82 % → 88 % |
+  | **16:05:20** | **AUSLOESER 93 %** (7.042.101.248 / 7.516.192.768 B) → SIGTERM an PID 1 |
+  | 16:05:24 | Cron `ocgo-price-tracker` → **HTTP 502** (erster Fehler in der ganzen Historie) |
+  | 16:05:51–52 | dockerd: `timed out starting health check` (code-dev, countdown, portal_db), `copy stream failed: reading from a closed fifo`, containerd `ttrpc: received message on inactive stream` |
+  | 16:06:09 | Watchdog eskaliert auf SIGKILL — die Logzeile landet erst 16:07:21 (**72 s zu spät**), `monitor: time jump detected (slept 32s)` |
+  | 16:05:52 → 16:08:36 | **Totalausfall, 2 min 44 s Stille** |
+  | 16:08:36 | Hart-Reset (kein `shutdown system down` in wtmp, keine geordnete systemd-Abmeldung) |
+
+  **Ursache:** `code-dev` hatte `mem_limit: 7g` bei **7,47 GiB** nutzbarem
+  Host-RAM. Der Wächter löste bei 90 % von 7 GiB = **6,3 GiB** aus — der Host
+  war da bereits überzeichnet (7 + 1 + 0,9 + 0,7 = 9,6 GiB). Die Rettung kam zu
+  spät. Zusätzlich: der Wächter maß `memory.current` (mit Page-Cache), und
+  `vm.swappiness=10` sorgte dafür, dass der Swapfile **nie** benutzt wurde
+  (`SwapFree` = volle 10 GB beim Crash). **kdump war armed und hat NICHT
+  ausgelöst → es gab keinen Kernel-Panic, der Host ist wirklich eingefroren
+  und wurde extern zurückgesetzt.**
+
+  **Maßnahmen (Host, sofort umgesetzt):** `memswap_limit` 12g → 16g in
+  `remote/docker-compose.yml` **und in `remote/.env.production`** (die
+  Paste-Vorlage setzt `MEMSWAP_LIMIT=12g` explizit — der Compose-Default
+  `:-16g` greift nur, wenn der Key in der Stack-Env **fehlt**; ohne die
+  Vorlage-Änderung wirkt die Maßnahme beim nächsten Paste stillschweigend
+  nicht); `vm.swappiness` 10 → 60 in `/etc/sysctl.conf`; `/swapfile` 10 GB →
+  16 GB (fstab unverändert, übersteht den Reboot); `journald` auf
+  `Storage=persistent` (`/var/log/journal`, 8,1 MB) — damit gibt es beim
+  nächsten Mal endlich Kernel-Daten; `kdump` geprüft (armt, OK).
+
+  **Maßnahme (Repo, umgesetzt):** `remote/ram-watchdog.sh` neu — zwei Trigger
+  statt einem: (A) `anon + slab_unreclaimable` ≥ 85 % von `memory.max` →
+  SIGTERM an PID 1 (geordneter Shutdown statt abrupter Kernel-Kill); (B)
+  **Host**-Druck (`MemAvailable` < 1000 MB, aus `/proc/meminfo`, das im
+  Container die Host-Werte zeigt) → Eskalationsleiter: erst Speicherfresser-
+  Kinder beenden (**nach anon sortiert** — Private_Dirty, nicht RSS; die
+  CodeGraph-Server haben 660 MB RSS bei nur 294 MB anon), die größten zuerst
+  bis 300 MB Zielsumme, erst als letzte Maßnahme PID 1.
+  **B3 nur, wenn code-dev auch schuld ist** (≥ 50 % des Host-Verbrauchs) —
+  bei Fremddruck (dind, Portal-Stack) hilft ein Container-Neustart nichts und
+  würde nur die Sitzung vernichten. Dazu `HOLD_COUNT`=3 (Druck muss anhalten)
+  und `STARTUP_GRACE_S`=180 s (nichts direkt nach einem Container-Neustart).
+  Der **Host-Swap ist Warnung, kein Eskalationsgrund** — mit `swappiness=60`
+  und 9 GiB Swap-Deckel ist ein Füllstand von mehreren GB der Normalzustand
+  (live im Incident: 6,3 GB Swap bei 783 MB MemAvailable).
+
+  **ACHTUNG, bis zum Rollout läuft der ALTE Wächter weiter** — 90 % auf
+  `memory.current`, also genau der Auslöser vom 20.10. Der Rollout ist damit
+  nicht nur ein Feature, sondern die Behebung des aktiven Risikofaktors.
+  **Bekannt: der alte Wächter hat am 20.10. dreimal ausgelöst** (13:17:30
+  CEST 90 %, 16:05:20 93 %, 17:19:37 95 %) — jedes Mal SIGTERM an PID 1,
+  jedes Mal eine gerissene Sitzung, beim letzten Mal einen Container-Neustart
+  (`RestartCount` 2) acht Minuten nach dem Commit.
+
+  **Verifikation (2026-10-20):** alle Codepfade gegen **Dummy-Prozesse** in
+  einem **Wegwerf-Container** verifiziert (dort ist PID 1 ein `sleep` mit
+  gefälschtem argv[0]), nie gegen das echte PID 1: Container-Trigger,
+  Host-Trigger mit Eskalationsleiter, HOLD_COUNT (`1/3` → `2/3` → `3/3`),
+  Startup-Grace (keine Eskalation), Greedy-Kill (nur der größte bekam TERM,
+  die beiden kleineren blieben am Leben).
+
+  **Offen: Rollout.** Der Wächter liegt per `COPY` im Image → die Änderung
+  braucht einen Image-Build. Weg: `remote/ram-watchdog.sh` + `remote/Dockerfile`
+  + `remote/entrypoint.sh` nach `main` pushen → CI
+  (`.github/workflows/build-baseline.yml`, läuft bei Push auf `main` mit
+  Path-Filter auf `remote/ram-watchdog.sh`) baut und pusht
+  `ghcr.io/reisi007/opencode-web-dev-baseline:latest` → Stack in **Portainer**
+  neu deployen. **Dabei sind ZWEI Dateien einzufuegen, nicht eine:**
+  1. die **Compose-Datei** (`remote/docker-compose.yml` aus dem HEAD) in den
+     Portainer-Web-Editor,
+  2. **`remote/.env.production` als Stack Environment** — sonst kommt der
+     alte `MEMSWAP_LIMIT=12g` aus der Vorlage zurueck und Massnahme 1 wirkt
+     stumm nicht (H1 aus dem Verify). Die Datei ist gitignored, der Wert
+     `MEMSWAP_LIMIT=16g` steht also nur lokal.
+  **watchtower nimmt `code-dev` nicht an**
+  (Entscheidung vom 2026-09-30, Label `com.centurylinklabs.watchtower.enable=false`)
+  — das Image zieht also **nur** der Portainer-Deploy. **Achtung: das Recreate
+  beendet die laufenden Sessions im Container.** Erst rollen, wenn keine
+  Arbeit offen ist.
+
+- [x] **Zwei eigene Testläufe haben die laufende Instanz beschädigt
+  (2026-10-20) — beides behoben, aber der Schaden ist dokumentationspflichtig.**
+  **Vorfall 1:** beim Verifizieren der Wächter-Stufe B2 habe ich im Test das
+  Kind-Matching **nicht** neutralisiert. Ergebnis: alle 4 CodeGraph-Server und
+  alle 4 Bridges im Container wurden beendet. **Vorfall 2:** ein späterer
+  Testlauf sollte PID 1 durch eine Dummy-PID ersetzen; das `sed`-Muster griff
+  aber nicht (Einrückung), der Wächter fand das **echte** PID 1 und schickte
+  **SIGTERM an den laufenden opencode** → Container-Neustart
+  (`RestartCount` 1, 16:57:19). Beide Vorfälle passierten **im
+  Produktions-Container** — das war der Fehler.
+  **Schaden und Reparatur:** opencode selbst wurde neu gestartet (nur der
+  Serverprozess, die Session-Daten in den Volumes `opencode-data/-config/-state`
+  sind unbeschädigt). Durch den Neustart hat opencode die **4 CodeGraph-
+  MCP-Server neu gespawnt** — der Schaden aus Vorfall 1 ist damit **behoben**
+  (9 codegraph-Prozesse, 0 Zombies, geprüft 16:58). Vorfall 2 hat die gerade
+  laufende Agent-Arbeit im Container beendet (die `gh`-Aufrufe waren danach
+  weg).
+  **Regel, jetzt im Repo verankert:** **Trigger-Tests laufen ausschließlich in
+  einem Wegwerf-Container**, in dem PID 1 ein `sleep` mit gefälschtem argv[0]
+  ist (`exec -a "opencode serve ..."`). Im Produktions-Container wird **nie**
+  getestet. Damit ist auch das `sed`-Patching der Match-Liste überflüssig.
+  Das Repo, in dem der Test lief, ist weg — die Regel steht in
+  `remote/README.md` und `remote/AGENTS.md` §9.
+
+- [ ] **B2 erzeugt Zombies (2026-10-20) — die Rechnung ist falsch.** B2 beendet
+  die Speicherfresser-Kinder per SIGTERM/SIGKILL. `opencode serve` reapt seine
+  MCP-Kinder nicht, die bleiben als `<defunct>` liegen (im **Host**-PID-Namespace
+  sichtbar, im Container-Namespace meldet `ps` 0 Zombies — genau das bekannte
+  Problem aus dem 2026-10-02-Eintrag). Ein Zombie haelt keinen Speicher, kostet
+  aber einen PID-Slot und **verwirrt den Wächter**: `kill -0` auf einen Zombie
+  liefert Erfolg, die Grace-Schleife wartete deshalb immer die vollen 15 s und
+  logte danach ein wirkungsloses „PID X lebt noch — KILL". Der Wächter prüft
+  den Prozesszustand inzwischen selbst (`/proc/PID/stat`, Feld 3 == `Z` →
+  gilt als tot) — **die Zombies selbst bleiben aber liegen**, weil nur
+  opencode sie reappen kann. Kein Cleanup im Entrypoint hilft (sie entstehen
+  im PID-Namespace des Wirts, nicht im des Containers).
+
+- [ ] **CodeGraph: gemessen, aber nicht zu ersetzen (2026-10-20).** Antwort
+  auf die Frage, ob man es weglassen soll: **nein.** Live gemessen
+  (`smaps_rollup`): CodeGraph gesamt 660 MB RSS, davon aber nur **294 MB anon**
+  (Rest = mmap'd SQLite-Index + Node-Binary = reclaimbarer Page-Cache);
+  `opencode serve` selbst ist mit **426 MB anon** der größere Posten. Pro
+  gleichzeitiger Session kostet CodeGraph ~74 MB anon (bei 7 Sessions ~515 MB).
+  Die CLI-Alternative ist **schlechter**: `codegraph explore` per CLI peakt bei
+  **276 MB** pro Aufruf (1,2 s), ein kompletter MCP-Server kostet dauerhaft
+  164 MB. Und `codegraph serve` **ohne** `--mcp` startet **keinen**
+  HTTP-Server (nur stdio) — ein geteilter Daemon für alle Sessions gibt es in
+  v1.6.2 nicht. Offen bleibt nur die **Session-Hygiene**: 7 gleichzeitige
+  Sessions sind der eigentliche Multiplikator.
+
 ## 2026-10-16
 
 - [x] **Lokaler RAM-Waechter: Schwelle 2 GiB -> 4 GiB (Entscheidung des
@@ -123,28 +261,24 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   nie am echten PID 1. Ein echter Neustart braucht ein ausdrückliches Okay des
   Menschen, das nicht aus einem allgemeinen „verifiziere das" folgt.
 
-- [ ] **RAM-Wächter ist im Repo, aber noch nicht ausgerollt.** `ram-watchdog.sh`
-  liegt in `remote/`, ist im Dockerfile per `COPY` nach
-  `/usr/local/bin/ram-watchdog.sh` gelegt und wird in `remote/entrypoint.sh`
-  hinter dem Update-Watcher geforkt (`RAM_WATCHDOG_ENABLED`, default true).
-  Am laufenden Container **verifiziert**: findet PID 1, liest echte
-  cgroup-Werte, löst bei Schwelle aus, SIGTERM→sauber / SIGTERM ignoriert→
-  SIGKILL, überlebt das `exec` des Entrypoints. **Nicht verifiziert:** das
-  Verhalten unter echtem Speicherdruck — bei 75 % Last hätte der Wächter mit
-  Schwelle 90 % *nicht* ausgelöst, und ob er den Kernel-OOM rechtzeitig
-  abfängt, ist ungesehen.
-  **Rollout:** watchtower nimmt `code-dev` nicht an (Entscheidung vom
-  2026-09-30), also muss der Stack manuell neu deployed werden. Das beendet
-  die laufende Session — erst durchrollen, wenn keine Arbeit offen ist.
-
 - [ ] **Host-Budget ist rechnerlich weiterhin überzeichnet.** Nach der
   dind-Senkung (2,5g → 2g, 2026-10-02): code-dev 5g + dind 2g + Portal ~0,7g
   + OS ~0,7g = ~8,4 GB bei **7,47 GB** nutzbarem Host-RAM (8 GB minus OS/Docker)
   — also weiterhin ~0,9 GB zu viel. Die Senkung hat den Fehlbetrag von ~1,25 GB
-  auf ~0,9 GB verkleinert, nicht behoben. **Strukturell nur mit mehr Host-RAM
-  lösbar.** Als Beleg, dass dind 2g sicher ist: `memory.peak` 419012608
-  (400 MB), `memory.current` 332775424 (317 MB) = 8,65 % des alten Deckels;
-  nach dem Neustart peak 93 MB, `oom_kill 0`.
+  auf ~0,9 GB verkleinert, nicht behoben. Als Beleg, dass dind 2g sicher ist:
+  `memory.peak` 419012608 (400 MB), `memory.current` 332775424 (317 MB) = 8,65 %
+  des alten Deckels; nach dem Neustart peak 93 MB, `oom_kill 0`.
+  **STAND 2026-10-20:** Der Deckel ist weiter gewachsen (code-dev 5g → 7g am
+  2026-10-07, dind 2g → 1g), der Fehlbetrag ist damit von ~0,9 GB auf **~2,1 GB**
+  gewachsen (7 + 1 + 0,9 + 0,7 = 9,6 GB bei 7,47 GB) — und genau das ist am
+  2026-10-20 in den Host-Hänger gelaufen (16:05:52, 2 min 44 s Totalausfall).
+  **Entscheidung des Menschen (2026-10-20):** der RAM-Deckel bleibt bei 7g
+  ("die Dev Tools darin brauchen leider den ram"); die Differenz wird über
+  **Swap** ausgeglichen (memswap_limit 16g, swappiness 60, Swapfile 16 GB) und
+  über den **host-schützenden Wächter** abgefangen. Strukturell bleibt der
+  Punkt damit **offen**: überzeichnetes RAM-Budget auf einem 8-GB-Host, mit
+  Swap als Puffer. Einzige strukturelle Lösung bleibt mehr Host-RAM
+  (16 GB+).
 
 - [ ] **Zwei OOM-Kills am 2026-10-02, einer davon hat die Session gerissen.**
   Live aus `dmesg`:

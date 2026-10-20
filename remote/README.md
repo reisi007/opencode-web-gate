@@ -8,13 +8,16 @@
 * Stack `code-remote` (`docker-compose.yml` hier): `code-dev` + isolierter
   `dind`-Daemon + eigener `code-auth-remote`. Nur Netz `code-remote` — kein `webnet`,
   daher keine Prod-Container per Name erreichbar, Internet via NAT ok.
-  `code-dev` ist standardmäßig auf 3 CPU-Kerne, 4 GB RAM **plus 4 GB Swap**
+  `code-dev` ist standardmäßig auf 3 CPU-Kerne, **7 GB RAM plus 9 GB Swap**
   begrenzt; über `CPU_CORES`, `MEMORY_LIMIT` und `MEMSWAP_LIMIT` im
   Stack-Environment anpassbar. Wichtig: `memswap_limit` muss größer sein als
   `mem_limit`, sonst ist der Swap-Deckel exakt so hoch wie das RAM-Limit.
-  Wichtig für die Rechnung: `memswap_limit` ist der **Gesamt**-Deckel, bei 5g/9g
-  also 5 GB RAM plus 4 GB echte Swap-Reserve — beides belegt nachweislich
-  (`memory.swap.current` stand am 2026-09-30 bei 597 MB). Siehe *RAM- und
+  Wichtig für die Rechnung: `memswap_limit` ist der **Gesamt**-Deckel, bei 7g/16g
+  also 7 GB RAM plus 9 GB Swap-Puffer — Swap ist ab dem 2026-10-20 **Puffer,
+  nicht Reserve**: er soll den RAM-Deckel abfedern, weil der Deckel über dem
+  nutzbaren Host-RAM liegt. Der RAM-Deckel liegt bewusst über dem nutzbaren
+  Host-RAM (7,47 GiB): die Differenz wird über Swap ausgeglichen, nicht über
+  weniger RAM (Entscheidung 2026-10-20). Siehe *RAM- und
   Swap-Limits*.
   **Kein Host-Zugriff:** `code-dev` hat bewusst *kein* `extra_hosts` und
   erreicht den VPS nicht. `127.0.0.1` ist der Container selbst — ein
@@ -248,30 +251,33 @@ Deckel ist exakt `mem_limit`. `memswap_limit` setzt man also nicht, um Swap zu
 eroeffnen, sondern um das **Verhaeltnis** zu bestimmen und den Gesamt-Fussabd
 hart zu deckeln.
 
-Aktuelles Budget (live gemessen, 2026-09-29 nach der zweiten Anhebung):
+Aktuelles Budget (**Zielzustand nach dem Rollout vom 2026-10-20**; live auf
+dem VPS steht `code-dev` noch auf dem alten 12-g-Deckel, bis der Stack neu
+deployt ist):
 
 | Container | RAM | Swap | gesamt | cpus |
 |---|---|---|---|---|
-| `code-dev` | 4096 MB | 4096 MB | 8192 MB | 3 |
-| `code-remote-dind` | 2560 MB | 2560 MB | 5120 MB | 2 |
+| `code-dev` | 7168 MB | 9216 MB | 16384 MB | 3 |
+| `code-remote-dind` | 1024 MB | 1024 MB | 2048 MB | 2 |
 | `code-auth-remote` | unbegrenzt | — | — | — |
-| **Summe** | **6656 MB** | **6656 MB** | **13312 MB** | |
+| **Summe** | **8192 MB** | **10240 MB** | **18432 MB** | |
 
-**Die Summe der RAM-Limits (6,66 GB) liegt bei 7,5 GB Host-RAM, zusammen mit
-Portal (~0,5 GB) und OS/dockerd (~0,7 GB) aber darüber.** Das ist am
-2026-09-29 bewusst so entschieden worden und ist der engste Punkt auf dem
-Host: erreichen code-dev und dind ihre Deckeln gleichzeitig — und das ist der
-Normalfall, weil der Agent in `code-dev` per cargo baut und parallel im Daemon
-per docker baut —, feuert der **Host**-OOM-Killer. Der nimmt global den
-größten Prozess, und das kann `mariadbd` sein. Wer das nicht will, senkt dind
-auf 2 GB; das kostet nur Reserve im Daemon, der real 196 MB nutzt.
+**Die Summe der RAM-Limits (8192 MiB = 8,0 GiB) liegt über den 7,47 GiB
+nutzbarem Host-RAM** — zusammen mit Portal (~0,9 GiB) und OS/dockerd (~0,7 GiB)
+sind das ~9,6 GiB, rund 2,1 GiB **über** dem Host. Das ist **kein
+Rechenfehler, sondern der dokumentierte Preis**: der RAM-Deckel bleibt auf 7g,
+weil die Dev-Tools ihn brauchen (Nutzer-Entscheidung 2026-10-20). Die Differenz
+wird über **Swap** ausgeglichen, nicht über weniger RAM — siehe „Der
+Host-Hänger vom 2026-10-20“ unten.
 
 `code-auth-remote` bleibt bewusst unbegrenzt — real 11 MB, und ein Deckel
 wuerde nur Aerger machen.
 
 RAM ist bei `code-dev` knapper als Swap, beim DinD umgekehrt: Builds im Daemon
-sind Batch-Arbeit, Latenz ist egal; `code-dev` ist interaktiv und soll nicht
-swappen.
+sind Batch-Arbeit, Latenz ist egal. **Seit 2026-10-20 ist Swap für `code-dev`
+aber ausdrücklich eingeplant** — der RAM-Deckel liegt über dem nutzbaren
+Host-RAM, die Differenz wird über Swap ausgeglichen. „`code-dev` soll nicht
+swappen" gilt ab hier nicht mehr.
 
 ### Warum 2 GB nicht gereicht haben — und warum 3 GB auch noch nicht reichten
 
@@ -351,9 +357,13 @@ Daraus die Regeln:
 
 Bis 2026-09-30 stand hier, der Swap habe „nie gegriffen", weil
 `vm.swappiness=0` sei. **Das war eine Verwechslung von zwei Sysctls.**
-`vm.swappiness` ist **10** (persistiert in `/etc/sysctl.conf`, mtime April).
+`vm.swappiness` war **10** (persistiert in `/etc/sysctl.conf`, mtime April).
 Der Wert `0`, den ich gemessen und falsch etikettiert hatte, war
 `vm.overcommit_memory`.
+
+**Stand 2026-10-20: `vm.swappiness` ist 60** (ebendort persistiert). Grund steht
+im Abschnitt „Der Host-Hänger vom 2026-10-20“ — bei swappiness 10 hat der
+Kernel den Swapfile praktisch nie angefasst.
 
 Live gegengeprueft am 2026-09-30: `memory.swap.current` = **597 MB von 4096 MB
 genutzt**. `memswap_limit` ist also echte Reserve, keine Zahl.
@@ -363,6 +373,138 @@ budget von 8 GB** — und `opencode serve` als PID 1 wurde am 30.09. um 08:46
 trotzdem getoetet. Der Grund ist also nicht der Swap, sondern anon-Druck:
 `rustc`/`rust-lld`/`clippy-driver` 220–920 MB pro Instanz, dazu Chrome aus
 Playwright-Läufen.
+
+### Der Host-Hänger vom 2026-10-20 — was wirklich passiert ist
+
+Am 2026-10-20 um **16:05:52 CEST** ist der Host **2 min 44 s komplett
+eingefroren** (rsyslog ohne eine einzige Zeile, dockerd konnte keine
+Health-Checks mehr forken, der Cron-Job bekam HTTP 502) und wurde um 16:08:36
+hart neugestartet. Die Zeitleiste steht in `agents.todo.md`. Die drei
+wesentlichen Befunde:
+
+**1. Der alte Wächter hat die cgroup geschützt — nicht den Host.** Er
+beobachtete `memory.current` und löste bei 90 % aus. **Diese Größe ist
+richtig** für den cgroup-Deckel: `memory.max` gilt für `memory.current`, und
+der Container stand beim Auslösen tatsächlich bei 90–95 %:
+
+| Zeit (CEST) | `memory.current` | Anteil am 7-GiB-Deckel |
+|---|---|---|
+| 13:17:30 | 6.800.273.408 B | 90 % |
+| 16:05:20 | 7.042.101.248 B | 93 % |
+| 17:19:37 | 7.164.485.632 B | 95 % |
+
+**Der Fehler war nicht die Messung, sondern die Prämisse:** der Wächter hielt
+das Erreichen des cgroup-Deckels für einen Punkt, an dem man sich noch
+vergnügen kann. Aber der Deckel (7 GiB) ist **mehr als der nutzbare Host-RAM**
+(7,47 GiB), und daneben laufen dind (1g), der Portal-Stack (~0,9g) und
+OS/dockerd (~0,7g). Als der Wächter bei 6,3 GiB im code-dev auslöste, stand
+der Host bei **783 MB MemAvailable und 6,3 GB Swap** — er war am Abgrund, und
+das SIGTERM an PID 1 kam zu spät.
+
+*Zur Cache-Frage (eine Korrektur der ersten Fassung dieser Doku):*
+`memory.current` enthält den reclaimbaren Page-Cache, und der Anteil ist
+zeitabhängig — in einem frischen Container (Messung 17:45 CEST nach dem
+Neustart) `anon` 970 MB / `file` 1164 MB / `current` 2389 MB, also **49 %
+Cache**; in einem Container mit stundenlangem Build wächst der Cache-Anteil.
+**Die `anon`/`file`-Aufteilung zum Auslösezeitpunkt ist nicht rekonstruierbar**,
+weil der alte Wächter sie nicht protokolliert hat. Die Aussage „der Wächter
+hat 92 % Cache gemessen" ist damit **nicht belegbar** und war in der ersten
+Fassung dieses Abschnitts falsch. Die neue Regel in `remote/AGENTS.md` §9
+lautet daher nicht „`memory.current` ist falsch", sondern: **für die
+Eskalation zählt `MemAvailable` des Hosts, und für „welcher Prozess frisst
+echten Speicher" zählt `anon`, nicht RSS.**
+
+**2. Der Wächter konnte den Host nicht retten, weil seine Schwelle zu hoch war.**
+90 % von 7g = **6,3 GiB** bei **7,47 GiB** nutzbarem Host-RAM. Bei diesem
+Stand war der Host bereits überzeichnet: code-dev 7g + dind 1g + Portal 0,9g +
+OS 0,7g = 9,6 GiB. Live im Incident: `MemAvailable` **783 MB** bei **6,3 GB**
+Host-Swap. Die „Rettung" kam zu spät — sie rettete den Container und
+trotzdem nicht den Host.
+
+**3. Der Swap wurde nie benutzt.** `SwapFree` stand beim Crash auf den vollen
+10 GB. `vm.swappiness=10` heißt: der Kernel swapped erst, wenn RAM **global**
+knapp wird — also erst, wenn es zu spät ist.
+
+#### Die drei Massnahmen (2026-10-20)
+
+| # | Massnahme | Wo |
+|---|---|---|
+| 1 | `memswap_limit` 12g → **16g** (9 GB Swap für code-dev) | `remote/docker-compose.yml` **und** `remote/.env.production` |
+| 2 | `vm.swappiness` 10 → **60**, Swapfile 10 GB → **16 GB** | `/etc/sysctl.conf`, `/swapfile` |
+| 3 | `ram-watchdog.sh` schützt jetzt den **Host** statt den cgroup-Deckel | `remote/ram-watchdog.sh` |
+
+**Maßnahme 1 muss an zwei Stellen stehen.** Der Compose-Default `:-16g` greift
+nur, wenn `MEMSWAP_LIMIT` in der Stack-Env **fehlt** — die Paste-Vorlage
+`remote/.env.production` setzt ihn aber explizit. Wer nur die Datei ändert,
+lässt den alten Wert 12g über die Vorlage in die Portainer-Stack-Env zurück —
+die Massnahme wirkt dann stillschweigend nicht.
+
+Der neue Wächter hat **zwei Trigger**:
+
+- **A) Container** — `anon + slab_unreclaimable` ≥ `RAM_WATCHDOG_THRESHOLD_PERCENT`
+  (85 %) von `memory.max`. Das ist die OOM-relevante Größe. Reaktion: SIGTERM an
+  PID 1, nach 30 s SIGKILL — ein geordneter Shutdown statt des abrupten
+  Kernel-Kills, dessen Opfer immer PID 1 wäre.
+- **B) Host** — `MemAvailable` des Hosts < `RAM_WATCHDOG_HOST_AVAILABLE_MB`
+  (1000 MB). `/proc/meminfo` im Container zeigt die **Host-Werte**
+  (verifiziert 2026-10-20: `MemTotal` 7832632 kB, identisch mit dem Host).
+  Der Wert von 1000 MB ist aus dem Incident abgeleitet: dort stand der Host
+  bei **783 MB** — die Schwelle muss diesen Zustand noch erfassen. Reaktion:
+  Eskalationsleiter — erst die **Speicherfresser-Kinder** beenden (CodeGraph-
+  MCP-Server, Dev-Server, Builds), sortiert nach **anon** (Private_Dirty), die
+  größten zuerst, bis die Zielsumme (`RAM_WATCHDOG_CHILD_RSS_MB` = 300 MB)
+  erreicht ist; erst als **letzte** Maßnahme PID 1. „Host soll immer leben,
+  notfalls der Container."
+- **Der Host-Swap ist Warnung, kein Eskalationsgrund.** Mit `swappiness=60` und
+  9 GiB Swap-Deckel ist ein Swap-Füllstand von mehreren GB der Normalzustand
+  jeder Lastspitze (live im Incident: 6,3 GB Swap bei 783 MB MemAvailable).
+  Er wird protokolliert (`RAM_WATCHDOG_HOST_MAX_SWAP_PERCENT` = 80 %), löst
+  aber nichts aus.
+
+**B3 wird nur ausgelöst, wenn code-dev auch schuld ist**
+(`RAM_WATCHDOG_CONTAINER_SHARE_MIN_PCT` = 50 %): Hält code-dev weniger als die
+Hälfte des Host-Speicherverbrauchs, kommt der Druck von außen (dind,
+Portal-Stack, dockerd) — ein Container-Neustart würde nichts freimachen und
+nur die Sitzung vernichten. Zusammen mit `RAM_WATCHDOG_HOST_HOLD_COUNT` = 3
+(Druck muss anhalten) und `RAM_WATCHDOG_STARTUP_GRACE_S` = 180 s (nichts direkt
+nach einem Neustart) kann die **Neustart-Schleife** damit nicht entstehen.
+
+**Verifikation (2026-10-20):** Die Codepfade sind gegen **Dummy-Prozesse**
+verifiziert, **nie gegen das echte PID 1** — in einem Wegwerf-Container, in dem
+PID 1 ein `sleep` mit gefälschtem argv[0] ist. Beleg:
+`HOST-DRUCK (1/3)` → `HOST-DRUCK (2/3)` → `HOST-DRUCK (3/3)` → Eskalation;
+`HOST-DRUCK, aber erst 0s nach Container-Start — keine Eskalation`;
+`B2: TERM an PID 20 (107940 kB, fakenode)` mit den beiden kleineren Dummies
+weiterhin am Leben.
+
+**Was dabei kaputtging (und im Repo dokumentiert ist):** der erste Testlauf
+fand im **Produktions-**Container statt, weil das Kind-Matching dort nicht
+neutralisiert war — die 4 realen CodeGraph-Server wurden beendet, und ein
+zweiter Testlauf schickte ein SIGTERM an das echte PID 1 (der Container startete
+neu). **Lehre: Trigger-Tests laufen ausschließlich in einem Wegwerf-Container,
+niemals gegen die laufende Instanz.** Siehe `agents.todo.md`.
+
+#### Was CodeGraph wirklich kostet
+
+Live am 2026-10-20 gemessen (`smaps_rollup`, nicht `ps`):
+
+| | RSS | davon **anon** |
+|---|---|---|
+| `opencode serve` (PID 1) | 566 MB | **426 MB** |
+| 4 × CodeGraph-MCP-Server | 440 MB | 230 MB |
+| 4 × CodeGraph-Bridge | 220 MB | 64 MB |
+| **CodeGraph gesamt** | **660 MB** | **294 MB** |
+
+Der Rest der 660 MB ist **mmap'd SQLite-Index + Node-Binary** — reclaimbarer
+Page-Cache, den der Kernel unter Druck fallen lässt. **opencode selbst ist mit
+426 MB anon der größere Posten.** Pro gleichzeitiger Session kostet CodeGraph
+~74 MB anon; bei 7 offenen Sessions sind das ~515 MB.
+
+Es gibt **kein** Deinstallieren-Empfehlung: die CLI-Alternative ist schlechter
+(`codegraph explore` per CLI: **276 MB Peak-RSS pro Aufruf**, 1,2 s — ein
+kompletter MCP-Server kostet dauerhaft 164 MB), und `codegraph serve` ohne
+`--mcp` startet **keinen** HTTP-Server (nur stdio) — ein geteilter Daemon für
+alle Sessions existiert in v1.6.2 nicht.
 
 ### Recreate ja, aber nicht um jeden Preis
 
@@ -518,7 +660,7 @@ liefern. Steigt `RestartCount` und zeigen die Logs `opencode watcher: neues
 Binary → Container-Neustart`, ist der Auto-Update-Watcher die Ursache; zum
 Testen vorübergehend `OPENCODE_AUTOUPDATE=false` setzen. `OOMKilled=true`
 hingegen spricht zuerst für das RAM-Limit, nicht für HTTP/2. Standard sind
-4096 MB RAM plus 4096 MB Swap (`MEMORY_LIMIT` / `MEMSWAP_LIMIT`); die Werte
+7168 MB RAM plus 9216 MB Swap (`MEMORY_LIMIT` / `MEMSWAP_LIMIT`); die Werte
 standen bis 2026-09-29 auf 2048/3072 und haben dabei reproduzierbar OOM-Kills
 ausgeloest, Grund und Messwerte siehe *RAM- und Swap-Limits*. Ein OOM bedeutet
 also **nicht**, dass beide erschöpft waren — der Swap-Deckel greift auf diesem

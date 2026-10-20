@@ -122,10 +122,36 @@ Siehe §14 — dort steht auch, warum dieser Pfad *nicht* unter
 - **`code-dev` hat kein harmloses Opfer — sein groesster Prozess ist PID 1**
   (`opencode serve`). PID 1 killen = der Container stirbt = `restart:
   unless-stopped` = **die Sitzung ist weg**. Nichts darf hier den PID-1-Pfad
-  ausloesen.
+  ausloesen — **ausser dem RAM-Waechter** (siehe unten).
 - **Die RAM-Limits dieses Stacks summieren sich gegen einen Host, der zugleich
   Produktion faehrt.** Wer hier "nur ein bisschen mehr" sagt, muss die Summe
   gegenrechnen, nicht den einzelnen Container.
+
+### Der RAM-Waechter schuetzt den Host — nicht den Container (Entscheidung 2026-10-20)
+
+Regeln fuer `remote/ram-watchdog.sh`:
+
+- **Nur der RAM-Waechter darf PID 1 beenden.** Kein anderer Pfad im Stack.
+- **Zwei Trigger, zwei Reihenfolgen:**
+  - *Container-Trigger* (`anon + slab_unreclaimable` gegen `memory.max`):
+    sofort SIGTERM an PID 1. Ersetzt den abrupten Kernel-OOM-Kill, dessen
+    Opfer immer PID 1 waere, durch einen geordneten Shutdown.
+  - *Host-Trigger* (`MemAvailable` des Hosts unter der Schwelle): erst die
+    Speicherfresser-Kinder beenden, **erst danach** PID 1.
+- **Nicht an `memory.current` messen.** Der Page-Cache zaehlt mit; wer nach
+  `memory.current` sortiert, trifft die falschen Prozesse. Fuer "welcher
+  Prozess frisst echten Speicher" gilt `anon` (Private_Dirty aus
+  `smaps_rollup`), nicht RSS.
+- **B3 (PID 1 beenden) nur, wenn der Container auch schuld ist.** Ist der
+  Host-Druck fremd (dind, Portal-Stack, dockerd), behebt ein Container-Neustart
+  nichts — er vernichtet nur die Sitzung und haelt die Schleife am Laufen.
+- **Kein Neustart im Kreis.** Der Host-Druck muss ueber mehrere Messungen
+  anhalten, und direkt nach einem Container-Neustart fasst der Waechter nichts
+  an.
+- **Der Host-Swap ist eine Warnung, kein Eskalationsgrund.**
+- **Nur PID 1 als Ziel.** Endet der Waechter auf einem Kindprozess, laeuft der
+  Container ohne Wächter weiter — das waere genau der Verlust, den die
+  Eskalation verhindern soll.
 
 ### Der RAM-Deckel wird an `anon` gemessen, nicht an `memory.current`
 

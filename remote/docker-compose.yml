@@ -34,13 +34,20 @@
 #   IMAGE               default ghcr.io/reisi007/opencode-web-dev-baseline:latest
 #   CPU_CORES           default 3: maximale CPU-Kerne fuer code-dev
 #   MEMORY_LIMIT        default 7g: RAM-Limit fuer code-dev
-#   MEMSWAP_LIMIT       default 12g: RAM+Swap GESAMT fuer code-dev (5 GB Swap).
+#   MEMSWAP_LIMIT       default 16g: RAM+Swap GESAMT fuer code-dev (9 GB Swap).
 #                         MUSS groesser sein als MEMORY_LIMIT, weil Docker
 #                         memory.swap.max = MEMSWAP_LIMIT - MEMORY_LIMIT setzt
-#                         (12g - 7g = 5 GB Swap).
+#                         (16g - 7g = 9 GB Swap).
 #                         Ohne diesen Wert ist der Swap-Deckel exakt
 #                         MEMORY_LIMIT. Details und Messwerte: README,
 #                         Abschnitt "RAM- und Swap-Limits".
+#   RAM_WATCHDOG_*      optional: Stellschrauben des RAM-Waechters, siehe
+#                         unten im environment-Block. LEER = Default.
+#                         Bewusst NICHT in .env.production: die Defaults sind
+#                         die einzige Quelle der Wahrheit, und ein Wert in der
+#                         Stack-Env wuerde nur eine zweite schaffen
+#                         (remote/AGENTS.md §9 Fall 2). Wer einen anderen Wert
+#                         braucht, setzt ihn in der Portainer-UI.
 #   DIND_MEMORY_LIMIT   default 1g: RAM-Limit fuer den dind-Daemon
 #                         Historie: 1300m -> 2.5g (2026-09-29, 2 OOM-Kills am
 #                         26.09.: dockerd und dd, beide im DinD-cgroup) -> 2g
@@ -127,8 +134,21 @@ services:
     # memswap_limit setzt man, um das VERHaelTNIS zu bestimmen und den
     # Gesamt-Fussabd (RAM+Swap) hart zu deckeln — nicht um Swap zu eroeffnen.
     #
-    # 7g RAM + 5g Swap = 12g gesamt (Historie: 2026-09-29 erst 2g/5g -> 3g/6g,
-    # dann 4g/8g, seit 2026-10-04 7g/12g).
+    # 7g RAM + 9g Swap = 16g gesamt (Historie: 2026-09-29 erst 2g/5g -> 3g/6g,
+    # dann 4g/8g, 2026-10-04 7g/12g, seit 2026-10-20 7g/16g).
+    #
+    # Warum 16g (Entscheidung 2026-10-20, nach dem Host-Haenger am 20.10.):
+    # Der RAM-Deckel bleibt bei 7g, weil die Dev-Tools im Container ihn
+    # brauchen. Stattdessen bekommt code-dev mehr Swap-Raum: 9 GB Swap, die
+    # der Kernel nutzen kann, BEVOR der Host unter Druck geraet. Ohne diesen
+    # Spielraum muss der Host swapen oder killen — am 20.10. hat er gekillt
+    # (Host 2 min 44 s eingefroren, harter Reset).
+    #
+    # Der Swapfile auf dem Host ist 16 GB (2026-10-20 von 10 GB auf 16 GB
+    # vergroessert), damit der Swap-Deckel hier real ist: dind darf 1 GB
+    # (2g - 1g), code-dev 9 GB, das sind 10 GB — der Rest ist Reserve fuer
+    # den Portal-Stack. Ohne Swapfile dieser Groesse ist der Deckel hier
+    # eine Liuege und der Host stirbt trotzdem.
     #
     # GRUND, gemessen am 2026-09-29 (Backup: *.bak-memlimit-20260929-141149):
     # Mit 2g RAM hat der cgroup-OOM-Killer in diesem Container 8x in 24h
@@ -140,13 +160,20 @@ services:
     # Opfer-Bilanz an einem Tag: 3x rustc, aber 5x opencode/PID 1.
     #
     # WICHTIG: das Swap-Sicherheitsnetz hat NIE gegriffen. memory.swap.current
-    # stand auf 0, obwohl 3g Swap erlaubt waren. Grund ist vm.swappiness=0 auf
-    # dem Host: der Kernel swapped erst, wenn RAM GLOBAL knapp wird (Host hatte
-    # 4,6 GB frei), also immer NACH der 2g-cgroup-Grenze. Die 2 GB wurden
-    # deshalb nie ueberschritten, ohne dass vorher der OOM-Killer zuschlug.
-    # Swap bleibt also Reserve, nicht Puffer — RAM-Deckel ist die eigentliche
-    # Stellschraube. Wer den Swap wirklich nutzen will, muss vm.swappiness
-    # hostweit hochsetzen; das wirkt dann aber auch auf Caddy/MariaDB.
+    # stand am 2026-10-20 beim Crash auf 0, obwohl 5g Swap erlaubt waren.
+    # Grund ist vm.swappiness=10 auf dem Host: der Kernel swapped erst, wenn
+    # RAM GLOBAL knapp wird, also immer NACH der cgroup-Grenze. Der Swapfile
+    # war die vollen 10 GB unberuehrt (SwapFree = 10485756 kB beim Crash).
+    # Der Swap war also Reserve, die nie gebraucht wurde — er wurde nie
+    # angefasst.
+    #
+    # KORREKTUR 2026-10-20: vm.swappiness war 10, NICHT 0 (das war eine
+    # Verwechslung mit vm.overcommit_memory; siehe remote/README.md). Der
+    # Host wurde auf swappiness=60 geaendert, damit der Swap jetzt WIRKLICH als
+    # Puffer arbeitet, BEVOR der Host am Anschlag ist — das ist die Umkehrung
+    # der obigen Erkenntnis: der Swap ist ab jetzt Puffer, nicht Reserve.
+    # Das wirkt auch auf Caddy/MariaDB — deren Working Set ist aber klein
+    # (172 MB MariaDB, 86 MB Caddy), die Last geht praktisch nur auf code-dev.
     #
     # NACHMESSUNG am 3g-Deckel (2026-09-29, 15:57-16:01): 0 OOM-Kills, aber
     # memory.peak = 3221229568 bei memory.max = 3221225472 — die Decel wurde
@@ -155,19 +182,33 @@ services:
     # konnte diesmal reclaimen statt zu killen. Deshalb 4g.
     #
     # ACHTUNG, die Rechnung geht ab hier deutlich ueber den Host:
-    #   code-dev 7g + dind 1g + Portal ~0,7g + OS/dockerd ~0,7g = ~9,4 GB
-    # bei 7,47 GB nutzbarem Host-RAM — rund 1,9 GB UEBER dem Host. Die beiden
+    #   code-dev 7g + dind 1g + Portal ~0,9g + OS/dockerd ~0,7g = ~9,6 GB
+    # bei 7,47 GB nutzbarem Host-RAM — rund 2,1 GB UEBER dem Host. Die beiden
     # Dev-Container erreichen ihre Deckeln moeglichst GLEICHZEITIG, weil der
     # Agent in code-dev per cargo baut und parallel im Daemon per docker baut.
     # Wenn beide wirklich an ihre Grenze gehen, feuert der HOST-OOM-Killer —
     # und der nimmt global den groessten Prozess, was mariadbd sein kann.
     # Das ist ein Produktionsausfall, weil ein Dev-Build zu gross war.
-    # Das Risiko wurde am 2026-09-29 bewusst so entschieden (Entscheidung des
-    # Menschen) und nicht durch Senken von dind entschaerft; dind wurde am
-    # 2026-10-04 trotzdem auf 1g gesenkt, weil code-dev 7g bekommen hat.
-    # Wer die Luft zurueckholen will, muss code-dev senken, nicht dind.
+    #
+    # AM 2026-10-20 IST DAS PASSIERT: um 16:05 stand code-dev bei 7,04 GB
+    # memory.current, der Host fror 2 min 44 s ein (rsyslog komplett stumm,
+    # dockerd konnte keine Health-Checks mehr forken) und wurde hart
+    # neugestartet. Die Ueberzeichnung ist damit keine Theorie mehr, sie ist
+    # der Ausloeser. Drei Massnahmen gegen den Haenger (2026-10-20):
+    #   1. memswap_limit 12g -> 16g: der Container darf in den Swap ausweichen.
+    #   2. vm.swappiness 10 -> 60 auf dem Host: der Swap wird auch benutzt.
+    #   3. ram-watchdog.sh schuetzt jetzt den HOST (MemAvailable) und nicht
+    #      mehr den cgroup-Deckel: bei Host-Druck werden zuerst die
+    #      Speicherfresser-Kinder beendet (CodeGraph-MCP-Server, Dev-Server,
+    #      Builds) und erst als LETZTE Massnahme opencode/PID 1 — Session weg,
+    #      Host lebt. Der alte Waechter loeste bei 90 % von 7g = 6,3 GiB aus;
+    #      das ist 6,3 GiB bei 7,47 GiB Host-RAM, also war der Host da
+    #      bereits ueberzeichnet — die Rettung kam zu spaet.
+    # Der RAM-Deckel selbst bleibt bei 7g (Nutzer-Entscheidung 2026-10-20:
+    # "die Dev Tools darin brauchen leider den ram"). Der ueberzeichnete
+    # Teil wird also ueber den Swap ausgeglichen, nicht ueber weniger RAM.
     mem_limit: ${MEMORY_LIMIT:-7g}
-    memswap_limit: ${MEMSWAP_LIMIT:-12g}
+    memswap_limit: ${MEMSWAP_LIMIT:-16g}
     environment:
       # OPENCODE_PASSWORD ist der aktuelle Name; OPENCODE_SERVER_PASSWORD bleibt
       # als Legacy-Fallback für Entrypoint/Caddy und ältere OpenCode-Versionen.
@@ -197,6 +238,35 @@ services:
       # `diffusers` gelesen — damit ist kein `hf auth login` noetig, und der
       # Token liegt nicht in ~/.cache, das kein Volume ist.
       - HF_TOKEN=${HF_TOKEN}
+      # RAM-Waechter (remote/ram-watchdog.sh). Bewusst OHNE `:-`-Default:
+      # leer reicht bis zum Skript durch, das seine Defaults selbst haelt —
+      # sonst waere der Compose-Wert eine zweite Quelle der Wahrheit und
+      # wuerde den Skript-Default still ueberstimmen (AGENTS.md §9 Fall 2).
+      # LEER = Skript-Default, also harmlos (AGENTS.md §18).
+      # Der Waechter hat zwei Trigger:
+      #   A) cgroup-anon (RAM OHNE Page-Cache) >= THRESHOLD_PERCENT -> SIGTERM
+      #      an opencode/PID 1. Das ersetzt den abrupten Kernel-OOM-Kill, dessen
+      #      Opfer immer PID 1 waere, durch einen geordneten Shutdown.
+      #   B) HOST-DRUCK: MemAvailable < HOST_AVAILABLE_MB -> Eskalation: erst
+      #      Speicherfresser-Kinder beenden (nach anon sortiert, groesste
+      #      zuerst), dann opencode/PID 1 — aber NUR wenn code-dev auch
+      #      nennenswert am Host-Verbrauch beteiligt ist (CONTAINER_SHARE_MIN_PCT).
+      #      "Host soll immer leben, notfalls der Container."
+      - RAM_WATCHDOG_ENABLED=${RAM_WATCHDOG_ENABLED:-true}
+      - RAM_WATCHDOG_THRESHOLD_PERCENT=${RAM_WATCHDOG_THRESHOLD_PERCENT}
+      - RAM_WATCHDOG_HOST_AVAILABLE_MB=${RAM_WATCHDOG_HOST_AVAILABLE_MB}
+      - RAM_WATCHDOG_CONTAINER_SHARE_MIN_PCT=${RAM_WATCHDOG_CONTAINER_SHARE_MIN_PCT}
+      - RAM_WATCHDOG_HOST_MAX_SWAP_PERCENT=${RAM_WATCHDOG_HOST_MAX_SWAP_PERCENT}
+      - RAM_WATCHDOG_HOST_HOLD_COUNT=${RAM_WATCHDOG_HOST_HOLD_COUNT}
+      - RAM_WATCHDOG_STARTUP_GRACE_S=${RAM_WATCHDOG_STARTUP_GRACE_S}
+      - RAM_WATCHDOG_CHILD_RSS_MB=${RAM_WATCHDOG_CHILD_RSS_MB}
+      - RAM_WATCHDOG_CHILD_MIN_RSS_MB=${RAM_WATCHDOG_CHILD_MIN_RSS_MB}
+      - RAM_WATCHDOG_CHILD_MAX_COUNT=${RAM_WATCHDOG_CHILD_MAX_COUNT}
+      - RAM_WATCHDOG_CHILD_GRACE_S=${RAM_WATCHDOG_CHILD_GRACE_S}
+      - RAM_WATCHDOG_GRACE_PERIOD=${RAM_WATCHDOG_GRACE_PERIOD}
+      - RAM_WATCHDOG_POLL_INTERVAL=${RAM_WATCHDOG_POLL_INTERVAL}
+      - RAM_WATCHDOG_STARTUP_WAIT_S=${RAM_WATCHDOG_STARTUP_WAIT_S}
+      - RAM_WATCHDOG_CGROUP_DIR=${RAM_WATCHDOG_CGROUP_DIR}
     # Bewusst KEIN extra_hosts: 127.0.0.1 ist im Container der Container,
     # nicht der VPS. host-gateway loest dieses Problem nicht, es oeffnet
     # nur den Host. Ein Dev-Server (z. B. `pnpm dev`) laeuft direkt in

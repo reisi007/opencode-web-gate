@@ -161,10 +161,20 @@ RUN groupadd -g "$DEV_GID" dev 2>/dev/null || true \
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-# RAM-Waechter (2026-10-02). Ersetzt keinen RAM-Deckel, sondern greift EINMAL
-# vorher: schickt SIGTERM an opencode serve, wenn die cgroup den RAM-Deckel
-# erreichen wird. opencode beendet sich dann selbst und kann aufraeumen, statt
-# vom cgroup-OOM-Killer abgeräumt zu werden.
+# RAM-Waechter (2026-10-02; am 2026-10-20 umgebaut). Er ersetzt keinen
+# RAM-Deckel, sondern greift vorher ein — und schuetzt inzwischen den HOST,
+# nicht den Container.
+#
+# Zwei Trigger:
+#   A) cgroup: `anon + slab_unreclamable` (NICHT `memory.current` — das zaehlt
+#      den reclaimbaren Page-Cache mit) gegen `memory.max`. Dann SIGTERM an
+#      opencode serve: es beendet sich selbst und kann aufraeumen, statt vom
+#      cgroup-OOM-Killer abgeraeumt zu werden.
+#   B) Host: `MemAvailable` des Hosts unter der Schwelle oder der Host-Swap
+#      ueber seinem Schwellwert. Dann Eskalation: erst die Speicherfresser-
+#      Kinder beenden (CodeGraph-MCP-Server, Dev-Server, Builds — die grössten
+#      zuerst), erst als LETZTE Stufe opencode/PID 1. "Host soll immer leben,
+#      notfalls der Container."
 #
 # Warum ueberhaupt: Der Kernel killt im cgroup den GROESSTEN Prozess, und das
 # ist haeufig `opencode serve` (PID 1, ~390 MB stabiler Grundbedarf) — nicht
@@ -174,6 +184,13 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 #   13:21:33  Killed opencode  (anon-rss 427 MB)  ← 10 Minuten spaeter, PID 1
 # Der zweite Kill riss die laufende Sitzung weg. Der Waechter macht daraus
 # einen geordneten Shutdown mit Restart, BEVOR der Kernel zuschlaegt.
+#
+# Warum der Umbau am 2026-10-20 noetig war: der alte Waechter mass
+# `memory.current` und loeste bei 90 % von 7 GiB = 6,3 GiB aus — bei
+# 7,47 GiB nutzbarem Host-RAM war der Host da bereits ueberzeichnet. Am
+# 2026-10-20 um 16:05 hat der Waechter opencode beendet und der Host ist
+# trotzdem 2 min 44 s eingefroren und hart neugestartet worden. Der Container
+# allein ist nicht das, was geschuetzt werden muss.
 #
 # Warum er im IMAGE liegt und nicht auf dem Host: er muss opencode im
 # PID-Namespace des CONTAINERS erreichen (dort ist es PID 1). Ein Host-Skript
@@ -190,6 +207,9 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 # Live verifiziert am 2026-10-02 gegen den laufenden Container: findet PID 1,
 # liest echte cgroup-Werte, loest bei Schwelle aus, SIGTERM bei kooperativem
 # Prozess -> sauber beendet, SIGTERM ignoriert -> Eskalation auf SIGKILL.
+# Verifiziert am 2026-10-20 (Umbau) ausschliesslich gegen Dummy-Prozesse in
+# einem Wegwerf-Container, NIE gegen das echte PID 1: alle Codepfade
+# (Container-Trigger, Host-Trigger, Eskalationsleiter, Neustart-Schutz).
 COPY ram-watchdog.sh /usr/local/bin/ram-watchdog.sh
 RUN chmod +x /usr/local/bin/ram-watchdog.sh
 
