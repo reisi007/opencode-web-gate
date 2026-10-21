@@ -3,6 +3,49 @@
 Offene, nicht triviale Punkte und Blockaden. Einträge werden erst nach einem
 unabhängigen Review und erfolgreicher Verifikation entfernt.
 
+## 2026-10-21
+
+- [ ] **RAM-Wächter ist ausgerollt — die Speichergrenzen des Containers passen
+  aber nicht zum Repo-Stand.** Der Eigentümer hat den `code-dev`-Stack am
+  2026-10-21 in Portainer neu deployed; der Container wurde dabei recreatet.
+  **Vorher gemessen** (Container vor dem Recreate):
+  `/usr/local/bin/ram-watchdog.sh` war **byte-identisch mit `HEAD~1`** der
+  Repo-Version (`md5 65a5784462dea6df21fa5fb6d4c2ed39`) und **nicht** mit der
+  neuen (`44eec8fc5dd8b32db4edb1d44009b924`); `memory.max` 7,0 GiB bei
+  `memory.swap.max` 5,0 GiB (= `mem_limit: 7g`, `memswap_limit: 12g`).
+  **Nachher gemessen:** Skript-Hash `44eec8fc…` (= HEAD), neuer
+  Wächter-Prozess, `memory.current` 1,2 GiB. Die `RAM_WATCHDOG_*`-
+  Stellschrauben sind weder im alten noch im neuen Container gesetzt (0
+  Treffer in `/proc/1/environ`) — der neue Wächter läuft deshalb mit seinen
+  eigenen Defaults (Schwelle 85 %, Host-Auslöser 1000 MB, Container-Anteil
+  50 %, `HOLD_COUNT` 3). Das ist so vorgesehen („LEER = Default").
+
+  **Der alte Wächter hat am 2026-10-21 erneut zugeschlagen.** `MemAvailable`
+  fiel auf 795.636 kB, weil rund zehn `tsc --noEmit`-Läufe in
+  `/projects/noema-wt/B*` liefen (die neun größten zusammen 4.776.644 kB RSS).
+  Die alte Regel SIGTERMt in diesem Zustand **PID 1**
+  (`memory.current` ≥ 90 %) — also den ganzen Container und **alle** Sessions
+  darin. Gemessene Folge: laufende Verifikations-Sessions wurden mehrfach
+  suspendiert, einmal mit 15,5 h Abstand. Die neue Version hätte in
+  derselben Lage die Speicherfresser-**Kinder** beendet (B2, nach anon
+  sortiert) und PID 1 erst bei ≥ 50 % Container-Anteil. Der Druck kam hier
+  aus `code-dev` selbst — die noema-Worktrees laufen im Container — also der
+  B3-Fall, aber erst **nach** dem Kinder-Schritt.
+
+  **Offen: die Speichergrenzen.** Der recreatete Container hat `memory.max` =
+  **5,0 GiB** und `memory.swap.max` = **4,0 GiB** (9 GiB gesamt). Das ist
+  weder der Repo-Default (`7g` RAM, `16g` gesamt → 7 GiB / 9 GiB) noch der
+  Vor-Stand (`7g`/`12g` → 7 GiB / 5 GiB). Der Stack-Env enthält also
+  explizit `MEMORY_LIMIT=5g` und `MEMSWAP_LIMIT=9g` und überschreibt damit
+  beide Compose-Defaults — genau der Fall, vor dem die Position vom
+  2026-10-20 warnt („sonst wirkt die Maßnahme beim nächsten Paste
+  stillschweigend nicht"). **Folge:** der RAM-Deckel ist 2 GiB kleiner (für
+  den Host gut — 5 GiB statt 7 GiB gegen 7,47 GiB nutzbares Host-RAM), aber
+  der Swap-Deckel des Containers ist 4 GiB statt der 9 GiB, die der Fix
+  vorsah. **Entscheidung des Eigentümers nötig:** ist `MEMSWAP_LIMIT=9g`
+  Absicht (Host schonen, 4 GiB Swap reichen) oder soll der Stack-Env auf
+  `16g`?
+
 ## 2026-10-20
 
 - [ ] **Host-Hänger am 2026-10-20, 16:05:52–16:08:36 CEST — die Ursache ist
