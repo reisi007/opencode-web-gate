@@ -33,11 +33,23 @@
 #   SESSION_TTL         default 43200
 #   IMAGE               default ghcr.io/reisi007/opencode-web-dev-baseline:latest
 #   CPU_CORES           default 3: maximale CPU-Kerne fuer code-dev
-#   MEMORY_LIMIT        default 7g: RAM-Limit fuer code-dev
-#   MEMSWAP_LIMIT       default 16g: RAM+Swap GESAMT fuer code-dev (9 GB Swap).
+#   MEMORY_LIMIT        default 5g: RAM-Limit fuer code-dev
+#   MEMSWAP_LIMIT       default 9g: RAM+Swap GESAMT fuer code-dev (4 GB Swap).
+#                         Owner-Entscheidung 2026-10-21: der GESAMT-Deckel ist
+#                         9g, nicht 16g — der Host soll geschont werden,
+#                         4 GiB Swap reichen. Das ist die seit dem Recreate
+#                         vom 2026-10-21 gemessene und in Betrieb befindliche
+#                         Konfiguration (Stack-Env: 5g/9g).
+#                         Die Kopplung zwingt den RAM-Fallback mit: 5g RAM
+#                         + 4g Swap = 9g gesamt. Ein blinder Wechsel nur auf
+#                         MEMSWAP_LIMIT liefe bei 7g RAM auf 2 GiB Swap —
+#                         weniger als die gemessene Reserve (4 GiB) und
+#                         weniger als der bisherige Fallback (9 GiB).
 #                         MUSS groesser sein als MEMORY_LIMIT, weil Docker
 #                         memory.swap.max = MEMSWAP_LIMIT - MEMORY_LIMIT setzt
-#                         (16g - 7g = 9 GB Swap).
+#                         (9g - 5g = 4 GB Swap). Formel woertlich aus
+#                         remote/README.md, Abschnitt "RAM- und Swap-Limits":
+#                         "Formel: memory.swap.max = memswap_limit − mem_limit."
 #                         Ohne diesen Wert ist der Swap-Deckel exakt
 #                         MEMORY_LIMIT. Details und Messwerte: README,
 #                         Abschnitt "RAM- und Swap-Limits".
@@ -157,19 +169,31 @@ services:
     # memswap_limit setzt man, um das VERHaelTNIS zu bestimmen und den
     # Gesamt-Fussabd (RAM+Swap) hart zu deckeln — nicht um Swap zu eroeffnen.
     #
-    # 7g RAM + 9g Swap = 16g gesamt (Historie: 2026-09-29 erst 2g/5g -> 3g/6g,
-    # dann 4g/8g, 2026-10-04 7g/12g, seit 2026-10-20 7g/16g).
+    # 5g RAM + 4g Swap = 9g gesamt (Historie: 2026-09-29 erst 2g/5g -> 3g/6g,
+    # dann 4g/8g, 2026-10-04 7g/12g, 2026-10-20 7g/16g, seit 2026-10-21 5g/9g).
     #
     # Warum 16g (Entscheidung 2026-10-20, nach dem Host-Haenger am 20.10.):
-    # Der RAM-Deckel bleibt bei 7g, weil die Dev-Tools im Container ihn
+    # Der RAM-Deckel blieb bei 7g, weil die Dev-Tools im Container ihn
     # brauchen. Stattdessen bekommt code-dev mehr Swap-Raum: 9 GB Swap, die
     # der Kernel nutzen kann, BEVOR der Host unter Druck geraet. Ohne diesen
     # Spielraum muss der Host swapen oder killen — am 20.10. hat er gekillt
     # (Host 2 min 44 s eingefroren, harter Reset).
     #
+    # ENTSCHEIDUNG 2026-10-21 (Owner): der GESAMT-Deckel ist 9g, nicht 16g.
+    # Begruendung: der Host soll geschont werden, 4 GiB Swap reichen. Das ist
+    # die seit dem Recreate vom 2026-10-21 GEMESSENE und in Betrieb
+    # befindliche Konfiguration (Stack-Env: MEMORY_LIMIT=5g,
+    # MEMSWAP_LIMIT=9g -> memory.max 5,0 GiB, memory.swap.max 4,0 GiB).
+    # Wegen der Kopplung (Formel oben) wandert der RAM-Fallback mit: 5g RAM
+    # + 4g Swap = 9g gesamt. Ein blinder Wechsel nur auf MEMSWAP_LIMIT
+    # haette bei 7g RAM nur 2 GiB Swap gelassen — weniger als die gemessene
+    # Reserve (4 GiB) und weniger als der bisherige Fallback (9 GiB). Der
+    # Container bekommt damit 2 GiB WENIGER RAM (fuer den Host gut, er hat
+    # 7,47 GiB nutzbar), die Swap-Reserve bleibt bei 4 GiB.
+    #
     # Der Swapfile auf dem Host ist 16 GB (2026-10-20 von 10 GB auf 16 GB
     # vergroessert), damit der Swap-Deckel hier real ist: dind darf 1 GB
-    # (2g - 1g), code-dev 9 GB, das sind 10 GB — der Rest ist Reserve fuer
+    # (2g - 1g), code-dev 4 GB, das sind 5 GB — der Rest ist Reserve fuer
     # den Portal-Stack. Ohne Swapfile dieser Groesse ist der Deckel hier
     # eine Liuege und der Host stirbt trotzdem.
     #
@@ -231,11 +255,20 @@ services:
     #      Der alte Waechter loeste bei 90 % von 7g = 6,3 GiB
     #      aus; das ist 6,3 GiB bei 7,47 GiB Host-RAM, also war der Host da
     #      bereits ueberzeichnet — die Rettung kam zu spaet.
-    # Der RAM-Deckel selbst bleibt bei 7g (Nutzer-Entscheidung 2026-10-20:
+    # Der RAM-Deckel selbst blieb bei 7g (Nutzer-Entscheidung 2026-10-20:
     # "die Dev Tools darin brauchen leider den ram"). Der ueberzeichnete
-    # Teil wird also ueber den Swap ausgeglichen, nicht ueber weniger RAM.
-    mem_limit: ${MEMORY_LIMIT:-7g}
-    memswap_limit: ${MEMSWAP_LIMIT:-16g}
+    # Teil wurde also ueber den Swap ausgeglichen, nicht ueber weniger RAM.
+    #
+    # STAND 2026-10-21 (Owner-Entscheidung, s. o.): beides ist anders. Der
+    # RAM-Deckel liegt jetzt bei 5g, der Gesamt-Deckel bei 9g, also
+    #   code-dev 5g + dind 1g + Portal ~0,9g + OS/dockerd ~0,7g = ~7,6 GB
+    # bei 7,47 GB nutzbarem Host-RAM — rund 0,1 GB ueber dem Host statt
+    # 2,1 GB. Die Restdifferenz faengt der Swap (4 GiB Deckel fuer code-dev),
+    # der Host bekommt 2 GiB mehr Luft als mit dem 7g-Deckel. Der RAM-Deckel
+    # liegt damit wieder UNTER dem nutzbaren Host-RAM — genau das war das
+    # Ziel der Entscheidung ("Host schonen").
+    mem_limit: ${MEMORY_LIMIT:-5g}
+    memswap_limit: ${MEMSWAP_LIMIT:-9g}
     environment:
       # OPENCODE_PASSWORD ist der aktuelle Name; OPENCODE_SERVER_PASSWORD bleibt
       # als Legacy-Fallback für Entrypoint/Caddy und ältere OpenCode-Versionen.
@@ -393,6 +426,13 @@ services:
     # Beide erreichen ihre Deckel moeglichst GLEICHZEITIG, weil der Agent in
     # code-dev per cargo baut und parallel im Daemon per docker baut. Wer hier
     # mehr Luft braucht, muss code-dev senken, nicht dind.
+    #
+    # STAND 2026-10-21: code-dev liegt wieder bei 5g RAM (Owner-Entscheidung,
+    # s. o.), damit summieren sich die RAM-Deckel auf ~7,4 GB bei 7,47 GB
+    # nutzbarem Host-RAM — der dind-Deckel 1g muss also nicht mehr gegen
+    # eine 2-GB-Ueberzeichnung des Hosts verteidigt werden. Die dind-Werte
+    # (1g RAM / 2g gesamt) bleiben unberuehrt, der RAM_WATCHDOG_*-Block
+    # ebenfalls.
     mem_limit: ${DIND_MEMORY_LIMIT:-1g}
     memswap_limit: ${DIND_MEMSWAP_LIMIT:-2g}
     # Die drei Eintraege sind NOTWENDIG, nicht Kosmetik — jeweils einzeln

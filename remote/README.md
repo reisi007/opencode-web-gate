@@ -8,17 +8,17 @@
 * Stack `code-remote` (`docker-compose.yml` hier): `code-dev` + isolierter
   `dind`-Daemon + eigener `code-auth-remote`. Nur Netz `code-remote` — kein `webnet`,
   daher keine Prod-Container per Name erreichbar, Internet via NAT ok.
-  `code-dev` ist standardmäßig auf 3 CPU-Kerne, **7 GB RAM plus 9 GB Swap**
+  `code-dev` ist standardmäßig auf 3 CPU-Kerne, **5 GB RAM plus 4 GB Swap**
   begrenzt; über `CPU_CORES`, `MEMORY_LIMIT` und `MEMSWAP_LIMIT` im
   Stack-Environment anpassbar. Wichtig: `memswap_limit` muss größer sein als
   `mem_limit`, sonst ist der Swap-Deckel exakt so hoch wie das RAM-Limit.
-  Wichtig für die Rechnung: `memswap_limit` ist der **Gesamt**-Deckel, bei 7g/16g
-  also 7 GB RAM plus 9 GB Swap-Puffer — Swap ist ab dem 2026-10-20 **Puffer,
-  nicht Reserve**: er soll den RAM-Deckel abfedern, weil der Deckel über dem
-  nutzbaren Host-RAM liegt. Der RAM-Deckel liegt bewusst über dem nutzbaren
-  Host-RAM (7,47 GiB): die Differenz wird über Swap ausgeglichen, nicht über
-  weniger RAM (Entscheidung 2026-10-20). Siehe *RAM- und
-  Swap-Limits*.
+  Wichtig für die Rechnung: `memswap_limit` ist der **Gesamt**-Deckel, bei 5g/9g
+  also 5 GB RAM plus 4 GB Swap-Puffer — Swap ist ab dem 2026-10-20 **Puffer,
+  nicht Reserve**: er fängt Lastspitzen ab, wenn RAM global knapp wird. Der
+  RAM-Deckel liegt seit dem **2026-10-21** wieder **unter** dem nutzbaren
+  Host-RAM (7,47 GiB) — 5 GB statt 7 GB, weil der Host geschont werden soll
+  (Owner-Entscheidung; Begründung und Messwerte in *RAM- und
+  Swap-Limits*).
   **Kein Host-Zugriff:** `code-dev` hat bewusst *kein* `extra_hosts` und
   erreicht den VPS nicht. `127.0.0.1` ist der Container selbst — ein
   Dev-Server laeuft daher direkt in `code-dev` und ist sofort ueber
@@ -251,35 +251,72 @@ Deckel ist exakt `mem_limit`. `memswap_limit` setzt man also nicht, um Swap zu
 eroeffnen, sondern um das **Verhaeltnis** zu bestimmen und den Gesamt-Fussabd
 hart zu deckeln.
 
-Aktuelles Budget (**Zielzustand nach dem Rollout vom 2026-10-20**; live auf
-dem VPS steht `code-dev` noch auf dem alten 12-g-Deckel, bis der Stack neu
-deployt ist):
+Aktuelles Budget (**Werte in Kraft seit dem 2026-10-21**):
 
 | Container | RAM | Swap | gesamt | cpus |
 |---|---|---|---|---|
-| `code-dev` | 7168 MB | 9216 MB | 16384 MB | 3 |
+| `code-dev` | 5120 MB | 4096 MB | 9216 MB | 3 |
 | `code-remote-dind` | 1024 MB | 1024 MB | 2048 MB | 2 |
 | `code-auth-remote` | unbegrenzt | — | — | — |
-| **Summe** | **8192 MB** | **10240 MB** | **18432 MB** | |
-
-**Die Summe der RAM-Limits (8192 MiB = 8,0 GiB) liegt über den 7,47 GiB
-nutzbarem Host-RAM** — zusammen mit Portal (~0,9 GiB) und OS/dockerd (~0,7 GiB)
-sind das ~9,6 GiB, rund 2,1 GiB **über** dem Host. Das ist **kein
-Rechenfehler, sondern der dokumentierte Preis**: der RAM-Deckel bleibt auf 7g,
-weil die Dev-Tools ihn brauchen (Nutzer-Entscheidung 2026-10-20). Die Differenz
-wird über **Swap** ausgeglichen, nicht über weniger RAM — siehe „Der
-Host-Hänger vom 2026-10-20“ unten.
+| **Summe** | **6144 MB** | **5120 MB** | **11264 MB** | |
 
 `code-auth-remote` bleibt bewusst unbegrenzt — real 11 MB, und ein Deckel
 wuerde nur Aerger machen.
 
-RAM ist bei `code-dev` knapper als Swap, beim DinD umgekehrt: Builds im Daemon
-sind Batch-Arbeit, Latenz ist egal. **Seit 2026-10-20 ist Swap für `code-dev`
-aber ausdrücklich eingeplant** — der RAM-Deckel liegt über dem nutzbaren
-Host-RAM, die Differenz wird über Swap ausgeglichen. „`code-dev` soll nicht
-swappen" gilt ab hier nicht mehr.
+**Die Summe der RAM-Limits (6144 MiB = 6,0 GiB) liegt jetzt unter den 7,47 GiB
+nutzbaren Host-RAM** — zusammen mit Portal (~0,9 GiB) und OS/dockerd (~0,7 GiB)
+sind das ~7,6 GiB, rund 0,1 GiB **über** dem Host. Gegenüber dem Stand vom
+2026-10-20 (7g RAM / 9 GiB Swap, ~2,1 GiB über dem Host) sind das rund
+**2 GiB weniger Überschuss**. Die Restdifferenz wird über **Swap**
+ausgeglichen, nicht über weniger RAM — siehe „Der Host-Hänger vom 2026-10-20“
+unten.
 
-### Warum 2 GB nicht gereicht haben — und warum 3 GB auch noch nicht reichten
+RAM und Swap liegen bei `code-dev` bei 5 GiB / 4 GiB, beim DinD bei 1 GiB /
+1 GiB: Builds im Daemon sind Batch-Arbeit, Latenz ist egal. **Seit 2026-10-20
+ist Swap für `code-dev` ausdrücklich eingeplant** — er ist Puffer, nicht
+Reserve. Seit dem 2026-10-21 liegt der RAM-Deckel (5 GiB) **unter** dem
+nutzbaren Host-RAM (7,47 GiB); der Swap-Puffer fängt die Restdifferenz und
+Lastspitzen ab. „`code-dev` soll nicht swappen" gilt ab hier nicht mehr.
+
+#### Die Owner-Entscheidung vom 2026-10-21: Gesamt-Deckel 9 g
+
+**`MEMSWAP_LIMIT` = 9 g — nicht 16 g.** Begründung des Eigentümers: der Host
+soll geschont werden, 4 GiB Swap reichen. Das ist die seit dem Recreate vom
+2026-10-21 **gemessene** Konfiguration, die in Betrieb ist — der recreatete
+Container hatte `memory.max` = **5,0 GiB** und `memory.swap.max` = **4,0 GiB**,
+also 9 GiB gesamt.
+
+Drei Belegungen, ein Wert:
+
+| Beleg | RAM | Gesamt (`MEMSWAP_LIMIT`) | Swap (`= memswap_limit − mem_limit`) |
+|---|---|---|---|
+| Compose-Fallback (`remote/docker-compose.yml`) | `5g` | `9g` | 4 GiB |
+| `.env.example` (Paste-Vorlage) | `5g` | `9g` | 4 GiB |
+| laufender Stack-Env (Portainer, 2026-10-21) | `5g` | `9g` | 4 GiB |
+
+**Die Kopplung ist der Grund, warum nicht nur eine Zahl geändert wurde.**
+`MEMSWAP_LIMIT` ist der **Gesamt**-Deckel, der Swap-Deckel ist
+`memswap_limit − mem_limit` (Formel oben). Ein blinder Wechsel nur auf
+`MEMSWAP_LIMIT` hätte bei unverändertem `MEMORY_LIMIT=7g` nur **2 GiB** Swap
+gelassen — weniger als die gemessene Reserve (4 GiB) und weniger als der
+bisherige Fallback (9 GiB). Deshalb wandert der RAM-Fallback mit:
+**5 GiB RAM + 4 GiB Swap = 9 GiB gesamt**. Der alte Fallback 7g/16g ist damit
+**ersetzt**, nicht nur die eine Zahl.
+
+**Merke für den nächsten Paste:** der Compose-Default greift nur, wenn
+`MEMORY_LIMIT`/`MEMSWAP_LIMIT` in der Stack-Env **fehlen**. Die
+Portainer-Vorlage `remote/.env.production` (gitignored, nicht im Repo) muss
+deshalb dieselben Werte tragen — sonst überschreibt sie den Fallback wieder
+und die Maßnahme wirkt stillschweigend nicht.
+
+**Was das materiell ändert:** eine Installation **ohne** Stack-Env bekommt
+künftig **5 GiB** Container-RAM statt **7 GiB** — 2 GiB **weniger** RAM für
+den Container und **mehr** für den Host (7,47 GiB nutzbar). Die
+**Swap-Reserve bleibt bei 4 GiB** (statt 2 GiB bei einem blinden
+`MEMSWAP_LIMIT`-Wechsel). Das ist die gewollte Richtung („Host schonen") und
+**keine** Verschlechterung der Swap-Reserve.
+
+### Warum 2 GB nicht gereicht haben — und warum 3 GB auch noch nicht reichen
 
 Am 2026-09-29 gemessen: **8 cgroup-OOM-Kills in 24 Stunden, alle in `code-dev`**,
 kein anderer Container auffaellig. Ausloeser war jedes Mal ein `cargo build` —
@@ -438,6 +475,15 @@ nur, wenn `MEMSWAP_LIMIT` in der Stack-Env **fehlt** — die Paste-Vorlage
 `remote/.env.production` setzt ihn aber explizit. Wer nur die Datei ändert,
 lässt den alten Wert 12g über die Vorlage in die Portainer-Stack-Env zurück —
 die Massnahme wirkt dann stillschweigend nicht.
+
+> **Stand 2026-10-21:** Diese Drift-Stelle ist geschlossen. Der Compose-Default
+> lautet jetzt `MEMORY_LIMIT:-5g` / `MEMSWAP_LIMIT:-9g`, die Vorlage
+> `.env.example` nennt dieselben Werte, und der laufende Stack-Env ebenfalls —
+> alle drei Belegungen sind deckungsgleich (5 GiB RAM + 4 GiB Swap). Der
+> historische Wert 16g oben beschreibt den Stand vom 2026-10-20; die
+> Owner-Entscheidung vom 2026-10-21 hat ihn auf 9g **zurückgenommen** (Host
+> schonen, 4 GiB Swap reichen). Details: „Die Owner-Entscheidung vom
+> 2026-10-21" oben.
 
 Der neue Wächter hat **zwei Trigger**:
 
@@ -691,7 +737,7 @@ liefern. Steigt `RestartCount` und zeigen die Logs `opencode watcher: neues
 Binary → Container-Neustart`, ist der Auto-Update-Watcher die Ursache; zum
 Testen vorübergehend `OPENCODE_AUTOUPDATE=false` setzen. `OOMKilled=true`
 hingegen spricht zuerst für das RAM-Limit, nicht für HTTP/2. Standard sind
-7168 MB RAM plus 9216 MB Swap (`MEMORY_LIMIT` / `MEMSWAP_LIMIT`); die Werte
+5120 MB RAM plus 4096 MB Swap (`MEMORY_LIMIT` / `MEMSWAP_LIMIT`); die Werte
 standen bis 2026-09-29 auf 2048/3072 und haben dabei reproduzierbar OOM-Kills
 ausgeloest, Grund und Messwerte siehe *RAM- und Swap-Limits*. Ein OOM bedeutet
 also **nicht**, dass beide erschöpft waren — der Swap-Deckel greift auf diesem

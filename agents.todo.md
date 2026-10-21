@@ -61,7 +61,7 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   und mit dem nächsten Image-Build veröffentlichen (der Kommentar steht so im
   aktuellen Image).
 
-- [ ] **RAM-Wächter ist ausgerollt — die Speichergrenzen des Containers passen
+- [x] **RAM-Wächter ist ausgerollt — die Speichergrenzen des Containers passen
   aber nicht zum Repo-Stand.** Der Eigentümer hat den `code-dev`-Stack am
   2026-10-21 in Portainer neu deployed; der Container wurde dabei recreatet.
   **Vorher gemessen** (Container vor dem Recreate):
@@ -103,6 +103,28 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   vorsah. **Entscheidung des Eigentümers nötig:** ist `MEMSWAP_LIMIT=9g`
   Absicht (Host schonen, 4 GiB Swap reichen) oder soll der Stack-Env auf
   `16g`?
+
+  **Entschieden am 2026-10-21 (Owner):** `MEMSWAP_LIMIT=9g` ist **Absicht** —
+  der Host soll geschont werden, 4 GiB Swap reichen. Der **Gesamt-Deckel ist
+  9 g** (5 GiB RAM + 4 GiB Swap), exakt die seit dem Recreate vom 2026-10-21
+  **gemessene** und in Betrieb befindliche Konfiguration. **Folge für den
+  Compose-Fallback:** das Paar `MEMORY_LIMIT:-7g` / `MEMSWAP_LIMIT:-16g` wurde
+  durch `MEMORY_LIMIT:-5g` / `MEMSWAP_LIMIT:-9g` **ersetzt** (nicht nur die
+  eine Zahl). Grund ist die Kopplung: `MEMSWAP_LIMIT` ist der Gesamt-Deckel,
+  der Swap-Deckel ist `memswap_limit − mem_limit` (remote/README.md,
+  „RAM- und Swap-Limits"). Bei `MEMSWAP_LIMIT=9g` und `MEMORY_LIMIT=7g` wären
+  es nur **2 GiB** Swap gewesen — weniger als die gemessene Reserve (4 GiB)
+  und weniger als der bisherige Fallback (9 GiB). Mit 5g/9g ergibt sich
+  **9g − 5g = 4 GiB Swap**, also exakt `.env.example` und exakt der laufende
+  Stack-Env. **Damit stimmen die drei Belegungen überein:** Compose-Fallback,
+  `.env.example` und Stack-Env liefern alle 5 GiB RAM + 4 GiB Swap. **Wirkung:**
+  eine Installation ohne Stack-Env bekommt künftig 5 GiB Container-RAM statt
+  7 GiB (2 GiB weniger RAM für den Container, mehr für den Host mit 7,47 GiB
+  nutzbar); die Swap-Reserve bleibt bei 4 GiB. Die `DIND_*`-Werte (1g/2g) und
+  die `RAM_WATCHDOG_*`-Schrauben bleiben unberührt. Umsetzung und Begründung:
+  `remote/docker-compose.yml` (Kommentarblock + Defaults),
+  `remote/README.md` (Abschnitt „RAM- und Swap-Limits"),
+  `.env.example` (Kommentarblock; die Werte standen bereits auf 5g/9g).
 
 ## 2026-10-20
 
