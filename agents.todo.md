@@ -5,6 +5,62 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
 
 ## 2026-10-21
 
+- [ ] **B2/B3 (Host-Eskalation) per Default praktisch AUS — Entscheidung des
+  Eigentümers vom 2026-10-21.** Der RAM-Wächter hat zwei Trigger; die
+  Host-Eskalation (B2 = Speicherfresser-Kinder beenden, B3 = PID 1 beenden →
+  Container startet neu) ist ab jetzt per Default **praktisch aus** (Schwelle
+  100 MB), **Trigger A** (cgroup-anon ≥ 85 %
+  → SIGTERM an PID 1) bleibt unverändert aktiv. Begründung: der Host hat
+  16 GB Swap und 7,47 GB RAM, das reicht; das Opfern von Builds und laufenden
+  Sitzungen ist der falsche Handel. Umsetzung: der Default von
+  `RAM_WATCHDOG_HOST_AVAILABLE_MB` im Skript geht von 1000 auf 100 MB
+  (`remote/ram-watchdog.sh`), die Doku-Stellen in `remote/README.md`,
+  `remote/AGENTS.md` und `remote/docker-compose.yml` sind nachgezogen. Der
+  Codepfad B2/B3 ist unverändert und per ENV **schaerfbar**
+  (`RAM_WATCHDOG_HOST_AVAILABLE_MB=…`; 1000 MB = der Stand vor dem 21.10., ein
+  historischer Wert und keine Empfehlung — er loeste am 21.10. unter
+  paralleler Build-Last aus, Builds werden dann unterbrochen).
+
+  **Live-Hotfix am 2026-10-21 (~19:45):** Der alte Wächter-Prozess im
+  laufenden Container wurde per SIGTERM beendet, ein neuer Wächter mit
+  `RAM_WATCHDOG_HOST_AVAILABLE_MB=100` gestartet (Log jetzt zusätzlich in
+  `/tmp/ram-watchdog.log` im Container). Bis dahin lief der Container noch mit
+  dem alten Default 1000 MB (siehe den Eintrag „RAM-Wächter ist ausgerollt"
+  weiter unten). **Der Hotfix
+  überlebt keinen Container-Neustart** — `entrypoint.sh` startet den Wächter
+  bei JEDEM Container-Start neu (`docker restart` genauso wie ein Recreate),
+  solange das deployed Image den alten Default 1000 MB hat, ist B nach jedem
+  Neustart wieder scharf. Er steckt nur im Writable-Layer, nicht im Image.
+
+  **Was der Wächter am 2026-10-21 angerichtet hat:** 15:31 B2 (TERM an einen
+  `tsc` mit 951 MB anon), 15:32 B2 (TERM an einen `tsc` mit 1,33 GB anon),
+  15:32:06 B3 (SIGTERM an PID 1 → Container-Neustart → **Sitzung weg**).
+  `MemAvailable` lag in diesem Moment bei 623–914 MB, also unter der alten
+  Schwelle von 1000 MB — das war kein Messfehler, sondern eine zu niedrige
+  Schwelle.
+
+  **Offen: Rollout.** Repo-Commit → CI baut das Image (Path-Filter
+  `remote/ram-watchdog.sh`) → Portainer-Deploy der Repo-Compose-Datei **und**
+  der `.env.production` als Stack Environment. Erst danach gilt der Default
+  aus dem Skript dauerhaft.
+
+- [ ] **Doku in `remote/Dockerfile` und `remote/entrypoint.sh` nachziehen — sie
+  behaupten noch eine aktive Host-Eskalation.** Beide Dateien schreiben, der
+  RAM-Wächter schütze den Host mit Eskalation (erst die
+  Speicherfresser-Kinder, dann PID 1). Per Default ist die Host-Eskalation
+  B2/B3 aber praktisch aus (Schwelle 100 MB) — es wirkt nur Trigger A
+  (geordneter Shutdown statt Kernel-OOM-Kill).
+  **Zweite Falschaussage in denselben Dateien:** sie nennen den **Host-Swap**
+  als Eskalationsgrund (`Dockerfile`: „MemAvailable des Hosts unter der
+  Schwelle **oder der Host-Swap über seinem Schwellwert**. Dann Eskalation";
+  `entrypoint.sh`: „(B) Host-Druck (MemAvailable / Swap-Füllstand) -> …
+  Eskalation"). Im Skript ist der Swap ausdrücklich **nur eine Warnung** — die
+  Eskalation hängt allein an MemAvailable.
+  In der Fix-Runde vom 2026-10-21 waren beide Dateien ausdrücklich
+  ausgenommen, deshalb stehen die alten Sätze noch. **Offen:** Text nachziehen
+  und mit dem nächsten Image-Build veröffentlichen (der Kommentar steht so im
+  aktuellen Image).
+
 - [ ] **RAM-Wächter ist ausgerollt — die Speichergrenzen des Containers passen
   aber nicht zum Repo-Stand.** Der Eigentümer hat den `code-dev`-Stack am
   2026-10-21 in Portainer neu deployed; der Container wurde dabei recreatet.
@@ -16,9 +72,11 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   **Nachher gemessen:** Skript-Hash `44eec8fc…` (= HEAD), neuer
   Wächter-Prozess, `memory.current` 1,2 GiB. Die `RAM_WATCHDOG_*`-
   Stellschrauben sind weder im alten noch im neuen Container gesetzt (0
-  Treffer in `/proc/1/environ`) — der neue Wächter läuft deshalb mit seinen
+  Treffer in `/proc/1/environ`) — der neue Wächter lief deshalb mit seinen
   eigenen Defaults (Schwelle 85 %, Host-Auslöser 1000 MB, Container-Anteil
-  50 %, `HOLD_COUNT` 3). Das ist so vorgesehen („LEER = Default").
+  50 %, `HOLD_COUNT` 3). Das ist so vorgesehen („LEER = Default"). **Seit dem
+  Live-Hotfix vom 21.10. läuft er mit `RAM_WATCHDOG_HOST_AVAILABLE_MB=100`
+  (siehe erster Eintrag oben).**
 
   **Der alte Wächter hat am 2026-10-21 erneut zugeschlagen.** `MemAvailable`
   fiel auf 795.636 kB, weil rund zehn `tsc --noEmit`-Läufe in

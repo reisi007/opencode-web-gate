@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # ram-watchdog.sh — RAM-Wächter für opencode serve im code-dev-Container.
 #
-# GRUNDSATZ (2026-10-20): Der Wächter schützt den HOST, nicht den Container.
+# GRUNDSATZ (2026-10-20; per Default seit 2026-10-21 nur Trigger A): ist der
+# Host-Trigger scharf, schützt der Wächter den HOST, nicht den Container.
 #
 # WARUM DER UMBAU (Vorfall vom 2026-10-20, 16:05–16:08 CEST):
 # Die alte Fassung beobachtete `memory.current` der cgroup und schickte bei
@@ -31,10 +32,21 @@
 #      Wächter macht daraus einen geordneten Shutdown.
 #
 #   B) HOST-Trigger: `MemAvailable` des HOSTS unter HOST_MIN_AVAILABLE_MB.
+#      **PER DEFAULT PRAKTISCH AUS** (Schwelle 100 MB, Entscheidung des
+#      Eigentuemers 2026-10-21): der Trigger feuert, wenn MemAvailable UNTER
+#      der Schwelle liegt — unter 100 MB kommt das auf einem Host mit
+#      7,47 GB RAM praktisch nicht vor, also bleiben B2/B3 per Default
+#      praktisch aus, es werden keine Builds und keine Sitzungen fuer den
+#      Host geopfert.
+#      Ein eigener Wert schaerft den Trigger nur, er ist keine Voraussetzung
+#      fuer ihn. 1000 MB = der Stand vor dem 21.10., ein historischer Wert
+#      und keine Empfehlung: er loeste am 21.10. unter paralleler Build-Last
+#      aus (MemAvailable 623-914 MB).
 #      `/proc/meminfo` im Container zeigt die HOST-Werte (kein Namespacing auf
 #      diesem Weg — verifiziert 2026-10-20: MemTotal 7832632 kB, identisch
 #      mit dem Host).
-#      Reaktion: Eskalationsleiter, von harmlos nach teuer:
+#      Reaktion, wenn der Trigger scharf ist: Eskalationsleiter, von harmlos
+#      nach teuer:
 #        B1) Loggen mit allen Zahlen (Host-RAM, Host-Swap, cgroup anon/file).
 #        B2) Speicherfresser-KINDER beenden — nach **anon** sortiert, die
 #            grössten zuerst, bis die Zielsumme erreicht ist. Die Session
@@ -87,14 +99,27 @@ set -uo pipefail
 THRESHOLD_PERCENT="${RAM_WATCHDOG_THRESHOLD_PERCENT:-85}"
 # HOST_MIN_AVAILABLE_MB: Host-RAM, das frei bleiben MUSS, damit der Host
 # nicht in die Swap-Thrash und dann in den Haenger laeuft.
-# Herleitung (2026-10-20, live belegt): im Incident stand der Host bei
-# 783 MB MemAvailable, waehrend code-dev 6,67 GB resident hielt. Die Schwelle
-# muss DIESEN Zustand noch erfassen, sonst greift sie im dokumentierten
-# Vorfall nicht. 1000 MB liegt darunter, aber deutlich ueber dem
-# Normalbetrieb (live nach dem Neustart: 5,4 GiB verfuegbar). Ein
-# `cargo build` mit 3 x rustc a 920 MB kostet rund 2,8 GB — der bleibt
-# oberhalb der Schwelle.
-HOST_MIN_AVAILABLE_MB="${RAM_WATCHDOG_HOST_AVAILABLE_MB:-1000}"
+# DEFAULT IST 100 MB (Entscheidung des Eigentuemers, 2026-10-21): damit ist
+# die Host-Eskalation (B2/B3) praktisch AUS — MemAvailable < 100 MB kommt auf
+# einem Host mit 7,47 GB RAM praktisch nicht vor. Grund: der Host hat 16 GB
+# Swap und 7,47 GB RAM, das reicht; es sollen keine Builds und keine
+# Sitzungen mehr fuer den Host geopfert werden.
+# Der Host-Trigger feuert, wenn MemAvailable UNTER der Schwelle liegt. Per
+# Default (100 MB) kommt das auf diesem Host praktisch nicht vor — die
+# Eskalation B2/B3 ist damit praktisch aus. Ein gesetzter Wert schaerft den
+# Trigger nur, er ist keine Voraussetzung fuer ihn. 1000 MB = der Stand vor
+# dem 21.10., historisch und keine Empfehlung: er loeste am 21.10. unter
+# paralleler Build-Last aus (MemAvailable 623-914 MB), Builds werden dann
+# unterbrochen — die Grenze zwischen "normaler Build" und "Host haengt" ist
+# bei diesem Workload nicht sauber zu ziehen.
+# HISTORIE des frueheren Defaults 1000 (Incident vom 20.10., live belegt): im
+# Incident stand der Host bei 783 MB MemAvailable, waehrend code-dev 6,67 GB
+# resident hielt — die Schwelle musste diesen Zustand noch erfassen, sonst
+# waere sie im dokumentierten Vorfall nicht gegriffen. 1000 MB lag deutlich
+# ueber dem Normalbetrieb (live nach dem Neustart: 5,4 GiB verfuegbar), aber
+# unter dem, was der Waechter am 21.10. tatsaechlich sah (MemAvailable
+# 623-914 MB) — deshalb hat er an diesem Tag ausgeloest.
+HOST_MIN_AVAILABLE_MB="${RAM_WATCHDOG_HOST_AVAILABLE_MB:-100}"
 # CONTAINER_SHARE_MIN_PCT: B3 nur, wenn code-dev mindestens diesen Anteil
 # am Host-Speicherverbrauch haelt. Bei Fremddruck (dind, Portal-Stack) ist
 # code-dev nicht der Verursacher — dann hilft nur ein Neustart des

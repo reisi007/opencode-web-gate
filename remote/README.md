@@ -431,7 +431,7 @@ knapp wird — also erst, wenn es zu spät ist.
 |---|---|---|
 | 1 | `memswap_limit` 12g → **16g** (9 GB Swap für code-dev) | `remote/docker-compose.yml` **und** `remote/.env.production` |
 | 2 | `vm.swappiness` 10 → **60**, Swapfile 10 GB → **16 GB** | `/etc/sysctl.conf`, `/swapfile` |
-| 3 | `ram-watchdog.sh` schützt jetzt den **Host** statt den cgroup-Deckel | `remote/ram-watchdog.sh` |
+| 3 | `ram-watchdog.sh` misst jetzt den **Host** statt den cgroup-Deckel (Host-Eskalation per Default praktisch aus) | `remote/ram-watchdog.sh` |
 
 **Maßnahme 1 muss an zwei Stellen stehen.** Der Compose-Default `:-16g` greift
 nur, wenn `MEMSWAP_LIMIT` in der Stack-Env **fehlt** — die Paste-Vorlage
@@ -446,10 +446,14 @@ Der neue Wächter hat **zwei Trigger**:
   PID 1, nach 30 s SIGKILL — ein geordneter Shutdown statt des abrupten
   Kernel-Kills, dessen Opfer immer PID 1 wäre.
 - **B) Host** — `MemAvailable` des Hosts < `RAM_WATCHDOG_HOST_AVAILABLE_MB`
-  (1000 MB). `/proc/meminfo` im Container zeigt die **Host-Werte**
+  (**100 MB per Default — damit ist der Host-Trigger praktisch aus**).
+  `/proc/meminfo` im Container zeigt die **Host-Werte**
   (verifiziert 2026-10-20: `MemTotal` 7832632 kB, identisch mit dem Host).
-  Der Wert von 1000 MB ist aus dem Incident abgeleitet: dort stand der Host
-  bei **783 MB** — die Schwelle muss diesen Zustand noch erfassen. Reaktion:
+  MemAvailable < 100 MB kommt auf einem Host mit 7,47 GB RAM praktisch nicht
+  vor — die Eskalation ist damit **praktisch aus**. Ein gesetzter
+  `RAM_WATCHDOG_HOST_AVAILABLE_MB` **schärft den Trigger** nur, er ist keine
+  Voraussetzung dafür (etwa in der Portainer-Stack-Env). Reaktion, wenn der
+  Trigger scharf ist:
   Eskalationsleiter — erst die **Speicherfresser-Kinder** beenden (CodeGraph-
   MCP-Server, Dev-Server, Builds), sortiert nach **anon** (Private_Dirty), die
   größten zuerst, bis die Zielsumme (`RAM_WATCHDOG_CHILD_RSS_MB` = 300 MB)
@@ -460,6 +464,33 @@ Der neue Wächter hat **zwei Trigger**:
   jeder Lastspitze (live im Incident: 6,3 GB Swap bei 783 MB MemAvailable).
   Er wird protokolliert (`RAM_WATCHDOG_HOST_MAX_SWAP_PERCENT` = 80 %), löst
   aber nichts aus.
+
+**Entscheidung des Eigentümers (2026-10-21): B2/B3 sind per Default praktisch
+aus (Schwelle 100 MB).**
+Der Host hat 16 GB Swap und 7,47 GB RAM — das reicht; es sollen keine Builds
+und keine Sitzungen mehr für den Host geopfert werden. `htop` am 2026-10-21:
+Mem 3,38 G von 7,47 G, Swap 1,0 G von 16,0 G. Der Wächter hat an diesem Tag
+trotzdem dreimal ausgelöst: 15:31 B2 (TERM an einen `tsc` mit 951 MB anon),
+15:32 B2 (TERM an einen `tsc` mit 1,33 GB anon) und 15:32:06 B3 (SIGTERM an
+PID 1 → Container-Neustart → **die Sitzung war weg**). Der Live-Container
+läuft deshalb mit einem Live-Hotfix (`RAM_WATCHDOG_HOST_AVAILABLE_MB=100`), der
+**keinen Container-Neustart überlebt**: `entrypoint.sh` startet den Wächter bei
+**jedem** Container-Start neu — `docker restart` genauso wie ein Recreate —,
+und solange das deployed Image den alten Default 1000 MB hat, ist B nach jedem
+Neustart wieder scharf. Dauerhaft ist der Zustand erst, wenn das neue Image
+deployt ist. **B schärfen:** den
+Wert in der Portainer-Stack-Env setzen (`RAM_WATCHDOG_HOST_AVAILABLE_MB=…`) —
+er **schärft** den Trigger, er ist keine Voraussetzung dafür; der Codepfad
+B2/B3 ist unverändert vorhanden. **Der Wert 1000 MB ist der Stand vor dem
+21.10. und keine Empfehlung:** er hat am 21.10. unter paralleler Build-Last
+ausgelöst (MemAvailable 623–914 MB), Builds werden dann unterbrochen — die
+Grenze zwischen „normaler Build" und „Host hängt" ist bei diesem Workload
+nicht sauber zu ziehen. **Zwei Vorbedingungen:** der Stack-Env-Wert erreicht
+den Container erst, wenn die Compose-Datei aus dem Repo (mit dem Mapping im
+`environment:`-Block) deployed ist — vorher bleibt er wirkungslos; und nach
+**jedem** Paste von `.env.production` als Stack Environment ist der Wert
+erneut zu setzen, weil Keys, die nur in der Portainer-DB stehen, dabei
+gelöscht werden.
 
 **B3 wird nur ausgelöst, wenn code-dev auch schuld ist**
 (`RAM_WATCHDOG_CONTAINER_SHARE_MIN_PCT` = 50 %): Hält code-dev weniger als die

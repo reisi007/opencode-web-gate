@@ -43,9 +43,32 @@
 #                         Abschnitt "RAM- und Swap-Limits".
 #   RAM_WATCHDOG_*      optional: Stellschrauben des RAM-Waechters, siehe
 #                         unten im environment-Block. LEER = Default.
+#                         Default RAM_WATCHDOG_HOST_AVAILABLE_MB = 100 MB, damit
+#                         ist die Host-Eskalation B2/B3 per Default praktisch
+#                         aus (der Trigger feuert, wenn MemAvailable UNTER der
+#                         Schwelle liegt). Ein eigener Wert schaerft den
+#                         Trigger, er ist keine Voraussetzung fuer ihn.
+#                         1000 MB = der Stand vor dem 21.10., ein historischer
+#                         Wert und keine Empfehlung: er loeste am 21.10. unter
+#                         paralleler Build-Last aus, Builds werden dann
+#                         unterbrochen.
+#                         Ein Wert in der Stack-Env ist hier ein BEWUSSTER
+#                         OVERRIDE des Skript-Defaults (im Skript bleibt 100 MB
+#                         stehen) und keine zweite Quelle der Wahrheit fuer den
+#                         Default — §9
+#                         Fall 2 (Compose-Default in die DB heben, damit er
+#                         sichtbar wird) bleibt unberuehrt und wird hier nicht
+#                         gemacht.
+#                         ZWEI VORBEDINGUNGEN: (1) Der Stack-Env-Wert erreicht
+#                         den Container erst, wenn die Compose-Datei aus dem
+#                         Repo (mit dem Mapping im environment-Block) deployed
+#                         ist — vorher bleibt er wirkungslos. (2) Nach JEDEM
+#                         Paste von .env.production als Stack Environment ist
+#                         der Wert erneut zu setzen — Keys, die nur in der
+#                         Portainer-DB stehen, werden beim Paste geloescht.
 #                         Bewusst NICHT in .env.production: die Defaults sind
 #                         die einzige Quelle der Wahrheit, und ein Wert in der
-#                         Stack-Env wuerde nur eine zweite schaffen
+#                         Datei wuerde nur eine zweite schaffen
 #                         (remote/AGENTS.md §9 Fall 2). Wer einen anderen Wert
 #                         braucht, setzt ihn in der Portainer-UI.
 #   DIND_MEMORY_LIMIT   default 1g: RAM-Limit fuer den dind-Daemon
@@ -197,12 +220,16 @@ services:
     # der Ausloeser. Drei Massnahmen gegen den Haenger (2026-10-20):
     #   1. memswap_limit 12g -> 16g: der Container darf in den Swap ausweichen.
     #   2. vm.swappiness 10 -> 60 auf dem Host: der Swap wird auch benutzt.
-    #   3. ram-watchdog.sh schuetzt jetzt den HOST (MemAvailable) und nicht
-    #      mehr den cgroup-Deckel: bei Host-Druck werden zuerst die
+    #   3. ram-watchdog.sh misst jetzt den HOST (MemAvailable) und nicht mehr
+    #      den cgroup-Deckel: bei Host-Druck werden zuerst die
     #      Speicherfresser-Kinder beendet (CodeGraph-MCP-Server, Dev-Server,
     #      Builds) und erst als LETZTE Massnahme opencode/PID 1 — Session weg,
-    #      Host lebt. Der alte Waechter loeste bei 90 % von 7g = 6,3 GiB aus;
-    #      das ist 6,3 GiB bei 7,47 GiB Host-RAM, also war der Host da
+    #      Host lebt. Das gilt nur, wenn der Host-Trigger anschlaegt
+    #      (MemAvailable UNTER der Schwelle) — per Default kommt das praktisch
+    #      nie vor (RAM_WATCHDOG_HOST_AVAILABLE_MB = 100 MB), dann wirkt nur
+    #      der Container-Trigger (geordneter Shutdown statt Kernel-OOM-Kill).
+    #      Der alte Waechter loeste bei 90 % von 7g = 6,3 GiB
+    #      aus; das ist 6,3 GiB bei 7,47 GiB Host-RAM, also war der Host da
     #      bereits ueberzeichnet — die Rettung kam zu spaet.
     # Der RAM-Deckel selbst bleibt bei 7g (Nutzer-Entscheidung 2026-10-20:
     # "die Dev Tools darin brauchen leider den ram"). Der ueberzeichnete
@@ -251,6 +278,10 @@ services:
       #      Speicherfresser-Kinder beenden (nach anon sortiert, groesste
       #      zuerst), dann opencode/PID 1 — aber NUR wenn code-dev auch
       #      nennenswert am Host-Verbrauch beteiligt ist (CONTAINER_SHARE_MIN_PCT).
+      #      B ist PER DEFAULT PRAKTISCH AUS (HOST_AVAILABLE_MB = 100 MB): der
+      #      Trigger feuert, wenn MemAvailable UNTER der Schwelle liegt — unter
+      #      100 MB kommt das praktisch nicht vor. Ein eigener Wert schaerft
+      #      den Trigger, er ist keine Voraussetzung fuer ihn.
       #      "Host soll immer leben, notfalls der Container."
       - RAM_WATCHDOG_ENABLED=${RAM_WATCHDOG_ENABLED:-true}
       - RAM_WATCHDOG_THRESHOLD_PERCENT=${RAM_WATCHDOG_THRESHOLD_PERCENT}

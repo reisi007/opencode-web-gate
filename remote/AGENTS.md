@@ -127,11 +127,31 @@ Siehe §14 — dort steht auch, warum dieser Pfad *nicht* unter
   Produktion faehrt.** Wer hier "nur ein bisschen mehr" sagt, muss die Summe
   gegenrechnen, nicht den einzelnen Container.
 
-### Der RAM-Waechter schuetzt den Host — nicht den Container (Entscheidung 2026-10-20)
+### Der RAM-Waechter: Container-Trigger aktiv, Host-Eskalation per Default praktisch aus (2026-10-20, 2026-10-21)
 
 Regeln fuer `remote/ram-watchdog.sh`:
 
 - **Nur der RAM-Waechter darf PID 1 beenden.** Kein anderer Pfad im Stack.
+- **Per Default wirkt nur der Container-Trigger.** Die Host-Eskalation (B2/B3)
+  ist per Default **praktisch aus**: `RAM_WATCHDOG_HOST_AVAILABLE_MB` steht per
+  Default auf 100 MB, und der Trigger feuert erst, wenn `MemAvailable` **unter**
+  dieser Schwelle liegt — das kommt im Normalbetrieb praktisch nicht vor.
+- **Ein eigener Wert schaerft die Host-Eskalation, er ist keine Voraussetzung
+  fuer sie.** `RAM_WATCHDOG_HOST_AVAILABLE_MB` verschiebt nur die Schwelle.
+  Der Wert muss so hoch sein, dass der Waechter VOR dem Haengen greift — also
+  oberhalb der MemAvailable-Stufe, bei der der Host im Stoerfall stand — und
+  zugleich so niedrig, dass ein normaler Build ihn nicht ausloest. Der
+  Codepfad B2/B3 bleibt vollstaendig vorhanden.
+- **Ein Stack-Env-Wert fuer `RAM_WATCHDOG_HOST_AVAILABLE_MB` braucht zwei
+  Dinge, sonst bleibt er wirkungslos:** (1) das Mapping im `environment:`-Block
+  der Compose-Datei (§18) — er erreicht den Container erst, wenn die
+  Compose-Datei aus dem Repo deployed ist; (2) er muss nach **jedem** Paste von
+  `.env.production` als Stack Environment erneut gesetzt werden (§1, §17) —
+  Keys, die nur in der Portainer-DB stehen, werden beim Paste geloescht.
+  Bewusst in der Portainer-UI und nicht dauerhaft in `.env.production`: die
+  Defaults (im Skript) bleiben die einzige Quelle der Wahrheit — der
+  Stack-Env-Wert ist ein bewusster Override mit Pflegepflicht, keine zweite
+  Quelle fuer den Default.
 - **Zwei Trigger, zwei Reihenfolgen:**
   - *Container-Trigger* (`anon + slab_unreclaimable` gegen `memory.max`):
     sofort SIGTERM an PID 1. Ersetzt den abrupten Kernel-OOM-Kill, dessen
