@@ -161,20 +161,25 @@ RUN groupadd -g "$DEV_GID" dev 2>/dev/null || true \
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-# RAM-Waechter (2026-10-02; am 2026-10-20 umgebaut). Er ersetzt keinen
-# RAM-Deckel, sondern greift vorher ein — und schuetzt inzwischen den HOST,
-# nicht den Container.
+# RAM-Waechter (2026-10-02; am 2026-10-20 umgebaut, Default am 2026-10-21
+# geaendert). Er ersetzt keinen RAM-Deckel. Per Default wirkt Trigger A als
+# geordneter Shutdown vor dem cgroup-OOM-Kill; die Host-Eskalation B2/B3 ist
+# mit der Default-Schwelle von 100 MB praktisch aus. Ein gesetzter
+# RAM_WATCHDOG_HOST_AVAILABLE_MB-Wert schaerft Trigger B, ist aber keine
+# Voraussetzung dafuer. Host-Swap ist eine Warnung, kein Eskalationsgrund.
 #
 # Zwei Trigger:
 #   A) cgroup: `anon + slab_unreclamable` (NICHT `memory.current` — das zaehlt
 #      den reclaimbaren Page-Cache mit) gegen `memory.max`. Dann SIGTERM an
 #      opencode serve: es beendet sich selbst und kann aufraeumen, statt vom
 #      cgroup-OOM-Killer abgeraeumt zu werden.
-#   B) Host: `MemAvailable` des Hosts unter der Schwelle oder der Host-Swap
-#      ueber seinem Schwellwert. Dann Eskalation: erst die Speicherfresser-
-#      Kinder beenden (CodeGraph-MCP-Server, Dev-Server, Builds — die grössten
-#      zuerst), erst als LETZTE Stufe opencode/PID 1. "Host soll immer leben,
-#      notfalls der Container."
+#   B) Host: `MemAvailable` des Hosts unter `HOST_MIN_AVAILABLE_MB` (Default:
+#      100 MB, praktisch aus). Host-Swap wird nur protokolliert und loest
+#      nichts aus. Wenn B scharfgestellt ist und die MemAvailable-Schwelle
+#      unterschritten wird, erst die Speicherfresser-Kinder beenden
+#      (CodeGraph-MCP-Server, Dev-Server, Builds — die groessten zuerst), erst
+#      als LETZTE Stufe opencode/PID 1. "Host soll immer leben, notfalls der
+#      Container."
 #
 # Warum ueberhaupt: Der Kernel killt im cgroup den GROESSTEN Prozess, und das
 # ist haeufig `opencode serve` (PID 1, ~390 MB stabiler Grundbedarf) — nicht

@@ -291,11 +291,15 @@ if [ "${OPENCODE_AUTOUPDATE:-true}" = "true" ]; then
   watch_opencode_updates "$BIN" &
 fi
 
-# RAM-Waechter (2026-10-02, am 2026-10-20 umgebaut): schuetzt inzwischen den
-# HOST, nicht den Container. Zwei Trigger: (A) cgroup-anon (ohne Page-Cache)
-# -> SIGTERM an PID 1, damit opencode geordnet beendet und der cgroup-OOM-Killer
-# nicht PID 1 abrupt killt; (B) Host-Druck (MemAvailable / Swap-Fuellstand) ->
-# erst Speicherfresser-Kinder beenden, erst als letzte Stufe PID 1.
+# RAM-Waechter (2026-10-02, am 2026-10-20 umgebaut; Default am 2026-10-21
+# geaendert): per Default wirkt Trigger A (cgroup-anon ohne Page-Cache) und
+# sendet bei 85 % SIGTERM an PID 1, damit opencode geordnet beendet und der
+# cgroup-OOM-Killer PID 1 nicht abrupt killt. Die Host-Eskalation B2/B3 ist
+# bei der Default-Schwelle von 100 MB MemAvailable praktisch aus; ein gesetzter
+# RAM_WATCHDOG_HOST_AVAILABLE_MB-Wert schaerft sie, ist aber keine
+# Voraussetzung. Host-Swap wird nur gewarnt/protokolliert und loest keine
+# Eskalation aus. Wenn B scharf ist und MemAvailable unter die Schwelle faellt,
+# werden erst Speicherfresser-Kinder beendet, erst als letzte Stufe PID 1.
 # Siehe die Begruendung im Dockerfile.
 #
 # Bewusst per RAM_WATCHDOG_ENABLED abschaltbar (default true): wenn jemand die
