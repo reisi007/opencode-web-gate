@@ -60,7 +60,7 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   **Der Deploy zieht das Image nicht von selbst (gemessen am 2026-10-22).**
   Der Deploy um 06:44:53 UTC recreatete den Container mit dem Image
   `sha256:77b72513c…` (created 2026-10-20 15:48) — auf dem VPS war als `:latest`
-  noch das 43 h alte Image vom 20.10. lokald vorhanden, Portainer hat es
+  noch das 43 h alte Image vom 20.10. lokal vorhanden, Portainer hat es
   wiederverwendet statt zu pullen. Ebenso ist die **Live-Compose-Datei**
   unverändert (Stand 2026-10-21 11:37, **0** Treffer `RAM_WATCHDOG`) und der
   Stack-Env ohne `MEMSWAP_LIMIT` → live weiter 7g/12g. **Für den Rollout also
@@ -69,6 +69,12 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   auf dem VPS) **und** die Repo-Compose + `.env.production` als Stack
   Environment einspielen. Sonst ist der Deploy ein No-op und der Wächter
   läuft weiter mit 1000 MB.
+
+  **Entscheidung des Eigentümers (2026-10-22):** `.env.production` bleibt bei
+  `MEMORY_LIMIT=7g` / `MEMSWAP_LIMIT=16g`. Diese expliziten Stack-Env-Werte
+  überschreiben beim Paste die Repo-Compose-Fallbacks 5g/9g; effektiv sind es
+  damit 7 GiB RAM + 9 GiB Swap für `code-dev`. Die Vorlage selbst bleibt
+  unverändert.
 
 - [ ] **Doku in `remote/Dockerfile` und `remote/entrypoint.sh` nachziehen — sie
   behaupten noch eine aktive Host-Eskalation.** Beide Dateien schreiben, der
