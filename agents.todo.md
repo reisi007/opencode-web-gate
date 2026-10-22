@@ -26,11 +26,24 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   `RAM_WATCHDOG_HOST_AVAILABLE_MB=100` gestartet (Log jetzt zusätzlich in
   `/tmp/ram-watchdog.log` im Container). Bis dahin lief der Container noch mit
   dem alten Default 1000 MB (siehe den Eintrag „RAM-Wächter ist ausgerollt"
-  weiter unten). **Der Hotfix
-  überlebt keinen Container-Neustart** — `entrypoint.sh` startet den Wächter
-  bei JEDEM Container-Start neu (`docker restart` genauso wie ein Recreate),
-  solange das deployed Image den alten Default 1000 MB hat, ist B nach jedem
-  Neustart wieder scharf. Er steckt nur im Writable-Layer, nicht im Image.
+  weiter unten). **Dieser ENV-Hotfix überlebte keinen Container-Neustart** —
+  `entrypoint.sh` startet den Wächter bei JEDEM Container-Start neu
+  (`docker restart` genauso wie ein Recreate), solange das deployed Image den
+  alten Default 1000 MB hat, ist B nach jedem Neustart wieder scharf. Er
+  steckt nur im Writable-Layer, nicht im Image.
+
+  **Das ist am 2026-10-22 passiert:** Der Stack wurde um 06:44:53 UTC recreatet
+  (Portainer-Deploy) — der ENV-Hotfix war damit weg, der Entrypoint startete
+  den Wächter aus dem ALTEN Image mit Default 1000 MB (Startzeile im
+  Container-Log: „Host-Mindest-RAM 1000 MB"). Der Deploy hat **kein neues
+  Image gezogen** (siehe Rollout unten). **Stand 2026-10-22 ~11:00:**
+  `/usr/local/bin/ram-watchdog.sh` im laufenden Container auf die Repo-Fassung
+  gepatcht (Writable-Layer, `md5 42a441e3…` = Repo-HEAD) und den Wächterprozess
+  neu gestartet — Startzeile jetzt „Host-Mindest-RAM 100 MB", und zwar **ohne**
+  ENV-Override, weil der Default 100 jetzt im Skript selbst steht. Damit
+  übersteht der Zustand auch `docker restart` (der Writable-Layer bleibt).
+  **Ein Recreate verwirft den Writable-Layer** → zurück auf 1000 MB, bis das
+  neue Image deployed ist.
 
   **Was der Wächter am 2026-10-21 angerichtet hat:** 15:31 B2 (TERM an einen
   `tsc` mit 951 MB anon), 15:32 B2 (TERM an einen `tsc` mit 1,33 GB anon),
@@ -43,6 +56,19 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   `remote/ram-watchdog.sh`) → Portainer-Deploy der Repo-Compose-Datei **und**
   der `.env.production` als Stack Environment. Erst danach gilt der Default
   aus dem Skript dauerhaft.
+
+  **Der Deploy zieht das Image nicht von selbst (gemessen am 2026-10-22).**
+  Der Deploy um 06:44:53 UTC recreatete den Container mit dem Image
+  `sha256:77b72513c…` (created 2026-10-20 15:48) — auf dem VPS war als `:latest`
+  noch das 43 h alte Image vom 20.10. lokald vorhanden, Portainer hat es
+  wiederverwendet statt zu pullen. Ebenso ist die **Live-Compose-Datei**
+  unverändert (Stand 2026-10-21 11:37, **0** Treffer `RAM_WATCHDOG`) und der
+  Stack-Env ohne `MEMSWAP_LIMIT` → live weiter 7g/12g. **Für den Rollout also
+  beides erledigen:** Image ziehen (Portainer-Option „Pull latest image" beim
+  Deploy oder `docker pull ghcr.io/reisi007/opencode-web-dev-baseline:latest`
+  auf dem VPS) **und** die Repo-Compose + `.env.production` als Stack
+  Environment einspielen. Sonst ist der Deploy ein No-op und der Wächter
+  läuft weiter mit 1000 MB.
 
 - [ ] **Doku in `remote/Dockerfile` und `remote/entrypoint.sh` nachziehen — sie
   behaupten noch eine aktive Host-Eskalation.** Beide Dateien schreiben, der
