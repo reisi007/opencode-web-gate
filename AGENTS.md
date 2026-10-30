@@ -82,3 +82,15 @@ printf 'code-auth-remote bekam: %s\n' "$(printf '%s' "$b" | cut -c1-7)"
 Erwartetes Ergebnis bei synchronem Stand: gleiche Variablen, gleicher User, gleiches Secret, `AUTH_HASH: identisch`, Form `$2a$1…`.
 
 `agents.todo.md` fuehrt die offenen Live-Punkte.
+
+## Gates
+
+Regeln dieser Ebene. Was nur ein Verzeichnis betrifft, gehört in die
+`AGENTS.md` **dieses** Verzeichnisses — sie wird geladen, wenn eine Datei
+daraus gelesen wird.
+
+Ein Plan in `docs/plans/` beginnt mit `**Status:** Plan | In Arbeit | Done |
+Empfehlung, nicht implementiert`.
+
+Die kanonischen Agent-Regeln laufen über `ratchet` (Preset `agent-rules`):
+`ratchet check` vor jedem Commit und in der CI.
