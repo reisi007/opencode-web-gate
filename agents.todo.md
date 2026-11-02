@@ -3,6 +3,55 @@
 Offene, nicht triviale Punkte und Blockaden. Einträge werden erst nach einem
 unabhängigen Review und erfolgreicher Verifikation entfernt.
 
+> **Deploy-Historie:** Nur die *Deploy-Anweisungen* vor dem 2026-11-02
+> beschreiben den früheren Portainer-Betrieb (UI-Deploy, Stack-Env-Paste,
+> DB-Patch und Paste-spezifisches `$$`-Escaping). Diese Anweisungen sind
+> **Historie und nicht mehr gültig**. Offene Sicherheits-, RAM- und
+> Betriebspunkte in älteren Abschnitten bleiben unverändert offen und werden
+> durch diesen Hinweis nicht zu Historie erklärt.
+> Für native Compose-`.env` gilt die Quote-Regel in `AGENTS.md` §2. Aktuell gilt
+> der Abschnitt 2026-11-02 und `AGENTS.md` §1/§2: Push per `rsync`/`ssh` nach
+> `/opt/stacks/<stack>/compose.yaml`, Env nur in der Host-`.env`.
+
+## 2026-11-02
+
+- [ ] **Offene Drift: `MEMORY_LIMIT`/`MEMSWAP_LIMIT` Repo 5g/9g vs. Live
+  7g/12g — keine Entscheidung getroffen.** `remote/docker-compose.yml` hat die
+  Defaults `MEMORY_LIMIT=5g` / `MEMSWAP_LIMIT=9g` (Owner-Entscheidung
+  2026-10-21: 5 GiB RAM + 4 GiB Swap, Host schonen). Der Live-Container
+  `code-dev` läuft am 2026-11-02 aber mit **7g/12g** (7 GiB RAM + 5 GiB Swap).
+  **Nicht entschieden, Defaults nicht geändert.** Zu klären: Ist 7g/12g der
+  gewollte Live-Stand (dann Host-`.env` und ggf. Defaults nachziehen) oder soll
+  der Stack auf 5g/9g (dann Recreate mit Session-Verlust)? Jede Änderung
+  braucht eine bewusste Owner-Entscheidung; die Doku hält beide Stände offen.
+  Belege: `remote/README.md` („RAM- und Swap-Limits“), `remote/AGENTS.md` §9,
+  `remote/docker-compose.yml` (Kommentarblock), `.env.example`.
+
+- [x] **Portainer-Exit: Doku und Deploy-Skripte im Repo vorbereitet.**
+  Root-`README.md`, `AGENTS.md`, `local/README.md`, `local/AGENTS.md`,
+  `remote/README.md`, `remote/AGENTS.md` und die Kommentare in den
+  Compose-Dateien beschreiben jetzt den Zielzustand: Stack `opencode-tunnel`
+  (`local/docker-compose.yml` → `/opt/stacks/opencode-tunnel/compose.yaml`,
+  Container `code-auth`) und Stack `dev-vm` (`remote/docker-compose.yml` →
+  `/opt/stacks/dev-vm/compose.yaml`, Container `code-dev`,
+  `code-remote-dind`, `code-auth-remote`). `local/deploy.sh` und
+  `remote/deploy.sh` übertragen jeweils nur die Compose-Datei: zuerst auf einen
+  zufälligen `.compose.candidate.*`-Pfad, dann validieren und atomar als
+  `compose.yaml` aktivieren. Bei fehlgeschlagenem `up` wird die vorige Datei aus
+  `.compose.previous.*` wiederhergestellt. Kein Push und kein Host-Zugriff wurden
+  im Rahmen der Vorbereitung ausgeführt.
+  Keine Env-Übertragung: `/opt/stacks/<stack>/.env` ist `root:root 0600` und
+  enthält die bisherigen Portainer-Stack-Env-Werte. Verzeichnisnamen bleiben
+  exakt (Volume-Namespace `dev-vm_*`), `/opt/stacks` ist im Backup, Watchtower
+  bleibt global konfiguriert (bestehende Labels unverändert). Migrationsstand:
+  [`strato-vps#1`](https://github.com/reisi007/strato-vps/issues/1).
+
+- [x] **Portainer-Purge und VHost-Bereinigung abgeschlossen (2026-11-02).**
+  Container, Image, Volume, Update-Cron und Caddy-VHost sind entfernt; die
+  laufenden Stacks kommen aus `/opt/stacks`. Die pCloud-Abgleich- und
+  Restore-Verifikation ist weiterhin offen; ein eigener Tracker-Eintrag dafür
+  steht noch aus.
+
 ## 2026-10-21
 
 - [ ] **B2/B3 (Host-Eskalation) per Default praktisch AUS — Entscheidung des
@@ -33,7 +82,7 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   steckt nur im Writable-Layer, nicht im Image.
 
   **Das ist am 2026-10-22 passiert:** Der Stack wurde um 06:44:53 UTC recreatet
-  (Portainer-Deploy) — der ENV-Hotfix war damit weg, der Entrypoint startete
+  (damaliger Portainer-Deploy) — der ENV-Hotfix war damit weg, der Entrypoint startete
   den Wächter aus dem ALTEN Image mit Default 1000 MB (Startzeile im
   Container-Log: „Host-Mindest-RAM 1000 MB"). Der Deploy hat **kein neues
   Image gezogen** (siehe Rollout unten). **Stand 2026-10-22 ~11:00:**
@@ -53,28 +102,31 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   Schwelle.
 
   **Offen: Rollout.** Repo-Commit → CI baut das Image (Path-Filter
-  `remote/ram-watchdog.sh`) → Portainer-Deploy der Repo-Compose-Datei **und**
-  der `.env.production` als Stack Environment. Erst danach gilt der Default
-  aus dem Skript dauerhaft.
+  `remote/ram-watchdog.sh`) → danach `remote/deploy.sh` (seit dem
+  Portainer-Exit 2026-11-02). Der frühere Weg — Repo-Compose und
+  `.env.production` als Portainer-Stack-Environment — ist **Historie** und
+  nicht mehr gültig. Erst nach dem Rollout gilt der Default aus dem Skript
+  dauerhaft.
 
   **Der Deploy zieht das Image nicht von selbst (gemessen am 2026-10-22).**
-  Der Deploy um 06:44:53 UTC recreatete den Container mit dem Image
-  `sha256:77b72513c…` (created 2026-10-20 15:48) — auf dem VPS war als `:latest`
-  noch das 43 h alte Image vom 20.10. lokal vorhanden, Portainer hat es
-  wiederverwendet statt zu pullen. Ebenso ist die **Live-Compose-Datei**
-  unverändert (Stand 2026-10-21 11:37, **0** Treffer `RAM_WATCHDOG`) und der
-  Stack-Env ohne `MEMSWAP_LIMIT` → live weiter 7g/12g. **Für den Rollout also
-  beides erledigen:** Image ziehen (Portainer-Option „Pull latest image" beim
-  Deploy oder `docker pull ghcr.io/reisi007/opencode-web-dev-baseline:latest`
-  auf dem VPS) **und** die Repo-Compose + `.env.production` als Stack
-  Environment einspielen. Sonst ist der Deploy ein No-op und der Wächter
-  läuft weiter mit 1000 MB.
+  Der damalige Portainer-Deploy um 06:44:53 UTC recreatete den Container mit dem
+  Image `sha256:77b72513c…` (created 2026-10-20 15:48) — auf dem VPS war als
+  `:latest` noch das 43 h alte Image vom 20.10. lokal vorhanden, Portainer hat
+  es wiederverwendet statt zu pullen. Ebenso war die **damalige Live-Compose-
+  Datei** unverändert (Stand 2026-10-21 11:37, **0** Treffer `RAM_WATCHDOG`) und
+  die Stack-Env ohne `MEMSWAP_LIMIT` → live 7g/12g. **Für einen Rollout also
+  beides erledigen:** Image ziehen
+  (`docker pull ghcr.io/reisi007/opencode-web-dev-baseline:latest` auf dem VPS)
+  **und** `remote/deploy.sh` ausführen. Die `.env` bleibt auf
+  dem Host. Sonst ist der Deploy ein No-op und der Wächter läuft weiter mit
+  1000 MB.
 
-  **Entscheidung des Eigentümers (2026-10-22):** `.env.production` bleibt bei
-  `MEMORY_LIMIT=7g` / `MEMSWAP_LIMIT=16g`. Diese expliziten Stack-Env-Werte
-  überschreiben beim Paste die Repo-Compose-Fallbacks 5g/9g; effektiv sind es
-  damit 7 GiB RAM + 9 GiB Swap für `code-dev`. Die Vorlage selbst bleibt
-  unverändert.
+  **Entscheidung des Eigentümers (2026-10-22, Historie):** `.env.production`
+  blieb damals bei `MEMORY_LIMIT=7g` / `MEMSWAP_LIMIT=16g`; die expliziten
+  Stack-Env-Werte überschrieben die Repo-Fallbacks 5g/9g. **Dieser Stand ist
+  nicht der heutige:** die Datei existiert nicht mehr als Deploy-Quelle, und
+  der Live-Container hat am 2026-11-02 **7g/12g**. Die Drift 5g/9g (Repo) vs.
+  7g/12g (Live) ist offen — siehe Abschnitt 2026-11-02.
 
 - [ ] **Doku in `remote/Dockerfile` und `remote/entrypoint.sh` nachziehen — sie
   behaupten noch eine aktive Host-Eskalation.** Beide Dateien schreiben, der
@@ -96,6 +148,8 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
 - [x] **RAM-Wächter ist ausgerollt — die Speichergrenzen des Containers passen
   aber nicht zum Repo-Stand.** Der Eigentümer hat den `code-dev`-Stack am
   2026-10-21 in Portainer neu deployed; der Container wurde dabei recreatet.
+  **Historie:** Der heutige Live-Stand (2026-11-02) ist **7g/12g**; die
+  Aussagen unten zu 5g/9g „in Betrieb“ gelten nicht mehr. Siehe 2026-11-02.
   **Vorher gemessen** (Container vor dem Recreate):
   `/usr/local/bin/ram-watchdog.sh` war **byte-identisch mit `HEAD~1`** der
   Repo-Version (`md5 65a5784462dea6df21fa5fb6d4c2ed39`) und **nicht** mit der
@@ -125,21 +179,21 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   **Offen: die Speichergrenzen.** Der recreatete Container hat `memory.max` =
   **5,0 GiB** und `memory.swap.max` = **4,0 GiB** (9 GiB gesamt). Das ist
   weder der Repo-Default (`7g` RAM, `16g` gesamt → 7 GiB / 9 GiB) noch der
-  Vor-Stand (`7g`/`12g` → 7 GiB / 5 GiB). Der Stack-Env enthält also
+  Vor-Stand (`7g`/`12g` → 7 GiB / 5 GiB). Der damalige Stack-Env enthielt also
   explizit `MEMORY_LIMIT=5g` und `MEMSWAP_LIMIT=9g` und überschreibt damit
   beide Compose-Defaults — genau der Fall, vor dem die Position vom
   2026-10-20 warnt („sonst wirkt die Maßnahme beim nächsten Paste
   stillschweigend nicht"). **Folge:** der RAM-Deckel ist 2 GiB kleiner (für
   den Host gut — 5 GiB statt 7 GiB gegen 7,47 GiB nutzbares Host-RAM), aber
   der Swap-Deckel des Containers ist 4 GiB statt der 9 GiB, die der Fix
-  vorsah. **Entscheidung des Eigentümers nötig:** ist `MEMSWAP_LIMIT=9g`
+  vorsah. **Entscheidung des Eigentümers nötig (damals):** ist `MEMSWAP_LIMIT=9g`
   Absicht (Host schonen, 4 GiB Swap reichen) oder soll der Stack-Env auf
   `16g`?
 
   **Entschieden am 2026-10-21 (Owner):** `MEMSWAP_LIMIT=9g` ist **Absicht** —
   der Host soll geschont werden, 4 GiB Swap reichen. Der **Gesamt-Deckel ist
-  9 g** (5 GiB RAM + 4 GiB Swap), exakt die seit dem Recreate vom 2026-10-21
-  **gemessene** und in Betrieb befindliche Konfiguration. **Folge für den
+  9 g** (5 GiB RAM + 4 GiB Swap), der damals seit dem Recreate vom 2026-10-21
+  **gemessene** Stand. **Folge für den
   Compose-Fallback:** das Paar `MEMORY_LIMIT:-7g` / `MEMSWAP_LIMIT:-16g` wurde
   durch `MEMORY_LIMIT:-5g` / `MEMSWAP_LIMIT:-9g` **ersetzt** (nicht nur die
   eine Zahl). Grund ist die Kopplung: `MEMSWAP_LIMIT` ist der Gesamt-Deckel,
@@ -147,10 +201,12 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   „RAM- und Swap-Limits"). Bei `MEMSWAP_LIMIT=9g` und `MEMORY_LIMIT=7g` wären
   es nur **2 GiB** Swap gewesen — weniger als die gemessene Reserve (4 GiB)
   und weniger als der bisherige Fallback (9 GiB). Mit 5g/9g ergibt sich
-  **9g − 5g = 4 GiB Swap**, also exakt `.env.example` und exakt der laufende
-  Stack-Env. **Damit stimmen die drei Belegungen überein:** Compose-Fallback,
-  `.env.example` und Stack-Env liefern alle 5 GiB RAM + 4 GiB Swap. **Wirkung:**
-  eine Installation ohne Stack-Env bekommt künftig 5 GiB Container-RAM statt
+  **9g − 5g = 4 GiB Swap**, also exakt `.env.example` und exakt der damalige
+  Stack-Env. **Damit stimmten die damaligen drei Belegungen überein:**
+  Compose-Fallback, `.env.example` und Stack-Env lieferten alle 5 GiB RAM +
+  4 GiB Swap (der Live-Stand ist heute 7g/12g, siehe 2026-11-02). **Wirkung:**
+  eine Installation ohne Host-`.env` bekommt den Fallback mit 5 GiB
+  Container-RAM statt
   7 GiB (2 GiB weniger RAM für den Container, mehr für den Host mit 7,47 GiB
   nutzbar); die Swap-Reserve bleibt bei 4 GiB. Die `DIND_*`-Werte (1g/2g) und
   die `RAM_WATCHDOG_*`-Schrauben bleiben unberührt. Umsetzung und Begründung:
@@ -186,11 +242,12 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   ausgelöst → es gab keinen Kernel-Panic, der Host ist wirklich eingefroren
   und wurde extern zurückgesetzt.**
 
-  **Maßnahmen (Host, sofort umgesetzt):** `memswap_limit` 12g → 16g in
+  **Maßnahmen (Host, sofort umgesetzt — historischer Weg, nicht mehr gültig):**
+  `memswap_limit` 12g → 16g in
   `remote/docker-compose.yml` **und in `remote/.env.production`** (die
-  Paste-Vorlage setzt `MEMSWAP_LIMIT=12g` explizit — der Compose-Default
-  `:-16g` greift nur, wenn der Key in der Stack-Env **fehlt**; ohne die
-  Vorlage-Änderung wirkt die Maßnahme beim nächsten Paste stillschweigend
+  damalige Paste-Vorlage setzte `MEMSWAP_LIMIT=12g` explizit — der Compose-
+  Default `:-16g` greift nur, wenn der Key in der Stack-Env **fehlt**; ohne die
+  Vorlage-Änderung wirkte die Maßnahme beim nächsten Paste stillschweigend
   nicht); `vm.swappiness` 10 → 60 in `/etc/sysctl.conf`; `/swapfile` 10 GB →
   16 GB (fstab unverändert, übersteht den Reboot); `journald` auf
   `Storage=persistent` (`/var/log/journal`, 8,1 MB) — damit gibt es beim
@@ -227,24 +284,22 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   Startup-Grace (keine Eskalation), Greedy-Kill (nur der größte bekam TERM,
   die beiden kleineren blieben am Leben).
 
-  **Offen: Rollout.** Der Wächter liegt per `COPY` im Image → die Änderung
-  braucht einen Image-Build. Weg: `remote/ram-watchdog.sh` + `remote/Dockerfile`
-  + `remote/entrypoint.sh` nach `main` pushen → CI
-  (`.github/workflows/build-baseline.yml`, läuft bei Push auf `main` mit
-  Path-Filter auf `remote/ram-watchdog.sh`) baut und pusht
-  `ghcr.io/reisi007/opencode-web-dev-baseline:latest` → Stack in **Portainer**
-  neu deployen. **Dabei sind ZWEI Dateien einzufuegen, nicht eine:**
-  1. die **Compose-Datei** (`remote/docker-compose.yml` aus dem HEAD) in den
-     Portainer-Web-Editor,
-  2. **`remote/.env.production` als Stack Environment** — sonst kommt der
-     alte `MEMSWAP_LIMIT=12g` aus der Vorlage zurueck und Massnahme 1 wirkt
-     stumm nicht (H1 aus dem Verify). Die Datei ist gitignored, der Wert
-     `MEMSWAP_LIMIT=16g` steht also nur lokal.
+  **Offen: Rollout (Deploy-Weg seit 2026-11-02: `remote/deploy.sh`).** Der
+  Wächter liegt per `COPY` im Image → die Änderung braucht einen Image-Build.
+  Weg: `remote/ram-watchdog.sh` + `remote/Dockerfile` + `remote/entrypoint.sh`
+  nach `main` pushen → CI (`.github/workflows/build-baseline.yml`, läuft bei
+  Push auf `main` mit Path-Filter auf `remote/ram-watchdog.sh`) baut und pusht
+  `ghcr.io/reisi007/opencode-web-dev-baseline:latest` → `remote/deploy.sh`
+  ausführen. **Der frühere Zwei-Dateien-Weg ist Historie:** damals musste die
+  Compose-Datei in den Portainer-Web-Editor und `remote/.env.production` als
+  Stack Environment eingefügt werden, sonst kam der alte `MEMSWAP_LIMIT=12g`
+  zurück. Heute wird nur `compose.yaml` gepusht; die Env steht ausschließlich
+  in `/opt/stacks/dev-vm/.env`.
   **watchtower nimmt `code-dev` nicht an**
   (Entscheidung vom 2026-09-30, Label `com.centurylinklabs.watchtower.enable=false`)
-  — das Image zieht also **nur** der Portainer-Deploy. **Achtung: das Recreate
-  beendet die laufenden Sessions im Container.** Erst rollen, wenn keine
-  Arbeit offen ist.
+  — das Image zieht also der Deploy bzw. ein bewusster `docker pull`.
+  **Achtung: das Recreate beendet die laufenden Sessions im Container.** Erst
+  rollen, wenn keine Arbeit offen ist.
 
 - [x] **Zwei eigene Testläufe haben die laufende Instanz beschädigt
   (2026-10-20) — beides behoben, aber der Schaden ist dokumentationspflichtig.**
@@ -309,7 +364,8 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   Sekunden spaeter stand trotzdem eine neue PID). Entscheidung: Default
   **4096 MiB im Skript** (einzige Quelle der Wahrheit), `WATCHDOG_MAX_RSS_MIB`
   **auskommentiert** in `.env.example` als bewusster Override — eine aktive
-  Zeile in `.env` waere der stille Drift aus `remote/AGENTS.md` §9 Fall 2.
+  Zeile in `.env` waere der stille Drift aus `remote/AGENTS.md` §9
+  („Env-Aenderungen: nur die Host-`.env`“).
   Dazu Untergrenze 256 MiB und fuehrende Nullen entschaerft (`10#`, "08" waere
   sonst oktal und reisst unter `set -e` den ganzen Start mit). Umgesetzt in
   `local/run.sh`, dokumentiert in `local/AGENTS.md` §4 (inkl. der Widerlegung
@@ -336,17 +392,18 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   **Haelt nur bis zum naechsten Recreate:** beides liegt im Writable-Layer, und
   `~/.cache` ist kein Volume (`remote/AGENTS.md` §16). Repo angepasst:
   `remote/Dockerfile` (CLI ins Image), `remote/docker-compose.yml`
-  (`HF_TOKEN=${HF_TOKEN}`, dokumentiert im Kopf), `remote/.env.production`
-  (`HF_TOKEN=…`, gitignored), Regel in `remote/AGENTS.md` §20.
-- [ ] **Portainer-Deploy ausstaendig (der eigentliche naechste Schritt).**
-  `HF_TOKEN` ist ein neuer Env-Key, den die Portainer-DB noch nicht kennt
-  (§17). Compose **und** Env in der UI pasten (Stack `dev-vm` → Update), sonst
-  schreibt der naechste Browser-Deploy `stack.env` ohne ihn. Die `hf`-CLI
-  braucht danach keinen manuellen Rebuild: `build-baseline.yml` baut auf Push
-  von `remote/Dockerfile` automatisch neu (und taeglich per cron). Ein Recreate
-  vor beidem verliert `hf` und das Token wieder. `hf auth login` interaktiv im
-  `docker exec` ist unbrauchbar (haengt, 90-s-Timeout) — Weg in
+  (`HF_TOKEN=${HF_TOKEN}`, dokumentiert im Kopf), Host-`.env`
+  (`HF_TOKEN=…`, `/opt/stacks/dev-vm/.env`, gitignored), Regel in
   `remote/AGENTS.md` §20.
+- [ ] **HF-Deploy ausstehend (jetzt via `remote/deploy.sh`).**
+  `HF_TOKEN` muss in `/opt/stacks/dev-vm/.env` stehen (`root:root 0600`); es
+  gibt keine Portainer-DB und keinen UI-Paste mehr (§17 ist entfallen).
+  `remote/deploy.sh` pusht die Compose-Datei mit dem `HF_TOKEN`-Mapping. Die
+  `hf`-CLI braucht danach keinen manuellen Rebuild: `build-baseline.yml` baut
+  auf Push von `remote/Dockerfile` automatisch neu (und taeglich per cron). Ein
+  Recreate ohne den Key in der Host-`.env` verliert `hf` und das Token wieder.
+  `hf auth login` interaktiv im `docker exec` ist unbrauchbar (haengt,
+  90-s-Timeout) — Weg in `remote/AGENTS.md` §20.
 
 ## 2026-10-09
 
@@ -368,9 +425,11 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   deckt ihn mit ab.
 ## 2026-10-07
 
-- [ ] Portainer-DB-Patch nach `remote/AGENTS.md` §9 **Fall 1** (neuer Env-Key,
-  der per SSH-Deploy kam), Schema §17.4 — sonst schreibt der naechste UI-Deploy
-  den Key wieder weg. (`.env.production` ist bereits mitgezogen.)
+- [x] **Entfällt mit dem Portainer-Exit (2026-11-02): Portainer-DB-Patch.**
+  Der frühere Patch (neuer Env-Key aus einem SSH-Deploy, Schema §17.4) war nur
+  nötig, weil die Portainer-DB die Stack-Env hielt. Heute ist
+  `/opt/stacks/dev-vm/.env` die einzige Env-Quelle; neue Keys werden dort
+  gepflegt und per `remote/deploy.sh` angewendet. Keine DB, kein UI-Paste.
 - [ ] **`Access-Control-Allow-Origin`/`-Allow-Credentials` auf der echten
   authentifizierten Response ist unbewiesen.** Der 302-Preflight ist gemessen,
   die Header einer eingeloggen Response nicht — braucht eine Session
@@ -388,10 +447,11 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   `--cors` an den laufenden Prozess haengt (`local/run.sh:117` baut die
   Kommandozeile, der CORS-Append steht in Z. 118-132; wirkt erst beim
   naechsten Start durch). Der `CORS_ORIGIN`-Key selbst ist lokal in `.env`
-  gesetzt, der Remote-Key braucht weiterhin den Portainer-DB-Patch siehe oben.
+  gesetzt, der Remote-Key gehoert in `/opt/stacks/dev-vm/.env` (kein
+  DB-Patch mehr).
 - [ ] **Echte Basic-Credentials in `caddyfile/Caddyfile` (Heads 441/451/562/573,
   vorbestehend, nicht aus einem Task-Diff).** Entscheidung 2026-10-07:
-  **Später** — eigenes Ticket: rotieren (beide Wege + Portainer + `.env`) und
+  **Später** — eigenes Ticket: rotieren (beide Wege + Host-`.env` + `.env`) und
   History-Rewrite, sonst liegen die Klartext-Credentials dauerhaft in der
   Git-Historie. Fund aus Caddy-Verify N7, dort nicht angefasst.
 
@@ -487,50 +547,14 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   echten Client aus belegt. Zu zeigen: `code-dev` per 100.x-Adresse erreichbar,
   ein lokal gestarteter Dev-Server (`pnpm dev`/`vite`) von Mac/Handy aus sichtbar,
   und dass `/etc/resolv.conf` dabei unveraendert bleibt (§15.2).
-- [ ] **Ein Portainer-UI-Deploy schreibt `compose/49/docker-compose.yml` neu —
-  die Env ist gepatcht, die Datei steht dort nicht** (2026-09-29).
-  Die `TS_*`-Keys sind jetzt in der Portainer-DB und ueberstehen einen
-  UI-Deploy. **Die Compose-Datei steht dort aber nicht:** Portainer 2.45.1
-  fuehrt fuer diesen Stack **kein** `FileContent` im Datensatz,
-  `ProjectPath=/data/compose/49`. Der Web-Editor laedt die Datei von der
-  Platte, ein UI-Deploy benutzt sie von dort. **Risiko:** wer im Editor `Save`
-  klickt, ohne vorher die aktuelle Datei aus dem Repo-HEAD einzufuegen,
-  deployt einen leeren Stack. **Zu tun:** Stack `dev-vm` in der UI nie ohne
-  vorheriges Einfuegen von `remote/docker-compose.yml` aus dem HEAD updaten.
-  Grund: Portainer haelt die Stack-Env in seiner Datenbank und schreibt
-  `stack.env` bei jedem UI-Deploy daraus neu. Ohne den Patch haette der
-  naechste Browser-Deploy die `TS_*`-Keys wieder entfernt. **Entscheidung des
-  Menschen**, bewusst gegen die Empfehlung, den Stack zunaechst ohne Tailnet zu
-  deployen und das spaeter nachzuziehen.
-  **Vorher gemessen, nicht geraten** (Portainer 2.45.1, DB 1 MiB, BoltDB):
-  - **Bucket-Keys sind 8 Byte Big-Endian, kein ASCII.** `dev-vm` liegt unter
-    `00 00 00 00 00 00 00 31`. `Get([]byte("49"))` liefert **nichts** — wer
-    so sucht, schliesst faelschlich „Stack nicht gefunden“.
-  - **Der Stack-Datensatz hat kein `FileContent`.** Weder 0 Byte noch einen
-    leeren String — das Feld fehlt ganz. Die Compose-Datei existiert in der
-    DB **nicht** und liegt nur auf der Platte.
-  - Datensatz-Felder: `ProjectPath=/data/compose/49`, `EntryPoint=docker-compose.yml`,
-    `Type=2`, `EndpointId=3`, `Id=49`, 6 Env-Eintraege.
-  **Vorgehen:** Backup `portainer.db.bak-<ts>` → `docker stop portainer` →
-  **frisches** Backup des aktuellen Stands (Portainer schreibt im
-  5-Minuten-Takt, `SnapshotInterval: 5m`; eine aeltere Kopie haette seine
-  letzten Writes zurueckgerollt) → Schreib-Container als root auf dem Volume
-  (kein Go auf Mac und VPS, deshalb `golang:1.24-alpine` als Wegwerf-Container)
-  → `docker start portainer`.
-  **Kontrolle, die wirklich etwas wert ist:** vor **und** nach dem Schreiben je
-  ein Fingerabdruck ueber **alle 23 Keys aller uebrigen Buckets** — nach dem
-  Patch **identisch**. Der Stack-Datensatz wurde als `map[string]json.RawMessage`
-  gelesen und nur der Schluessel `Env` ersetzt, damit jedes andere Feld
-  byte-for-byte unangetastet bleibt.
-  **Ergebnis:** `Env` 6 → 8 Eintraege; nach dem Portainer-Neustart **noch
-  da** (verifiziert an einer Kopie des Post-Startup-Zustands, weil Portainer
-  die DB im Betrieb exklusiv sperrt); alle 7 Stacks unveraendert; Datei bleibt
-  `0600 root:root`, 1 MiB.
-  **Nebenbefund fuer den naechsten, der das macht:** Portainer haelt die DB
-  exklusiv gesperrt, ein zweiter Leser bekommt `timeout`. Zum Lesen muss
-  Portainer kurz runter und man nimmt eine Kopie. **Und:** `bbolt.Open` mit
-  `Timeout` blockiert, nicht bricht ab — ein 10-s-Timeout im eigenen Code
-  rettet da nicht, nur ein `db.Close()` vor der naechsten Oeffnung.
+- [x] **Entfällt mit dem Portainer-Exit (2026-11-02): UI-Deploy/DB-Patch für
+  `compose/49`.** Der frühere Befund (kein `FileContent`, `ProjectPath=
+  /data/compose/49`, Stack-Env in der BoltDB) ist reine Historie. Heute kommt
+  die Compose-Datei aus dem Repo nach `/opt/stacks/dev-vm/compose.yaml`, die
+  Env aus `/opt/stacks/dev-vm/.env`; es gibt keinen Web-Editor und keine
+  `stack.env`. Die Messdetails bleiben in der Git-Historie; der Migrationsstand
+  ist in [`strato-vps#1`](https://github.com/reisi007/strato-vps/issues/1)
+  getrackt.
 - [ ] **Boot-Schutz für den Loop fehlt (offener Single Point of Failure)** —
   `/srv/dev-projects` ist die **einzige** Kopie der Projekte. Faellt der Mount
   beim Boot aus, startet `code-dev` mit leerem `/projects`, und `gh repo clone`

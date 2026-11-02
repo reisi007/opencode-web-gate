@@ -98,7 +98,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Hugging Face CLI (`hf`, Paket huggingface_hub[cli]) — Downloads aus dem Hub:
 # Modelle, Tokenizer, Datasets. Kein Token-Store noetig: der Token kommt als
-# Container-Env `HF_TOKEN` aus der Stack-Env (siehe docker-compose.yml) und wird
+# Container-Env `HF_TOKEN` aus der Host-.env (siehe docker-compose.yml) und wird
 # von huggingface_hub, `transformers` und `diffusers` OHNE `hf auth login`
 # gelesen.
 #
@@ -232,15 +232,17 @@ RUN chmod +x /usr/local/bin/ram-watchdog.sh
 # `opencode serve` mit 400-470 MB. Bei 2 Jobs sinkt der anon-Spitzenbedarf auf
 # ~1,2 GB, das passt mit Luft unter den 5-GB-Deckel.
 #
-# Bewusst als ENV im IMAGE und nicht als Stack-Env: es ist eine
+# Bewusst als ENV im IMAGE und nicht als Host-.env-Wert: es ist eine
 # Toolchain-Voreinstellung, die fuer JEDEN `cargo`/`clippy`-Aufruf in diesem
-# Container gilt, unabhaengig davon, wer ihn startet. Eine Stack-Env waere nur
-# ein zusaetzlicher Ort, der mit dem Image auseinanderlaufen kann — und sie
-# haette den Nachteil, dass sie laut ../AGENTS.md §1/§17 erst durch einen
-# Portainer-DB-Patch persistent wuerde.
+# Container gilt, unabhaengig davon, wer ihn startet. Ein Host-.env-Wert waere nur
+# ein zusaetzlicher Ort, der mit dem Image auseinanderlaufen kann — und er
+# haette den Nachteil, dass er in der Host-.env gepflegt werden muesste
+# und damit ein zweiter, stiller Ort neben dem Image waere.
 #
-# Ueberschreibbar per Stack-Env, falls ein einzelnes Projekt doch parallel
-# bauen soll: `environment:` schlaegt ENV aus dem Image.
+# Die Host-.env allein ueberschreibt diesen Image-ENV NICHT: die Compose-Datei
+# hat fuer `CARGO_BUILD_JOBS` kein `environment:`-Mapping. Ein Override braucht
+# daher eine bewusste Aenderung der Compose-Datei (Mapping) oder ein neues
+# Image/ENV — ohne beides bleibt der Wert aus dem Image.
 #
 # Kein Geheimnis, keine Netzwerk-Auswirkung. Haelt den Dauerzustand von
 # `cargo` auf 2 Jobs und ist in neueren Cargo-Versionen der uebliche Weg,
@@ -259,8 +261,10 @@ ENV HOME=/home/dev \
 #
 # Gemessen (Git 2.x): GIT_AUTHOR_NAME/-EMAIL und GIT_COMMITTER_NAME/-EMAIL
 # werden unabhaengig voneinander ausgewertet und schlagen jede
-# user.name/user.email aus .git/config. Wer sie per Stack-Env ueberschreibt
-# (z. B. fuer einen anderen Autor) gewinnt damit auch gegen das Image.
+# user.name/user.email aus .git/config. Die Host-.env allein ueberschreibt sie
+# NICHT: die Compose-Datei mappt diese Variablen nicht. Wer dauerhaft einen
+# anderen Autor will, braucht ein explizites `environment:`-Mapping in der
+# Compose-Datei oder ein neues Image/ENV — nicht nur einen Host-.env-Eintrag.
 #
 # Kein Geheimnis, keine Credential — nur Anzeigename und Mailadresse fuer die
 # Commit-Metadaten.

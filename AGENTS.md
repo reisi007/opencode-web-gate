@@ -2,39 +2,87 @@
 
 **Nur Regeln, keine Entscheidungen:** Diese Datei enthält ausschließlich Regeln — Anweisungen, die für jede Arbeit in diesem Repo gelten. Dauerhafte Entscheidungen, Begründungen, Messwerte und Historie gehören nicht hierher, sondern in `docs/`/`features/` bzw. die Projekt-Doku; offene Punkte nach `agents.todo.md`; Erledigtes in die Git-Historie.
 
-## 1. `remote/.env.production` ist eine Portainer-Paste-Vorlage
+## 1. Deploy: Compose aus dem Repo nach `/opt/stacks/<stack>`
 
-Die Datei wird **1:1 in die Portainer-UI** kopiert (Stack `code-remote` → Environment → Stack Environment) und ist die einzige Quelle fuer den laufenden Remote-Stack.
+Zwei Stacks werden aus diesem Repo gepusht und auf `root@reisinger.pictures`
+(AlmaLinux 9, SELinux enforcing) mit Compose betrieben:
 
-- **Kein Kommentar-Zeilen-Umbau, kein Aufraeumen, kein "sieht komisch aus".** Der Inhalt wird unveraendert gepflegt und genau so eingefuegt.
-- Jede Zeile, die nach dem Einfuegen in Portainer `KEY=WERT` ergeben muss, bleibt eine solche Zeile.
-- Nach jedem Aendern an der Datei: der Stack muss in Portainer neu deployed werden — die Datei selbst deployt nichts.
-- `setup.sh` erzeugt **nur** `.env`, nie `.env.production`. Der Weg von der `.env` hierher ist Handarbeit und der wahrscheinlichste Drift-Punkt.
+| Stackname (exakt) | Repo-Datei | Container | Host |
+|---|---|---|---|
+| `opencode-tunnel` | `local/docker-compose.yml` | `code-auth` | `/opt/stacks/opencode-tunnel/{compose.yaml,.env}` |
+| `dev-vm` | `remote/docker-compose.yml` | `code-dev`, `code-remote-dind`, `code-auth-remote` | `/opt/stacks/dev-vm/{compose.yaml,.env}` |
 
-## 2. Ein literales `$` gehoert als `$$` in die Datei — und nur dort
+- Transport ist `rsync`/`ssh` ueber `local/deploy.sh` bzw. `remote/deploy.sh`.
+  Sie übertragen ausschließlich die Compose-Datei zunächst auf einen zufälligen
+  `.compose.candidate.*`-Pfad, validieren sie dort und ersetzen anschließend
+  `compose.yaml` atomar. Bei fehlgeschlagenem `up` stellen sie, falls vorhanden,
+  die vorherige Compose-Datei aus `.compose.previous.*` wieder her. Die Host-`.env`
+  wird nie übertragen oder ausgegeben; `docker compose config -q` liest sie auf
+  dem Host zur Interpolation.
+- Vor jedem echten Lauf `--dry-run`; er prüft die Host-Dateien read-only,
+  simuliert nur den Compose-rsync und startet Compose nicht.
+- **Keine Env-Uebertragung.** Die `.env` wird nie aus dem Repo erzeugt, nie
+  mitgesynct und nie ueberschrieben.
+- Beide Deploy-Skripte pinnen den Compose-Projektnamen explizit mit `-p` auf
+  den passenden Stack-/Verzeichnisnamen. Verzeichnis und `-p`-Wert muessen
+  identisch bleiben; bei `dev-vm` haengt daran der Volume-Namespace. Namen nie
+  umbenennen — sonst entstehen neue Volumes (`dev-vm_dind-data-rootless`,
+  `dev-vm_gh-config`, `dev-vm_gh-ssh`, `dev-vm_opencode-*`,
+  `dev-vm_tailscale-state`). `dev-vm_code-remote-projects` bleibt als
+  historischer Volume-Name in der Namespace-Inventarliste erhalten.
+- `/opt/stacks` liegt im Backup. Watchtower bleibt global konfiguriert;
+  bestehende Labels (u. a. die Ausnahme fuer `code-dev`) werden nicht
+  umgestellt.
+- Keine Service-Definitionen, Images, Ports, Volumes, Netzwerke oder
+  Privilegien ueber eine Doku-Aenderung verschieben. Compose-Dateien nur im
+  Kommentar anfassen, wenn die Doku es verlangt.
+- Migrationsstand:
+  [`strato-vps#1`](https://github.com/reisi007/strato-vps/issues/1).
 
-Portainer interpoliert den Stack-Wert, bevor er den Container erreicht; ein literales `$` muss dort als `$$` stehen, sonst kommt ein einzelnes `$` an.
+## 2. Stack-`.env` ist Laufzeitquelle auf dem Host
 
-| Datei | `AUTH_HASH` |
-|---|---|
-| `.env` (lokal, Mac) | `$2a$14$…` (laeuft ueber `local/run.sh`, ohne Portainer-Schritt) |
-| `remote/.env.production` | `$$2a$$14$$…` (Portainer interpoliert) |
-
-- `$$` in `remote/.env.production` **nie "reparieren"**. Im Zweifel gegen `docker inspect` auf dem VPS pruefen, nicht gegen einen lokalen `docker compose`-Lauf.
-- Drei verschiedene `$$`-Mechanismen nicht verwechseln:
-  1. **Portainer-Interpolation** — `environment:`-Wert, Datei `remote/.env.production`.
-  2. **Compose-Heredoc** — `command: sh -c "cat << 'PYEOF' …"` in `remote/docker-compose.yml` bzw. `local/docker-compose.yml`. Hier muss jedes `$` im eingebetteten Python/Shell als `$$` stehen, sonst substituiert Compose selbst (`AUTH_HASH.startswith("$2")` & Co.) — **bleibt unangetastet**, auch wenn die Datei oben unescaped ist.
-  3. **Caddyfile** — kein Escaping; `__OPENCODE_BASIC__` ist ein manuell per `base64` erzeugter Platzhalter (siehe Root-README).
+- `setup.sh` erzeugt **nur** die Mac-`.env`. Die Host-Dateien
+  `/opt/stacks/opencode-tunnel/.env` und `/opt/stacks/dev-vm/.env` sind
+  `root:root 0600`, gitignored und enthalten die bisherigen
+  Portainer-Stack-Env-Werte. Sie werden zusätzlich durch das pCloud-Backup
+  gesichert, aber nie in Git abgelegt oder durch die Deploy-Skripte übertragen.
+- Vorhandene Host-`.env` nie aus dem Repo erzeugen oder ueberschreiben. Fehlt
+  ein Schluessel, wird er auf dem Host ergaenzt — nicht durch einen neuen
+  Deploy-Lauf.
+- Schluessel je Stack (nur Namen, keine Werte):
+  - `opencode-tunnel`: `AUTH_USER`, `AUTH_HASH`, `AUTH_SECRET`, `SESSION_TTL`,
+    `AUTH_IP`.
+  - `dev-vm`: `AUTH_USER`, `AUTH_HASH`, `AUTH_SECRET`, `SESSION_TTL`,
+    `OPENCODE_PASSWORD`, `CORS_ORIGIN`, `HF_TOKEN`, `IMAGE`, `CPU_CORES`,
+    `MEMORY_LIMIT`, `MEMSWAP_LIMIT`, `DIND_CPU_CORES`, `DIND_MEMORY_LIMIT`,
+    `DIND_MEMSWAP_LIMIT`, `TS_AUTHKEY`, `TS_TAILSCALE_HOSTNAME`,
+    `OPENCODE_AUTOUPDATE`, `OPENCODE_UPDATE_INTERVAL`, `OPENCODE_UPDATE_HOURS`,
+    `OPENCODE_UPDATE_RESTART`, `RAM_WATCHDOG_*`.
+- **Portainer-`$$`-Escaping ist Historie**, keine Paste-Anweisung. Für neue oder
+  rotierte Werte `AUTH_HASH` in der Host-`.env` einfach quoten:
+  `AUTH_HASH='$2a$14$…'`. Native Compose-`.env`-Dateien interpolieren
+  unquotierte `$`-Sequenzen; einfache Anführungszeichen erhalten den Hash
+  unverändert. Die lokale Mac-`.env` braucht dieselben Quotes, weil Bash sie
+  sourced. Vor jedem weiteren Compose-Deploy bestehende Host-Werte prüfen:
+  Compose muss den Hash korrekt erhalten und der effektive Wert muss zum
+  laufenden Auth-Container passen. Falls nicht, den Host-Wert manuell einfach
+  quotieren; Deploy-Skripte ändern bestehende Host-Dateien nie.
+  Den Containerwert bei Bedarf secret-sicher mit `docker inspect` prüfen.
+- Das `$$` in den Compose-Heredocs (`command: sh -c "cat << 'PYEOF' …"`) ist
+  **Compose-Escaping**, nicht Portainer. Es bleibt unangetastet.
 
 ## 3. Ein Login fuer beide Wege, nicht zwei
 
-`code` (Mac-Tunnel) und `remote-code` (VPS) sind derselbe Zugang und teilen sich `AUTH_USER`, `AUTH_HASH` und `AUTH_SECRET`. **Drei** Quellen muessen synchron sein:
+`code` (Mac-Tunnel) und `remote-code` (VPS) sind derselbe Zugang und teilen sich
+`AUTH_USER`, `AUTH_HASH` und `AUTH_SECRET`. **Drei** Dateien muessen synchron
+sein:
 
-1. `.env` (lokal, gitignored)
-2. `remote/.env.production` (gitignored, Portainer-Vorlage)
-3. der laufende Portainer-Stack-Env
+1. `.env` (lokal, Mac, gitignored)
+2. `/opt/stacks/opencode-tunnel/.env` (Host, gitignored)
+3. `/opt/stacks/dev-vm/.env` (Host, gitignored)
 
-Aendert sich einer der Werte, ist die Login-Aenderung unvollstaendig, bis die anderen beiden nachgezogen und der Stack neu deployed ist.
+Aendert sich einer der Werte, ist die Login-Aenderung unvollstaendig, bis die
+anderen beiden nachgezogen und der jeweilige Stack neu deployed ist.
 
 ## 4. Zwei Passwoerter, die nicht dasselbe sind
 
@@ -80,6 +128,15 @@ printf 'code-auth-remote bekam: %s\n' "$(printf '%s' "$b" | cut -c1-7)"
 ```
 
 Erwartetes Ergebnis bei synchronem Stand: gleiche Variablen, gleicher User, gleiches Secret, `AUTH_HASH: identisch`, Form `$2a$1…`.
+
+## 6. Offene RAM-Drift nicht per Doku entscheiden
+
+`remote/docker-compose.yml` hat die Defaults `MEMORY_LIMIT=5g` /
+`MEMSWAP_LIMIT=9g` (Owner-Entscheidung 2026-10-21). Der Live-Container
+`code-dev` hat **7g/12g**. Der Widerspruch ist offen — keine Seite still
+anpassen, die Defaults nicht aendern und keine der beiden Zahlen als
+"aktuellen Sollstand" dokumentieren. Stand und Messbedarf:
+[`agents.todo.md`](agents.todo.md).
 
 `agents.todo.md` fuehrt die offenen Live-Punkte.
 

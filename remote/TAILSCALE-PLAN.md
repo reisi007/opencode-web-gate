@@ -139,8 +139,8 @@ start_tailscale() {
 
 Regeln dazu:
 
-* `TS_AUTHKEY` kommt aus **`.env.production`**, nie ins Image
-  (`AGENTS.md` §1: Secrets als Stack-Env).
+* `TS_AUTHKEY` kommt aus der **Host-`.env`** (`/opt/stacks/dev-vm/.env`), nie
+  ins Image (Secrets bleiben auf dem Host, `AGENTS.md` §1/§2).
 * `tailscaled` ist ein Kindprozess von `entrypoint.sh` und stirbt mit dem
   Container. Die Node-Identitaet liegt im Volume, also ueberlebt sie
   Container-Recreates (AGENTS.md §8: named Volumes, genau dafuer).
@@ -172,14 +172,14 @@ volumes:
 `security_opt`, `network_mode: host`, `extra_hosts`, `ports:`. Jeder dieser
 Eintraege wuerde eine der bestehenden Regeln in `remote/AGENTS.md` aufweichen.
 
-### 3.5 `.env.production` (gitignored, Handarbeit) + `.env.example`
+### 3.5 Host-`.env` (gitignored, Handarbeit, nur auf dem VPS) + `.env.example`
 
 ```
 TS_AUTHKEY=tskey-auth-…            # aus der Admin-Console, nie ins Repo
 TS_TAILSCALE_HOSTNAME=code-dev     # kurzer MagicDNS-Name
 ```
 
-Kein `$` im Wert, also keine `$$`-Falle aus `AGENTS.md` §2.
+Der Token enthält kein `$`; dafür ist kein besonderes Compose-Escaping nötig.
 
 ---
 
@@ -339,7 +339,7 @@ Passwoertern — `code.all-the.rest` (Mac-Tunnel) und `remote-code.all-the.rest`
 |---|---|
 | `Could not reach server at <url>` | Tailscale aus, falscher Host/Port, `code-dev` down |
 | `Server at <url> requires a password; set OPENCODE_PASSWORD` | Env fehlt in der Client-Shell |
-| `Server at <url> rejected the password` | `OPENCODE_PASSWORD` != Wert in `.env.production` (siehe `remote/AGENTS.md` §13) |
+| `Server at <url> rejected the password` | `OPENCODE_PASSWORD` != Wert in `/opt/stacks/dev-vm/.env` (siehe `remote/AGENTS.md` §13) |
 | `Server at <url> did not provide a compatible V2 health response` | Antwort kam, ist aber keine V2-`/api/info` — meist falscher Port, z. B. 4096 statt 8080 |
 
 Die letzten beiden unterscheiden „falsches Passwort" von „falscher Endpoint".
@@ -517,11 +517,11 @@ localhost-Origins. Fuer die Web-UI selbst ist das irrelevant (same-origin).
 
 1. Tailnet in der Admin-Console anlegen, ACL setzen.
 2. Auth-Key erzeugen (ephemeral: **nein**, der Node soll dauerhaft sein).
-3. `TS_AUTHKEY` + `TS_TAILSCALE_HOSTNAME` in `.env.production` eintragen.
+3. `TS_AUTHKEY` + `TS_TAILSCALE_HOSTNAME` in `/opt/stacks/dev-vm/.env` eintragen.
 4. Image bauen lassen (CI `workflow_dispatch` oder der Daily-Lauf 04:00 UTC),
-   `IMAGE` auf den neuen Tag zeigen, Stack in Portainer neu deployen.
+   `IMAGE` auf den neuen Tag zeigen, `remote/deploy.sh` ausfuehren.
 5. Beim ersten Start meldet sich der Node automatisch an. `TS_AUTHKEY` kann
-   danach aus `.env.production` raus, der State im Volume reicht.
+   danach aus der Host-`.env` raus, der State im Volume reicht.
 6. Clients anmelden, testen.
 
 Einwaertige Besonderheit: der Autoupdate-Watcher beendet den Container per
@@ -552,7 +552,7 @@ erwartet und kein Fehler.
    Zielregel: nur eigene Geraete, kein `*:*`, Port `8080` + Dev-Server-Ports
    explizit, kein Tagged-Resource-Wildwuchs.
 6. **Auth-Key nie ins Repo, nie ins Image.** Wie `OPENCODE_PASSWORD` und
-   `AUTH_SECRET` nur ueber `.env.production`.
+   `AUTH_SECRET` nur ueber die Host-`.env`.
 7. **State ist ein Named Volume.** `tailscale-state` ueberlebt Image-Upgrades
    (AGENTS.md §8). Fehlt das Volume, ist die Tailnet-IP nach jedem Recreate
    eine neue und der Node ballt sich in der Admin-Console auf.
@@ -651,10 +651,10 @@ Offen, braucht Handarbeit bzw. den VPS:
 - [ ] 5. In der Tailscale-Admin-Console: Tailnet anlegen bzw. oeffnen, ACL mit
       **nur** den eigenen Geraeten und expliziten Ports setzen, Auth-Key
       erzeugen (nicht ephemer).
-- [ ] 6. `TS_AUTHKEY` + `TS_TAILSCALE_HOSTNAME` in `remote/.env.production`
-      (gitignored, Handarbeit — `AGENTS.md` §1).
+- [ ] 6. `TS_AUTHKEY` + `TS_TAILSCALE_HOSTNAME` in `/opt/stacks/dev-vm/.env`
+      (root:root 0600, nur auf dem Host — `AGENTS.md` §2).
 - [ ] 7. Image bauen (CI `workflow_dispatch` oder Daily 04:00 UTC), `IMAGE` auf
-      den neuen Tag, Stack in Portainer neu deployen.
+      den neuen Tag, `remote/deploy.sh` ausfuehren.
 - [ ] 8. Clients anmelden (Android, macOS, Windows).
 - [ ] 9. Verifikation aus Abschnitt 11 inklusive der Gegenproben.
 - [ ] 10. Abnahme erst nach unabhaengigem Review der Live-Verifikation — so wie

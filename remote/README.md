@@ -5,27 +5,36 @@
   + CodeGraph-CLI + Python/uv/markitdown + nano.
   Versionen floaten: Daily-CI holt jeweils latest (opencode-Layer per Build-ARG
   gezielt ohne Cache, damit mehrmals taegliche V2-Releases wirklich landen).
-* Stack `code-remote` (`docker-compose.yml` hier): `code-dev` + isolierter
+* Stack `dev-vm` (`docker-compose.yml` hier, Host
+  `/opt/stacks/dev-vm/compose.yaml`): `code-dev` + isolierter
   `dind`-Daemon + eigener `code-auth-remote`. Nur Netz `code-remote` — kein `webnet`,
   daher keine Prod-Container per Name erreichbar, Internet via NAT ok.
   `code-dev` ist standardmäßig auf 3 CPU-Kerne, **5 GB RAM plus 4 GB Swap**
-  begrenzt; über `CPU_CORES`, `MEMORY_LIMIT` und `MEMSWAP_LIMIT` im
-  Stack-Environment anpassbar. Wichtig: `memswap_limit` muss größer sein als
+  begrenzt; über `CPU_CORES`, `MEMORY_LIMIT` und `MEMSWAP_LIMIT` in der
+  Host-`.env` anpassbar. Wichtig: `memswap_limit` muss größer sein als
   `mem_limit`, sonst ist der Swap-Deckel exakt so hoch wie das RAM-Limit.
   Wichtig für die Rechnung: `memswap_limit` ist der **Gesamt**-Deckel, bei 5g/9g
   also 5 GB RAM plus 4 GB Swap-Puffer — Swap ist ab dem 2026-10-20 **Puffer,
   nicht Reserve**: er fängt Lastspitzen ab, wenn RAM global knapp wird. Der
-  RAM-Deckel liegt seit dem **2026-10-21** wieder **unter** dem nutzbaren
-  Host-RAM (7,47 GiB) — 5 GB statt 7 GB, weil der Host geschont werden soll
-  (Owner-Entscheidung; Begründung und Messwerte in *RAM- und
-  Swap-Limits*).
+  Repo-Default liegt seit dem **2026-10-21** bei 5g/9g (Owner-Entscheidung;
+  Begründung und Messwerte in *RAM- und Swap-Limits*).
+  **Offen (2026-11-02):** der Live-Container `code-dev` läuft mit **7g/12g**,
+  also 7 GiB RAM + 5 GiB Swap. Das widerspricht den Repo-Defaults; der
+  Widerspruch ist **nicht entschieden**, die Defaults bleiben unverändert.
   **Kein Host-Zugriff:** `code-dev` hat bewusst *kein* `extra_hosts` und
   erreicht den VPS nicht. `127.0.0.1` ist der Container selbst — ein
   Dev-Server laeuft daher direkt in `code-dev` und ist sofort ueber
   `127.0.0.1` erreichbar. `dind` laeuft **rootless** (kein `privileged`).
   Siehe *Warum es kein `extra_hosts` gibt* und *`dind` ist rootless*.
-  Secrets kommen als **globales Env** aus `.env.production` (gitignored, MANUELL
-  aus Root-`.env` uebernommen: `AUTH_USER/AUTH_HASH/AUTH_SECRET/OPENCODE_PASSWORD/SESSION_TTL/IMAGE`) — nichts im Image.
+  Secrets stehen **nur** in der Host-`.env` `/opt/stacks/dev-vm/.env`
+  (`root:root 0600`, nicht im Repo). Schlüssel (nur Namen): `AUTH_USER`,
+  `AUTH_HASH`, `AUTH_SECRET`, `SESSION_TTL`, `OPENCODE_PASSWORD`,
+  `CORS_ORIGIN`, `HF_TOKEN`, `IMAGE`, `CPU_CORES`, `MEMORY_LIMIT`,
+  `MEMSWAP_LIMIT`, `DIND_CPU_CORES`, `DIND_MEMORY_LIMIT`,
+  `DIND_MEMSWAP_LIMIT`, `TS_AUTHKEY`, `TS_TAILSCALE_HOSTNAME`,
+  `OPENCODE_AUTOUPDATE`, `OPENCODE_UPDATE_INTERVAL`, `OPENCODE_UPDATE_HOURS`,
+  `OPENCODE_UPDATE_RESTART`, `RAM_WATCHDOG_*`. Nichts davon wird aus dem Repo
+  auf den Host übertragen.
   `AUTH_HASH` muss bcrypt oder PBKDF2 sein; ein Klartext-Fallback wird absichtlich
   nicht akzeptiert.
 * `gh auth` + SSH-Keys liegen in Named Volumes (`gh-config`, `gh-ssh`) und
@@ -34,21 +43,35 @@
   sondern auf einem 100-GB-Loopback unter `/srv/dev-projects` — siehe
   *100-GB-Loopback fuer `/projects`*.
 
-## Deploy (alles ohne SSH, nur Portainer + 1x VPS-Handgriff)
+## Deploy (rsync/ssh, kein Portainer)
 
-1. Passwort/Hash in Root-`.env` setzen (siehe Root-README), `.env.production`
-   (hier) manuell angleichen, Caddy-Basic in globaler Caddyfile setzen.
+1. Passwort/Hash in Root-`.env` setzen (Mac-Weg, siehe Root-README). Die
+   Remote-Werte stehen in der Host-`.env`
+   `/opt/stacks/dev-vm/.env`, die die bisherigen Werte enthält und **nie** aus
+   dem Repo erzeugt oder überschrieben wird. Caddy-Basic in globaler Caddyfile
+   setzen.
 2. Image: Daily-CI (`.github/workflows/build-baseline.yml`, 04:00 UTC taeglich,
    `ghcr.io/reisi007/opencode-web-dev-baseline:latest`) — oder einmalig per
-   `workflow_dispatch`. Portainer-Stack mit `IMAGE` auf dieses Tag zeigen,
-   Auto-Update per Portainer-Webhook/Polling (z.B. taeglich), damit der
-   Container das frische Image auch zieht.
-3. Portainer → Stacks → Add stack `code-remote` → Inhalt von
-   `docker-compose.yml` (dieser Ordner) pasten → `.env.production` als Environment → Deploy.
-   **Achtung beim Einfuegen:** Portainer interpolated die Env-Werte, deshalb steht
-   `AUTH_HASH` in `.env.production` als `$$2a$…` und nicht als `$2a$…`. Nicht
-   "aufraeumen" — unescaped ist der Login auf `remote-code` kaputt. Regel und
-   Verifikation: [`../AGENTS.md`](../AGENTS.md) Abschnitt 2 und 5.
+   `workflow_dispatch`. `IMAGE` zeigt auf dieses Tag. Watchtower bleibt global
+   konfiguriert; bestehende Labels (u. a. die Ausnahme für `code-dev`) bleiben
+   unverändert. Für `code-dev` das Image bewusst ziehen (siehe Updates unten).
+3. Deploy aus diesem Repo:
+   ```bash
+    ./remote/deploy.sh --dry-run   # Host-.env read-only prüfen, Compose-rsync simulieren
+   ./remote/deploy.sh             # compose.yaml pushen, dann docker compose up -d --wait
+   ```
+    Übertragen wird **nur** `remote/docker-compose.yml` auf einen zufälligen
+    Kandidatenpfad im Stack-Verzeichnis. Die `.env` bleibt auf dem Host
+    (`root:root 0600`). `remote/deploy.sh` pinnt `-p dev-vm`; das
+    Zielverzeichnis muss dazu passen. Der Name ist der Volume-Namespace und darf
+    nicht geändert werden. Vor dem Ersetzen validiert das Skript den Kandidaten
+    mit Projektverzeichnis und Host-`.env` (`docker compose config -q`) und
+    vergleicht die aufgelösten `code-dev`-RAM-Limits mit dem laufenden Container;
+    bei Abweichung bricht es ab. Danach ersetzt es `compose.yaml` atomar und
+    ruft `up` auf. Schlägt `up` fehl, wird die vorherige `compose.yaml` aus einem
+    Recovery-Backup wiederhergestellt; scheitert auch das, bleibt das Backup
+    liegen. Die RAM-Limit-Prüfung braucht `python3` auf dem Host. `/opt/stacks`
+    liegt im Backup.
 4. Caddy (caddyfile-Repo, braucht 1x VPS-Handgriff per deiner shell):
    * Netz `code-remote` anlegen: `docker network create code-remote`
    * `deployment/docker-compose.yml`: `networks: [webnet, code-remote]` am
@@ -58,6 +81,9 @@
 5. Test: `https://remote-code.example.com/login.html` → Login → OpenCode.
    In OpenCode-Terminal: `gh auth login` (einmalig), dann
    `gh repo clone owner/repo` nach `/projects`, arbeiten, loeschen via `rm -rf`.
+
+Hintergrund und Migrationsstand:
+[`strato-vps#1`](https://github.com/reisi007/strato-vps/issues/1).
 
 ## Warum es kein `extra_hosts` gibt — und wo Dev-Server laufen
 
@@ -87,9 +113,14 @@ Was `extra_hosts` stattdessen bewirkt hat, war eine **Tuer zum ganzen VPS**:
 
 | Host-Port | Dienst | Von `code-dev` erreichbar? |
 |---|---|---|
-| 8000 | **Portainer-UI, unverschluesselt** | ja — HTTP 404 (live gemessen) |
-| 9443 | **Portainer-API** | ja — HTTP 400 (live gemessen) |
+| 8000 | Portainer-UI, unverschluesselt (**damals**, Messstand 2026-09) | ja — HTTP 404 (live gemessen) |
+| 9443 | Portainer-API (**damals**, Messstand 2026-09) | ja — HTTP 400 (live gemessen) |
 | 80/443 | Caddy | ja |
+
+Die Portainer-Zeilen sind **Historie**: Portainer wurde am 2026-11-02 entfernt
+(Purge), die Ports 8000/9443 sind nicht mehr offen. Die Zeilen belegen, warum
+`extra_hosts` eine Tuer zum ganzen Host war. Heute zählt dieselbe Aussage für
+jeden anderen Host-Port.
 
 Und `host.docker.internal` wurde nachweislich **nirgends benutzt** — geprueft in
 `/projects` und im OpenCode-State, Ergebnis: keine Treffer.
@@ -155,7 +186,7 @@ docker exec code-dev curl -sS -m 3 -o /dev/null -w '%{http_code}\n' http://dind:
 Bis 2026-09-26 lief `code-remote-dind` mit `privileged: true`. Das ergab
 `CapEff: 000001ffffffffff` (alle 37 Capabilities) und `/dev/vda4` war sichtbar —
 also praktisch Root auf dem Host, auf dem `/home/webadmin/websites`, die
-MariaDB-Volumes, die TLS-Keys, `portainer.db` und die rclone-Config liegen.
+MariaDB-Volumes, die TLS-Keys und die rclone-Config liegen.
 Da `code-dev` die Docker-CLI hat und `DOCKER_HOST` auf diesen Daemon zeigt, war
 das der direkte Weg aus dem Dev-Container in die Prod-Daten.
 
@@ -251,48 +282,41 @@ Deckel ist exakt `mem_limit`. `memswap_limit` setzt man also nicht, um Swap zu
 eroeffnen, sondern um das **Verhaeltnis** zu bestimmen und den Gesamt-Fussabd
 hart zu deckeln.
 
-Aktuelles Budget (**Werte in Kraft seit dem 2026-10-21**):
+Budget — **zwei Stände, offener Widerspruch (2026-11-02)**:
 
-| Container | RAM | Swap | gesamt | cpus |
+| Beleg | RAM | Swap | gesamt | cpus |
 |---|---|---|---|---|
-| `code-dev` | 5120 MB | 4096 MB | 9216 MB | 3 |
+| Repo-Fallback `remote/docker-compose.yml` | 5120 MB (`5g`) | 4096 MB (`9g` gesamt) | 9216 MB | 3 |
+| `.env.example` | 5120 MB (`5g`) | 4096 MB (`9g` gesamt) | 9216 MB | 3 |
+| **Live-Container `code-dev`** | **7168 MB (`7g`)** | **5120 MB (`12g` gesamt)** | **12288 MB** | 3 |
 | `code-remote-dind` | 1024 MB | 1024 MB | 2048 MB | 2 |
 | `code-auth-remote` | unbegrenzt | — | — | — |
-| **Summe** | **6144 MB** | **5120 MB** | **11264 MB** | |
 
 `code-auth-remote` bleibt bewusst unbegrenzt — real 11 MB, und ein Deckel
 wuerde nur Aerger machen.
 
-**Die Summe der RAM-Limits (6144 MiB = 6,0 GiB) liegt jetzt unter den 7,47 GiB
-nutzbaren Host-RAM** — zusammen mit Portal (~0,9 GiB) und OS/dockerd (~0,7 GiB)
-sind das ~7,6 GiB, rund 0,1 GiB **über** dem Host. Gegenüber dem Stand vom
-2026-10-20 (7g RAM / 9 GiB Swap, ~2,1 GiB über dem Host) sind das rund
-**2 GiB weniger Überschuss**. Die Restdifferenz wird über **Swap**
-ausgeglichen, nicht über weniger RAM — siehe „Der Host-Hänger vom 2026-10-20“
-unten.
+**Der Widerspruch ist nicht entschieden.** Die Owner-Entscheidung vom
+2026-10-21 setzte den Repo-Fallback auf 5g/9g (5 GiB RAM + 4 GiB Swap,
+Host schonen). Der Live-Container läuft aber mit 7g/12g (7 GiB RAM + 5 GiB
+Swap) — das ist der gemessene Ist-Stand, nicht der Repo-Default. Keine der
+beiden Zahlen ist bis zur Entscheidung der „Sollstand“; die Defaults bleiben
+unverändert. Offener Punkt: [`../agents.todo.md`](../agents.todo.md).
 
-RAM und Swap liegen bei `code-dev` bei 5 GiB / 4 GiB, beim DinD bei 1 GiB /
-1 GiB: Builds im Daemon sind Batch-Arbeit, Latenz ist egal. **Seit 2026-10-20
-ist Swap für `code-dev` ausdrücklich eingeplant** — er ist Puffer, nicht
-Reserve. Seit dem 2026-10-21 liegt der RAM-Deckel (5 GiB) **unter** dem
-nutzbaren Host-RAM (7,47 GiB); der Swap-Puffer fängt die Restdifferenz und
-Lastspitzen ab. „`code-dev` soll nicht swappen" gilt ab hier nicht mehr.
+**Host-Budget, beide Rechnungen:** mit dem Repo-Fallback summieren sich
+`code-dev` 5 GiB + dind 1 GiB + Portal ~0,9 GiB + OS/dockerd ~0,7 GiB auf
+~7,6 GiB bei 7,47 GiB nutzbarem Host-RAM (knapp über dem Host). Mit dem
+Live-Stand 7 GiB + 1 GiB + 0,9 + 0,7 = **~9,6 GiB** — genau die
+Überzeichnung, die am 2026-10-20 in den Host-Hänger lief. Die Restdifferenz
+wird über **Swap** ausgeglichen, nicht über weniger RAM — siehe „Der
+Host-Hänger vom 2026-10-20“ unten.
 
-#### Die Owner-Entscheidung vom 2026-10-21: Gesamt-Deckel 9 g
+#### Die Owner-Entscheidung vom 2026-10-21: Repo-Gesamt-Deckel 9 g
 
-**`MEMSWAP_LIMIT` = 9 g — nicht 16 g.** Begründung des Eigentümers: der Host
-soll geschont werden, 4 GiB Swap reichen. Das ist die seit dem Recreate vom
-2026-10-21 **gemessene** Konfiguration, die in Betrieb ist — der recreatete
-Container hatte `memory.max` = **5,0 GiB** und `memory.swap.max` = **4,0 GiB**,
-also 9 GiB gesamt.
-
-Drei Belegungen, ein Wert:
-
-| Beleg | RAM | Gesamt (`MEMSWAP_LIMIT`) | Swap (`= memswap_limit − mem_limit`) |
-|---|---|---|---|
-| Compose-Fallback (`remote/docker-compose.yml`) | `5g` | `9g` | 4 GiB |
-| `.env.example` (Paste-Vorlage) | `5g` | `9g` | 4 GiB |
-| laufender Stack-Env (Portainer, 2026-10-21) | `5g` | `9g` | 4 GiB |
+**`MEMSWAP_LIMIT` = 9 g im Repo-Fallback — nicht 16 g.** Begründung des
+Eigentümers: der Host soll geschont werden, 4 GiB Swap reichen. Der Recreate
+vom 2026-10-21 hatte `memory.max` = **5,0 GiB** und `memory.swap.max` =
+**4,0 GiB**, also 9 GiB gesamt; dieser Messstand ist **Historie**, weil der
+Live-Container am 2026-11-02 mit 7g/12g läuft.
 
 **Die Kopplung ist der Grund, warum nicht nur eine Zahl geändert wurde.**
 `MEMSWAP_LIMIT` ist der **Gesamt**-Deckel, der Swap-Deckel ist
@@ -303,18 +327,23 @@ bisherige Fallback (9 GiB). Deshalb wandert der RAM-Fallback mit:
 **5 GiB RAM + 4 GiB Swap = 9 GiB gesamt**. Der alte Fallback 7g/16g ist damit
 **ersetzt**, nicht nur die eine Zahl.
 
-**Merke für den nächsten Paste:** der Compose-Default greift nur, wenn
-`MEMORY_LIMIT`/`MEMSWAP_LIMIT` in der Stack-Env **fehlen**. Die
-Portainer-Vorlage `remote/.env.production` (gitignored, nicht im Repo) muss
-deshalb dieselben Werte tragen — sonst überschreibt sie den Fallback wieder
-und die Maßnahme wirkt stillschweigend nicht.
+**Merke für Änderungen:** der Compose-Default greift nur, wenn
+`MEMORY_LIMIT`/`MEMSWAP_LIMIT` in der Host-`.env` **fehlen**. Die Host-Datei
+`/opt/stacks/dev-vm/.env` ist die einzige Env-Quelle; sie wird nie aus dem Repo
+erzeugt oder überschrieben. Ob sie 5g/9g oder 7g/12g trägt, ist genau der offene
+Punkt oben — nicht still angleichen. Vor dem `up` vergleicht `remote/deploy.sh`
+die aufgelösten Limits mit dem bestehenden `code-dev` und bricht bei Abweichung
+ab; so wird die Drift nicht implizit entschieden.
 
-**Was das materiell ändert:** eine Installation **ohne** Stack-Env bekommt
-künftig **5 GiB** Container-RAM statt **7 GiB** — 2 GiB **weniger** RAM für
-den Container und **mehr** für den Host (7,47 GiB nutzbar). Die
-**Swap-Reserve bleibt bei 4 GiB** (statt 2 GiB bei einem blinden
+**Was das materiell ändert:** fehlen `MEMORY_LIMIT` und `MEMSWAP_LIMIT` in der
+Host-`.env`, greifen die Repo-Fallbacks mit **5 GiB** Container-RAM statt
+**7 GiB** — 2 GiB **weniger** RAM für den Container und **mehr** für den Host
+(7,47 GiB nutzbar). Das Deploy-Skript bricht ab, wenn die Host-`.env`-Datei
+selbst fehlt.
+Die **Swap-Reserve bleibt bei 4 GiB** (statt 2 GiB bei einem blinden
 `MEMSWAP_LIMIT`-Wechsel). Das ist die gewollte Richtung („Host schonen") und
-**keine** Verschlechterung der Swap-Reserve.
+**keine** Verschlechterung der Swap-Reserve. Der Live-Container läuft davon
+abweichend mit 7g/12g; die Drift oben ist offen.
 
 ### Warum 2 GB nicht gereicht haben — und warum 3 GB auch noch nicht reichen
 
@@ -462,28 +491,21 @@ trotzdem nicht den Host.
 10 GB. `vm.swappiness=10` heißt: der Kernel swapped erst, wenn RAM **global**
 knapp wird — also erst, wenn es zu spät ist.
 
-#### Die drei Massnahmen (2026-10-20)
+#### Die drei Massnahmen (2026-10-20, Historie)
 
 | # | Massnahme | Wo |
 |---|---|---|
-| 1 | `memswap_limit` 12g → **16g** (9 GB Swap für code-dev) | `remote/docker-compose.yml` **und** `remote/.env.production` |
+| 1 | `memswap_limit` 12g → **16g** (9 GB Swap für code-dev) | damals `remote/docker-compose.yml` und Portainer-Stack-Env |
 | 2 | `vm.swappiness` 10 → **60**, Swapfile 10 GB → **16 GB** | `/etc/sysctl.conf`, `/swapfile` |
 | 3 | `ram-watchdog.sh` misst jetzt den **Host** statt den cgroup-Deckel (Host-Eskalation per Default praktisch aus) | `remote/ram-watchdog.sh` |
 
-**Maßnahme 1 muss an zwei Stellen stehen.** Der Compose-Default `:-16g` greift
-nur, wenn `MEMSWAP_LIMIT` in der Stack-Env **fehlt** — die Paste-Vorlage
-`remote/.env.production` setzt ihn aber explizit. Wer nur die Datei ändert,
-lässt den alten Wert 12g über die Vorlage in die Portainer-Stack-Env zurück —
-die Massnahme wirkt dann stillschweigend nicht.
-
-> **Stand 2026-10-21:** Diese Drift-Stelle ist geschlossen. Der Compose-Default
-> lautet jetzt `MEMORY_LIMIT:-5g` / `MEMSWAP_LIMIT:-9g`, die Vorlage
-> `.env.example` nennt dieselben Werte, und der laufende Stack-Env ebenfalls —
-> alle drei Belegungen sind deckungsgleich (5 GiB RAM + 4 GiB Swap). Der
-> historische Wert 16g oben beschreibt den Stand vom 2026-10-20; die
-> Owner-Entscheidung vom 2026-10-21 hat ihn auf 9g **zurückgenommen** (Host
-> schonen, 4 GiB Swap reichen). Details: „Die Owner-Entscheidung vom
-> 2026-10-21" oben.
+> **Historie, keine aktuelle Anweisung:** Maßnahme 1 beschreibt den Stand vom
+> 2026-10-20 mit der damaligen Portainer-Paste-Vorlage. Der Compose-Default
+> lautet seit dem 2026-10-21 `MEMORY_LIMIT:-5g` / `MEMSWAP_LIMIT:-9g` und
+> `.env.example` nennt dieselben Werte. Der Live-Container läuft am 2026-11-02
+> aber mit 7g/12g — **diese Drift ist offen** und nicht durch die alte
+> 16g-Maßnahme erklärt. Die heutige Env-Quelle ist ausschließlich
+> `/opt/stacks/dev-vm/.env`; es gibt keine Vorlage und keinen Paste mehr.
 
 Der neue Wächter hat **zwei Trigger**:
 
@@ -498,7 +520,7 @@ Der neue Wächter hat **zwei Trigger**:
   MemAvailable < 100 MB kommt auf einem Host mit 7,47 GB RAM praktisch nicht
   vor — die Eskalation ist damit **praktisch aus**. Ein gesetzter
   `RAM_WATCHDOG_HOST_AVAILABLE_MB` **schärft den Trigger** nur, er ist keine
-  Voraussetzung dafür (etwa in der Portainer-Stack-Env). Reaktion, wenn der
+  Voraussetzung dafür (etwa als Zeile in `/opt/stacks/dev-vm/.env`). Reaktion, wenn der
   Trigger scharf ist:
   Eskalationsleiter — erst die **Speicherfresser-Kinder** beenden (CodeGraph-
   MCP-Server, Dev-Server, Builds), sortiert nach **anon** (Private_Dirty), die
@@ -506,7 +528,8 @@ Der neue Wächter hat **zwei Trigger**:
   erreicht ist; erst als **letzte** Maßnahme PID 1. „Host soll immer leben,
   notfalls der Container."
 - **Der Host-Swap ist Warnung, kein Eskalationsgrund.** Mit `swappiness=60` und
-  9 GiB Swap-Deckel ist ein Swap-Füllstand von mehreren GB der Normalzustand
+  dem damaligen 9-GiB-Swap-Deckel (live heute 12g gesamt, siehe offene Drift)
+  ist ein Swap-Füllstand von mehreren GB der Normalzustand
   jeder Lastspitze (live im Incident: 6,3 GB Swap bei 783 MB MemAvailable).
   Er wird protokolliert (`RAM_WATCHDOG_HOST_MAX_SWAP_PERCENT` = 80 %), löst
   aber nichts aus.
@@ -525,18 +548,17 @@ läuft deshalb mit einem Live-Hotfix (`RAM_WATCHDOG_HOST_AVAILABLE_MB=100`), der
 und solange das deployed Image den alten Default 1000 MB hat, ist B nach jedem
 Neustart wieder scharf. Dauerhaft ist der Zustand erst, wenn das neue Image
 deployt ist. **B schärfen:** den
-Wert in der Portainer-Stack-Env setzen (`RAM_WATCHDOG_HOST_AVAILABLE_MB=…`) —
+Wert in `/opt/stacks/dev-vm/.env` setzen (`RAM_WATCHDOG_HOST_AVAILABLE_MB=…`) —
 er **schärft** den Trigger, er ist keine Voraussetzung dafür; der Codepfad
 B2/B3 ist unverändert vorhanden. **Der Wert 1000 MB ist der Stand vor dem
 21.10. und keine Empfehlung:** er hat am 21.10. unter paralleler Build-Last
 ausgelöst (MemAvailable 623–914 MB), Builds werden dann unterbrochen — die
 Grenze zwischen „normaler Build" und „Host hängt" ist bei diesem Workload
-nicht sauber zu ziehen. **Zwei Vorbedingungen:** der Stack-Env-Wert erreicht
+nicht sauber zu ziehen. **Zwei Vorbedingungen:** der Wert erreicht
 den Container erst, wenn die Compose-Datei aus dem Repo (mit dem Mapping im
-`environment:`-Block) deployed ist — vorher bleibt er wirkungslos; und nach
-**jedem** Paste von `.env.production` als Stack Environment ist der Wert
-erneut zu setzen, weil Keys, die nur in der Portainer-DB stehen, dabei
-gelöscht werden.
+`environment:`-Block) deployed ist — vorher bleibt er wirkungslos; und er muss
+in `/opt/stacks/dev-vm/.env` stehen (dort `root:root 0600`), nicht in einer
+zweiten Datei. Ein Deploy übertragt die `.env` nicht.
 
 **B3 wird nur ausgelöst, wenn code-dev auch schuld ist**
 (`RAM_WATCHDOG_CONTAINER_SHARE_MIN_PCT` = 50 %): Hält code-dev weniger als die
@@ -586,11 +608,12 @@ alle Sessions existiert in v1.6.2 nicht.
 ### Recreate ja, aber nicht um jeden Preis
 
 Ein Wechsel der Limits braucht zwingend einen Recreate, der jede laufende
-Sitzung im Container beendet (Dateien auf dem Projekt-Volume bleiben erhalten):
+Sitzung im Container beendet (Dateien auf dem Projekt-Volume bleiben erhalten).
+Erst nach einer Entscheidung über die offene 5g/9g-vs-7g/12g-Drift:
 
 ```sh
-cd /var/lib/docker/volumes/portainer_data/_data/compose/49
-docker compose --env-file stack.env -p dev-vm up -d --no-deps code-dev
+cd /opt/stacks/dev-vm
+docker compose up -d --no-deps code-dev
 ```
 
 **Fuer einen laufenden RAM-Deckel geht es ohne Recreate.** `memory.max` ist im
@@ -610,7 +633,7 @@ arbeitet.
 
 ## Aufräumen: `dind-image-gc.sh`
 
-Watchtower (Stack 10) raeumt nur den **Host**-Daemon ab. Die Bilder *im DinD*
+Watchtower (global, ohne Stack-Nummer) raeumt nur den **Host**-Daemon ab. Die Bilder *im DinD*
 verwaltet niemand — die sind über den Agenten-Workflow stark gewachsen. Live
 gemessen vor der Migration:
 
@@ -768,7 +791,7 @@ wird davon nicht betroffen.
 Nach einer Änderung an `Caddyfile.fragment` den Block in die echte globale
 Caddyfile übernehmen und dort `./sync.sh` ausführen. Der Healthcheck in
 `Dockerfile` braucht dagegen einen Image-Neubau und ein Redeploy mit dem neuen
-`IMAGE`; ein bloßes Portainer-Recreate eines alten Images ändert ihn nicht.
+`IMAGE`; ein Recreate ohne vorherigen `docker pull` eines alten Images ändert ihn nicht.
 
 ## Abo-Modelle & Updates (nur remote)
 
@@ -786,9 +809,10 @@ heissen fast immer: Binary zu alt oder Provider nicht verbunden.
 3. Updates laufen zweigleisig, nichts manuell noetig:
    * **Containerstart:** `entrypoint.sh` holt bei jedem (Re-)Start das neueste
      Binary (`OPENCODE_AUTOUPDATE`, default `true`, Opt-out `false`). Ein
-     Recreate in Portainer reicht daher fuer ein Update — ideal bei mehrmals
-     taeglichen V2-Releases. Fehlschlag blockiert den Start nie (Fallback:
-     Image-Stand, Log: `/tmp/opencode-update.log` im Container).
+     Recreate per `remote/deploy.sh` (oder `docker compose up -d`) reicht daher
+     fuer ein Update — ideal bei mehrmals taeglichen V2-Releases. Fehlschlag
+     blockiert den Start nie (Fallback: Image-Stand, Log:
+     `/tmp/opencode-update.log` im Container).
    * **Watcher untertags:** Alle `OPENCODE_UPDATE_INTERVAL` Sekunden (default
      `1200` = 3x/Stunde, `1800` = 2x/Stunde, Minimum 300) prueft ein
      Hintergrund-Watcher im Fenster `OPENCODE_UPDATE_HOURS` (default `5-21`,
@@ -799,7 +823,9 @@ heissen fast immer: Binary zu alt oder Provider nicht verbunden.
      (oder per `OPENCODE_UPDATE_RESTART=always` erzwingen — kann Runs
      abbrechen).
    * **Image:** Daily-CI baut `:latest` neu (opencode-Layer ohne Cache).
-     Portainer-Polling/Webhook ziehen lassen.
+     Watchtower bleibt global, nimmt `code-dev` aber per bestehendem Label nicht
+     an. Vor dem Recreate daher
+     `docker pull ghcr.io/reisi007/opencode-web-dev-baseline:latest`.
    Hinweis: `OPENCODE_DISABLE_AUTOUPDATE=true` im Image bleibt Absicht — es
    verhindert nur das ungesteuerte In-Process-Update des laufenden Servers.
 

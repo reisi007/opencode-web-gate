@@ -21,8 +21,34 @@ Browser -> CODE_DOMAIN (zentrales Caddy)
 | `sync.sh` | Login-Seite (`apps/web/dist`) per rsync/ssh auf VPS (`--dry-run` first) |
 | `scripts/com.code-tunnel.plist` | LaunchAgent-**Vorlage** (Pfade rendert `bootstrap.sh`) |
 | `apps/web/dist/` | Login- + Offline-Seite |
-| `docker-compose.yml` | Portainer-Stack `code-auth` (Single File, ext. `webnet`) |
+| `docker-compose.yml` | Compose fuer Stack `opencode-tunnel` (Single File, ext. `webnet`) |
+| `deploy.sh` | Push nach `/opt/stacks/opencode-tunnel/compose.yaml` (`--dry-run`: Host-Prüfung + rsync-Simulation, kein Compose-Start) |
 | `Caddyfile.fragment` | Vorlage für globale Caddyfile (Platzhalter!) |
+
+## Deploy des `code-auth`-Stacks
+
+Der Stack heisst exakt `opencode-tunnel`; `local/deploy.sh` pinnt diesen
+Compose-Projektnamen mit `-p`. Das Zielverzeichnis muss dazu passen. Er liegt
+auf `root@reisinger.pictures` unter
+`/opt/stacks/opencode-tunnel/{compose.yaml,.env}`. `local/deploy.sh` synct nur
+`docker-compose.yml` auf einen zufaelligen Kandidatenpfad im Stack-Verzeichnis,
+validiert ihn dort mit Projektverzeichnis und Host-`.env` per
+`docker compose config -q`, ersetzt erst danach `compose.yaml` atomar und ruft
+`docker compose up -d --wait` auf. Schlaegt `up` fehl, wird die vorherige
+`compose.yaml` aus einem Recovery-Backup wiederhergestellt; scheitert auch die
+Wiederherstellung, bleibt das Backup liegen. `--dry-run` prueft die Host-Dateien
+read-only, simuliert den Compose-rsync und startet Compose nicht.
+
+Die Stack-`.env` liegt als Laufzeitdatei in
+`/opt/stacks/opencode-tunnel/.env` (`root:root 0600`); eine Sicherungskopie
+liegt im pCloud-Backup. Sie enthaelt die bisherigen Portainer-Stack-Env-Werte
+und wird vom Deploy weder erzeugt, uebertragen noch ueberschrieben. Schluessel
+(nur Namen):
+`AUTH_USER`, `AUTH_HASH`, `AUTH_SECRET`, `SESSION_TTL`, `AUTH_IP`.
+
+Verzeichnis und Script-Projektname duerfen nicht umbenannt oder auseinander
+gezogen werden. Hintergrund und Migrationsstand:
+[`strato-vps#1`](https://github.com/reisi007/strato-vps/issues/1).
 
 ## Ablauf
 
@@ -31,6 +57,8 @@ Browser -> CODE_DOMAIN (zentrales Caddy)
 ./stop-tunnel.command    # = Doppelklick: Tunnel aus (idempotent, Exit 0)
 ./run.sh                 # direkt im Vordergrund (Debug, Fenster offen lassen)
 ./diagnose.sh            # --quick nur lokal
+./deploy.sh --dry-run    # Host-Prüfung + rsync-Simulation, kein Compose-Start
+./deploy.sh              # compose.yaml pushen, Stack aktualisieren
 ```
 
 ### Autostart & Watchdog (der Grund, warum der Tunnel früher "weg" war)

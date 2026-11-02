@@ -1,6 +1,13 @@
-# Portainer-Stack: NUR code-auth, SINGLE FILE (alles inline, kein Upload noetig).
-# Deploy: Portainer -> Stacks -> Add stack -> Web editor -> diese Datei pasten.
-# Env in Portainer eintragen (AUTH_USER/AUTH_HASH/AUTH_SECRET/SESSION_TTL/AUTH_IP).
+# Stack: opencode-tunnel — NUR code-auth, SINGLE FILE (alles inline).
+# Deploy: ./local/deploy.sh (rsync -> zufälliger .compose.candidate.*-Pfad im
+# Stack-Ordner, Compose-Validierung, atomarer Austausch gegen compose.yaml, danach
+# docker compose up -d --wait). --dry-run prüft Host-Dateien read-only, simuliert
+# den rsync und startet Compose nicht.
+# Env: NUR /opt/stacks/opencode-tunnel/.env (root:root 0600, nicht im Repo; wird nie
+# mitgesynct). Keys: AUTH_USER, AUTH_HASH, AUTH_SECRET, SESSION_TTL, AUTH_IP.
+# Der Kommentar im gerenderten `command:`-Block ist byte-identisch zu
+# origin/main und bleibt unveraendert, damit der Compose-Command-Hash keinen
+# unnoetigen Recreate ausloest.
 # Kein zweites Caddy (zentrales Caddy bleibt, Ports 80/443 sind belegt).
 # Python-Skript ist unten inline eingebettet (einzige Quelle).
 services:

@@ -7,7 +7,7 @@ if [ -n "${DOCKER_HOST:-}" ]; then
   echo "DOCKER_HOST=$DOCKER_HOST"
 fi
 
-# Sicherstellen, dass gemountete Volumes dem dev-User gehoeren (Portainer Named Volumes = root bei Erststart)
+# Sicherstellen, dass gemountete Volumes dem dev-User gehoeren (Named Volumes = root bei Erststart)
 for d in "$HOME/.config/gh" "$HOME/.ssh" "$HOME/.local/share/opencode" "$HOME/.config/opencode" "$HOME/.local/state/opencode" "$HOME/.local/share/tailscale" /projects; do
   if [ -e "$d" ] && [ ! -O "$d" ] 2>/dev/null; then
     sudo chown -R "$(id -u):$(id -g)" "$d" 2>/dev/null || true
@@ -278,7 +278,7 @@ fi
 # opencode serve erzwingt Serverpasswort (wie Mac-Setup in run.sh).
 # OPENCODE_PASSWORD ist der aktuelle Name; OPENCODE_SERVER_PASSWORD ist Legacy.
 if [ -z "${OPENCODE_PASSWORD:-${OPENCODE_SERVER_PASSWORD:-}}" ]; then
-  echo "FEHLER: OPENCODE_PASSWORD (oder OPENCODE_SERVER_PASSWORD) fehlt (Portainer-Env)"; exit 1
+  echo "FEHLER: OPENCODE_PASSWORD (oder OPENCODE_SERVER_PASSWORD) fehlt (Host-.env)"; exit 1
 fi
 export OPENCODE_PASSWORD="${OPENCODE_PASSWORD:-$OPENCODE_SERVER_PASSWORD}"
 export OPENCODE_SERVER_PASSWORD="$OPENCODE_PASSWORD"
@@ -313,7 +313,7 @@ fi
 
 # CORS: Browser-Clients (z.B. PWA https://ocweb.all-the.rest) brauchen
 # --cors, sonst blockt der Browser cross-origin Requests mit "Failed to fetch".
-# Origin kommt aus Portainer-Env CORS_ORIGIN (Default: PWA).
+# Origin kommt aus der Host-.env CORS_ORIGIN (Default: PWA).
 CORS_ARG=""
 if [ -n "${CORS_ORIGIN:-}" ]; then
   CORS_ARG="--cors ${CORS_ORIGIN}"

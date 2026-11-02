@@ -53,8 +53,8 @@ PPID 1 — das Server-Kind der laufenden TUI) mit: zaehlen ja, wegkillen nein.
 `WATCHDOG_MAX_RSS_MIB` ist mit **4 GiB** vorbelegt (`run.sh`, gerechnet in KiB).
 Der Default steht im **Skript**; `.env.example` fuehrt den Key **auskommentiert**.
 Eine aktive Zeile in `.env` waere eine zweite Quelle der Wahrheit (derselbe
-stille Drift wie `MEMORY_LIMIT` in der Portainer-DB, `remote/AGENTS.md` §9
-Fall 2) und schlaegt den Skript-Default still — sichtbar nur an
+stille Drift wie `MEMORY_LIMIT` in der Host-`.env`, `remote/AGENTS.md` §9)
+und schlaegt den Skript-Default still — sichtbar nur an
 `watchdog: aktiv (Schwelle … MiB)` in `/tmp/code-tunnel.log`. Nicht-numerische
 Werte, fuehrende Nullen (`08` waere oktal und reisst unter `set -e` den Start
 mit) und alles unter 256 MiB fallen auf den Default zurueck. Wirksam wird ein
@@ -123,17 +123,17 @@ Diese Zeile nicht entfernen, sonst findet der Doppelklick `opencode` nicht.
 
 ## 9. Was in diesem Ordner escaped wird — und was nicht
 
-- `../.env`: **`AUTH_HASH` unescaped** (`$2a$14$…`), aber in **einfache
-  Anfuehrungszeichen** gesetzt (`AUTH_HASH='$2a$14$…'`). Hier laeuft kein
-  Portainer-Interpolationsschritt — und `run.sh` & Co. sourcen die Datei unter
-  `set -euo pipefail`. Ohne Quotes expandiert Bash `$2` beim Sourcen und bricht
-  mit `$2: unbound variable` ab; der Tunnel startet dann gar nicht mehr.
-  `setup.sh` schreibt den Wert deshalb gequotet, genau so gehoert er in die
-  Datei.
+- `../.env`: `AUTH_HASH` als **einfach-quotierten** Wert eintragen
+  (`AUTH_HASH='$2a$14$…'`). Bash sourct die Datei unter `set -euo pipefail`;
+  ohne Quotes kann es `$`-Sequenzen expandieren. `setup.sh` schreibt den Hash
+  deshalb bereits gequotet. Die Host-`.env` braucht dieselbe Schreibweise:
+  Compose interpoliert unquotierte `$`-Sequenzen in `.env`-Werten.
+- Das fruehere Portainer-`$$`-Escaping war nur fuer die UI-Paste relevant und
+  ist Historie, keine aktuelle Anweisung. Deploys aendern bestehende Env-Dateien
+  nicht.
 - `docker-compose.yml`: **`$$` im `command:`-Heredoc** — Compose substituiert
   sonst, weil der Wert im eingebetteten Python steht (`AUTH_HASH.startswith("$2")`).
-  Das ist ein anderes `$$` als in `remote/.env.production` und bleibt
-  unangetastet.
+  Das ist **Compose-Escaping**, nicht Portainer, und bleibt unangetastet.
 
 ## 10. `Caddyfile.fragment` ist eine Vorlage, kein Caddyfile
 
@@ -182,8 +182,9 @@ echten Sync.
   ueberschreibt einen exportierten Wert — `LOCAL_DIST=… ./sync.sh` wird still
   ignoriert.
 
-Fuer die `$$`-Regel in der Portainer-Kopie und die Pflicht, dass `code` und
-`remote-code` denselben Login teilen: [`../AGENTS.md`](../AGENTS.md).
+Fuer die Deploy-Regeln des Stacks (`opencode-tunnel`, Host-`.env`, keine
+Env-Uebertragung) und die Pflicht, dass `code` und `remote-code` denselben Login
+teilen: [`../AGENTS.md`](../AGENTS.md).
 
 ## 12. Stoppen heisst `disable` **vor** `bootout` — und nicht nur das
 
@@ -224,3 +225,21 @@ dem Proxy, und `handle_errors` liefert `tunnel-down.html`; ebenso setzt der
 aktive Healthcheck (30 s Intervall, 3 Fehlschlaege) den Upstream auf `down`.
 Wer nach dem Stopp `curl -o /dev/null -w '%{http_code}' https://CODE_DOMAIN/`
 laufen laesst und 502 erwartet, hat das Gate und nicht den Tunnel gemessen.
+
+## 13. Deploy nur ueber `local/deploy.sh` — Env bleibt auf dem Host
+
+- Ziel ist `/opt/stacks/opencode-tunnel/compose.yaml`; `local/deploy.sh` pinnt
+  `-p opencode-tunnel`. Verzeichnis und Projektname muessen identisch bleiben;
+  nicht umbenennen oder auseinanderziehen.
+- `deploy.sh` synct ausschliesslich `docker-compose.yml` auf einen zufaelligen
+  Kandidatenpfad im Stack-Verzeichnis, validiert ihn dort mit
+  Projektverzeichnis und Host-`.env` per `docker compose config -q`, ersetzt
+  erst danach `compose.yaml` atomar und ruft `docker compose up -d --wait` auf.
+  Bei einem `up`-Fehler wird die vorherige `compose.yaml` aus einem
+  Recovery-Backup wiederhergestellt; scheitert die Wiederherstellung, bleibt das
+  Backup liegen. Vorher `--dry-run`.
+- `/opt/stacks/opencode-tunnel/.env` ist `root:root 0600` und die einzige
+  Env-Quelle. Sie wird nie aus dem Repo erzeugt, mitgesynct oder ueberschrieben.
+- Kein Portainer-UI-Deploy, kein DB-Patch, kein Paste-`$$`-Escaping fuer die
+  Env. Hintergrund und Migrationsstand:
+  [`strato-vps#1`](https://github.com/reisi007/strato-vps/issues/1).

@@ -11,7 +11,7 @@
 # (@api_ok matcht nie) — der Browser lehnt die Response ab, ohne dass im
 # Caddy-Log etwas auffaellt.
 # dann dort ./sync.sh (validate + reload). Nicht als eigenes Caddyfile nutzen.
-# Voraussetzung: Portainer-Stack code-auth laeuft, SSH-Tunnel Mac -> VPS auf 172.18.0.1:18731.
+# Voraussetzung: Stack opencode-tunnel (Container code-auth) laeuft, SSH-Tunnel Mac -> VPS auf 172.18.0.1:18731.
 __CODE_DOMAIN__ {
 	import security_headers
 	import compress

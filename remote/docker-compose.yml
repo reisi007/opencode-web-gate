@@ -1,10 +1,15 @@
-# Portainer-Stack: code-remote — ZWEITER Weg neben Mac-Tunnel (CODE_DOMAIN bleibt).
-# Deploy: Portainer -> Stacks -> Add stack `code-remote` -> Web editor -> diese Datei pasten.
+# Stack: dev-vm — ZWEITER Weg neben Mac-Tunnel (CODE_DOMAIN bleibt).
+# Deploy: ./remote/deploy.sh (rsync -> zufälliger .compose.candidate.*-Pfad im
+# Stack-Ordner, Compose- und RAM-Limit-Validierung, atomarer Austausch gegen
+# compose.yaml, danach docker compose up -d --wait). --dry-run prüft Host-Dateien
+# read-only, simuliert den rsync und startet Compose nicht.
+# Env: NUR /opt/stacks/dev-vm/.env (root:root 0600, nicht im Repo; wird nie
+# mitgesynct). Keine Portainer-UI, kein DB-Patch, kein Stack-Env-Paste.
 # Isolation: code-dev + dind + code-auth-remote haengen NUR in `code-remote`.
 # KEIN webnet hier -> kein Zugriff auf Prod-Container per Name. Internet geht via NAT.
 # Caddy braucht zusaetzlich das Netz `code-remote` (siehe remote/README.md, caddyfile-Repo).
 #
-# Env in Portainer (oder Stack-Env):
+# Env in /opt/stacks/dev-vm/.env (root:root 0600):
 #   OPENCODE_PASSWORD   Pflicht (Serverpasswort, Caddy injiziert es upstream, Browser sieht es nie)
 #   CORS_ORIGIN         optional: Browser-Origin fuer --cors (z.B. https://ocweb.all-the.rest).
 #                         Ohne diesen Wert blockt der Browser cross-origin Requests
@@ -15,8 +20,8 @@
 #                         transformers laufen dann anonym — einzelne API-Calls
 #                         (model_info u. ae.) liefern mit leerem String aber 401
 #                         (huggingface_hub#3445). Gehoert NIE ins Repo — Wert
-#                         nur in .env.production bzw. Portainer-Stack-Env; die
-#                         Compose-Datei interpoliert ihn nur. remote/AGENTS.md §20.
+#                         nur in /opt/stacks/dev-vm/.env; die Compose-Datei
+#                         interpoliert ihn nur. remote/AGENTS.md §20.
 #   OPENCODE_AUTOUPDATE   default true: holt beim Containerstart das neueste
 #                         opencode-Binary (V2 releast teils mehrmals taeglich);
 #                         mit false deaktivieren (Image-Stand + CI-Updates only)
@@ -37,9 +42,9 @@
 #   MEMSWAP_LIMIT       default 9g: RAM+Swap GESAMT fuer code-dev (4 GB Swap).
 #                         Owner-Entscheidung 2026-10-21: der GESAMT-Deckel ist
 #                         9g, nicht 16g — der Host soll geschont werden,
-#                         4 GiB Swap reichen. Das ist die seit dem Recreate
-#                         vom 2026-10-21 gemessene und in Betrieb befindliche
-#                         Konfiguration (Stack-Env: 5g/9g).
+#                         4 GiB Swap reichen. Der Live-Container code-dev hat
+#                         aber 7g/12g; dieser Widerspruch ist offen (2026-11-02,
+#                         keine Entscheidung), die Defaults bleiben unveraendert.
 #                         Die Kopplung zwingt den RAM-Fallback mit: 5g RAM
 #                         + 4g Swap = 9g gesamt. Ein blinder Wechsel nur auf
 #                         MEMSWAP_LIMIT liefe bei 7g RAM auf 2 GiB Swap —
@@ -64,25 +69,19 @@
 #                         Wert und keine Empfehlung: er loeste am 21.10. unter
 #                         paralleler Build-Last aus, Builds werden dann
 #                         unterbrochen.
-#                         Ein Wert in der Stack-Env ist hier ein BEWUSSTER
-#                         OVERRIDE des Skript-Defaults (im Skript bleibt 100 MB
-#                         stehen) und keine zweite Quelle der Wahrheit fuer den
-#                         Default — §9
-#                         Fall 2 (Compose-Default in die DB heben, damit er
-#                         sichtbar wird) bleibt unberuehrt und wird hier nicht
+#                         Ein Wert in /opt/stacks/dev-vm/.env ist hier ein
+#                         BEWUSSTER OVERRIDE des Skript-Defaults (im Skript
+#                         bleibt 100 MB stehen) und keine zweite Quelle der
+#                         Wahrheit fuer den Default — §9 „Env-Aenderungen: nur
+#                         die Host-.env“ bleibt unberuehrt und wird hier nicht
 #                         gemacht.
-#                         ZWEI VORBEDINGUNGEN: (1) Der Stack-Env-Wert erreicht
-#                         den Container erst, wenn die Compose-Datei aus dem
-#                         Repo (mit dem Mapping im environment-Block) deployed
-#                         ist — vorher bleibt er wirkungslos. (2) Nach JEDEM
-#                         Paste von .env.production als Stack Environment ist
-#                         der Wert erneut zu setzen — Keys, die nur in der
-#                         Portainer-DB stehen, werden beim Paste geloescht.
-#                         Bewusst NICHT in .env.production: die Defaults sind
-#                         die einzige Quelle der Wahrheit, und ein Wert in der
-#                         Datei wuerde nur eine zweite schaffen
-#                         (remote/AGENTS.md §9 Fall 2). Wer einen anderen Wert
-#                         braucht, setzt ihn in der Portainer-UI.
+#                         ZWEI VORBEDINGUNGEN: (1) Der Wert erreicht den
+#                         Container erst, wenn die Compose-Datei aus dem Repo
+#                         (mit dem Mapping im environment-Block) deployed ist —
+#                         vorher bleibt er wirkungslos. (2) Er steht in der
+#                         Host-.env (root:root 0600) und wird nie aus dem Repo
+#                         erzeugt oder mitgesynct. Es gibt keinen Paste und
+#                         keine Portainer-DB mehr.
 #   DIND_MEMORY_LIMIT   default 1g: RAM-Limit fuer den dind-Daemon
 #                         Historie: 1300m -> 2.5g (2026-09-29, 2 OOM-Kills am
 #                         26.09.: dockerd und dd, beide im DinD-cgroup) -> 2g
@@ -180,10 +179,10 @@ services:
     # (Host 2 min 44 s eingefroren, harter Reset).
     #
     # ENTSCHEIDUNG 2026-10-21 (Owner): der GESAMT-Deckel ist 9g, nicht 16g.
-    # Begruendung: der Host soll geschont werden, 4 GiB Swap reichen. Das ist
-    # die seit dem Recreate vom 2026-10-21 GEMESSENE und in Betrieb
-    # befindliche Konfiguration (Stack-Env: MEMORY_LIMIT=5g,
-    # MEMSWAP_LIMIT=9g -> memory.max 5,0 GiB, memory.swap.max 4,0 GiB).
+    # Begruendung: der Host soll geschont werden, 4 GiB Swap reichen. Der
+    # Recreate vom 2026-10-21 hatte danach memory.max 5,0 GiB und
+    # memory.swap.max 4,0 GiB — das ist Historie. Der Live-Container laeuft am
+    # 2026-11-02 mit 7g/12g; die Drift ist offen und nicht entschieden.
     # Wegen der Kopplung (Formel oben) wandert der RAM-Fallback mit: 5g RAM
     # + 4g Swap = 9g gesamt. Ein blinder Wechsel nur auf MEMSWAP_LIMIT
     # haette bei 7g RAM nur 2 GiB Swap gelassen — weniger als die gemessene
@@ -282,13 +281,13 @@ services:
       - PORT=8080
       # Tailscale (privater Zugang zu lokal gestarteten Dev-Servern, Userspace-Modus).
       # LEER lassen = Stack laeuft ohne Tailnet, opencode serve startet normal.
-      # TS_AUTHKEY nie ins Image und nie ins Repo, nur hier (Portainer-Stack-Env).
+      # TS_AUTHKEY nie ins Image und nie ins Repo, nur in /opt/stacks/dev-vm/.env.
       # Nicht ephemer: der Node soll seine Tailnet-IP dauerhaft behalten.
       - TS_AUTHKEY=${TS_AUTHKEY}
       - TS_TAILSCALE_HOSTNAME=${TS_TAILSCALE_HOSTNAME:-code-dev}
       # CORS-Origin fuer Browser-Clients (PWA, opencode serve --cors).
       # LEER lassen = kein --cors, der Stack verhaelt sich wie vorher.
-      # MUSS hier stehen: stack.env liefert nur Interpolationswerte fuer
+      # MUSS hier stehen: die Host-.env liefert nur Interpolationswerte fuer
       # ${...}, es erzeugt kein Container-Env. Ein Kommentar im Kopf dieser
       # Datei tut das auch nicht — siehe AGENTS.md §18.
       - CORS_ORIGIN=${CORS_ORIGIN}
@@ -301,7 +300,8 @@ services:
       # RAM-Waechter (remote/ram-watchdog.sh). Bewusst OHNE `:-`-Default:
       # leer reicht bis zum Skript durch, das seine Defaults selbst haelt —
       # sonst waere der Compose-Wert eine zweite Quelle der Wahrheit und
-      # wuerde den Skript-Default still ueberstimmen (AGENTS.md §9 Fall 2).
+      # wuerde den Skript-Default still ueberstimmen (AGENTS.md §9,
+      # „Env-Aenderungen: nur die Host-.env“).
       # LEER = Skript-Default, also harmlos (AGENTS.md §18).
       # Der Waechter hat zwei Trigger:
       #   A) cgroup-anon (RAM OHNE Page-Cache) >= THRESHOLD_PERCENT -> SIGTERM
@@ -345,7 +345,7 @@ services:
       # Pfad MUSS identisch bleiben mit /etc/fstab auf dem VPS. Beim Umstieg
       # 2026-09-29 kam das Named Volume (31 GB) hierher; es ist seither leer
       # und wird nicht mehr verwendet. Warum Bind-Mount und kein Volume-Pfad
-      # unter /var/lib/docker/volumes: Portainer/Docker koennte einen Volume-
+      # unter /var/lib/docker/volumes: Docker koennte einen Volume-
       # Pfad als verwaist einstufen und wegrationalisieren — der Pfad unter
       # /srv ist fuer Docker ein ganz normaler Host-Pfad. Details und die
       # Revert-Historie (2026-09-27): remote/README.md, Abschnitt "100-GB-
@@ -374,7 +374,7 @@ services:
   # ROOTLESS statt privileged (2026-09-26). Vorher: privileged: true, das ergab
   # CapEff 000001ffffffffff (alle 37 Capabilities) und /dev/vda4 war sichtbar —
   # also faktisch Root auf dem Host, auf dem /home/webadmin/websites, die
-  # MariaDB-Volumes, die TLS-Keys, portainer.db und die rclone-Config liegen.
+  # MariaDB-Volumes, die TLS-Keys und die rclone-Config liegen.
   # Da code-dev die Docker-CLI hat und DOCKER_HOST auf diesen Daemon zeigt,
   # war das der direkte Weg aus dem Dev-Container in die Prod-Daten.
   #

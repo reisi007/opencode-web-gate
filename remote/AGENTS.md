@@ -1,58 +1,81 @@
 # AGENTS.md — Regeln fuer `remote/` (VPS-Weg)
 
 Beschreibung und Messwerte stehen in [`README.md`](README.md). Hier nur die
-Regeln fuer `docker-compose.yml` / `entrypoint.sh` / `.env.production`.
+Regeln fuer `docker-compose.yml` / `entrypoint.sh` / die Host-`.env`.
 Allgemeine Auth-Regeln: [`../AGENTS.md`](../AGENTS.md).
 
-## 1. Deploy: Portainer-UI ist der Normalfall, SSH ist der dokumentierte Ausweg
+## 1. Deploy: aus dem Repo nach `/opt/stacks/dev-vm`
 
-`docker-compose.yml` wird in den Web-Editor gepastet, `.env.production` als
-Stack Environment. Ein File, kein Upload. Nach jeder Aenderung: Stack in
-Portainer neu deployen — eine Datei im Repo aendert auf dem VPS **nichts**.
+`remote/deploy.sh` synct `docker-compose.yml` auf einen zufaelligen
+Kandidatenpfad in `/opt/stacks/dev-vm`, validiert ihn dort mit
+Projektverzeichnis und Host-`.env` und ruft erst nach dem atomaren Ersetzen von
+`compose.yaml` `docker compose up -d --wait` auf. `--dry-run` prueft
+Host-Dateien read-only und simuliert den rsync; es startet Compose nicht. Vor dem
+`up` vergleicht das Skript die aufgeloesten `code-dev`-RAM-Limits mit dem
+laufenden Container (dafuer ist `python3` auf dem Host noetig). Bei Abweichung
+bricht es ab, damit die offene 5g/9g-vs-7g/12g-Drift nicht still entschieden
+wird. Schlaegt `up` fehl, wird die vorherige `compose.yaml` aus einem
+Recovery-Backup wiederhergestellt; scheitert die Wiederherstellung, bleibt das
+Backup liegen. Vor jedem echten Lauf den Dry-run ansehen; ein Datei-Commit
+allein aendert auf dem VPS **nichts**.
 
-`.env.production` ist gitignored und trotzdem die einzige Quelle fuer den
-laufenden Stack. `setup.sh` schreibt sie **nicht** (nur `.env`). Jede Zeile muss
-`KEY=WERT` ergeben, wenn sie eingefuegt wird.
+- **Nur die Compose-Datei wird uebertragen.** Die `.env` existiert nur auf dem
+  Host (`root:root 0600`) und wird nie aus dem Repo erzeugt, mitgesynct oder
+  ueberschrieben.
+- **Der Script-Parameter `-p dev-vm` und das Zielverzeichnis muessen
+  uebereinstimmen.** `dev-vm` ist der Volume-Namespace
+  (`dev-vm_dind-data-rootless`, `dev-vm_gh-config`,
+  `dev-vm_gh-ssh`, `dev-vm_opencode-data/-config/-state`,
+  `dev-vm_tailscale-state`). Nicht umbenennen. `dev-vm_code-remote-projects`
+  bleibt als historischer Volume-Name in der Namespace-Inventarliste erhalten.
+- **Env-Schluessel** (nur Namen): `AUTH_USER`, `AUTH_HASH`, `AUTH_SECRET`,
+  `SESSION_TTL`, `OPENCODE_PASSWORD`, `CORS_ORIGIN`, `HF_TOKEN`, `IMAGE`,
+  `CPU_CORES`, `MEMORY_LIMIT`, `MEMSWAP_LIMIT`, `DIND_CPU_CORES`,
+  `DIND_MEMORY_LIMIT`, `DIND_MEMSWAP_LIMIT`, `TS_AUTHKEY`,
+  `TS_TAILSCALE_HOSTNAME`, `OPENCODE_AUTOUPDATE`, `OPENCODE_UPDATE_INTERVAL`,
+  `OPENCODE_UPDATE_HOURS`, `OPENCODE_UPDATE_RESTART`, `RAM_WATCHDOG_*`.
+- **Kein Portainer mehr:** kein UI-Editor, kein Stack-Env-Paste, kein
+  DB-Patch. Migrationsstand:
+  [`strato-vps#1`](https://github.com/reisi007/strato-vps/issues/1).
+- Watchtower bleibt global konfiguriert; bestehende Labels (u. a. die Ausnahme
+  fuer `code-dev`) werden nicht umgestellt.
 
-### Der SSH-Weg
+Fuer einen bewusst einzelnen Service (z. B. nur `code-dev` nach einem
+Image-Wechsel) auf dem Host:
 
 ```sh
-cd /var/lib/docker/volumes/portainer_data/_data/compose/49   # Stack dev-vm
-docker compose --env-file stack.env -p dev-vm up -d --no-deps code-dev
+cd /opt/stacks/dev-vm
+docker compose up -d --no-deps code-dev
 ```
 
-**Immer `--no-deps` und immer nur den einen Service, der sich wirklich
-geaendert hat.** Grund ist §2: `docker compose --env-file` escaped `$$` **nicht**
-— ein volles `up -d` recreated auch `code-auth-remote`, der dann `$$2a$$14$$…`
-statt `$2a$14$…` bekommt; `ensure_bcrypt()` prueft auf `$2` und der Sidecar
-startet nicht. **Vorher den Diff ansehen, dann entscheiden, welche Services
-betroffen sind** — nicht pauschal `up -d`.
+Das ist ein gezielter Eingriff, kein Ersatz fuer den normalen Deploy. Ein
+Recreate beendet laufende Sessions im Container — vorher ankuendigen.
 
-### Was ein SSH-Deploy NICHT pflegt: die Portainer-DB
+## 2. `AUTH_HASH` steht literal in der Host-`.env`
 
-Portainer haelt die Stack-Env in seiner Datenbank und schreibt `stack.env` bei
-jedem **UI**-Deploy daraus neu. Ein per SSH deployter Stack laeuft also korrekt,
-verliert aber neue Env-Keys beim naechsten Browser-Klick. Siehe §17 fuer den
-Patchweg und §9 Fall 1.
+`/opt/stacks/dev-vm/.env` enthaelt den Hash bei neuen oder rotierten Werten
+einfach-quotiert, z. B. `AUTH_HASH='$2a$14$…'`. Compose interpoliert unquotierte
+`$`-Sequenzen in `.env`-Werten; einfache Anfuehrungszeichen erhalten den Hash
+literal. Das fruehere Portainer-`$$`-Escaping ist Historie und keine aktuelle
+Paste-Anweisung. Vor jedem weiteren Compose-Deploy muss ein vorhandener
+unquotierter Wert geprueft werden: Compose muss den Hash korrekt erhalten, und
+der effektive Wert muss zum laufenden Auth-Container passen. Wenn nicht, den
+Wert manuell einfach quotieren. Deploy-Skripte schreiben die Host-`.env` nie um.
 
-## 2. `AUTH_HASH` gehoert als `$$2a$14$…` in `.env.production`
+**Nicht "aufraeumen", was im laufenden Container steht.** Im Zweifel
+`docker inspect code-auth-remote` gegenpruefen; der Container muss `$2` am
+Hash-Anfang erhalten.
+Der Sidecar failt closed, wenn `ensure_bcrypt()` nicht mit `$2` beginnt.
 
-Portainer interpoliert den Env-Wert, bevor er den Container erreicht; der
-Sidecar bekommt also `$2a$14$…`. `AUTH_HASH` ist der einzige betroffene Wert
-(die anderen enthalten kein `$`).
-
-**Nicht "aufraeumen".** `docker compose --env-file` escaped `$$` *nicht* — wer
-lokal testet, sieht den Wert doppelt escaped und macht ihn unescaped, womit der
-Login auf `remote-code` kaputt ist (Container-Start bricht ab mit
-`AUTH_HASH-Format unsupported`, weil `ensure_bcrypt()` auf `$2` prueft). Im
-Zweifel `docker inspect code-auth-remote` gegenpruefen, nicht lokal composen.
+Das `$$` in den Compose-Heredocs (`command: sh -c "cat << 'PYEOF' …"`) ist
+**Compose-Escaping** und bleibt unangetastet — es ist ein anderer Mechanismus.
 
 ## 3. Niemals `extra_hosts` / `host-gateway` zuruecknehmen
 
 `extra_hosts` repariert `127.0.0.1` nicht, es **ergaenzt nur einen Namen fuer
-eine Host-IP** — es oeffnet eine Tuer zum ganzen VPS (Portainer-UI auf `8000`
-unverschluesselt, Portainer-API auf `9443`, Caddy auf 80/443). Nicht
-zuruecknehmen.
+eine Host-IP** — es oeffnet eine Tuer zum ganzen VPS (Caddy auf 80/443 und
+jeden weiteren Host-Port, zur Portainer-Zeit auch dessen UI/API auf 8000/9443).
+Nicht zuruecknehmen.
 
 `127.0.0.1` in `code-dev` **ist** der Container, und das ist richtig so: ein
 Dev-Server (`pnpm dev`) laeuft direkt in `code-dev`. Die Loesung fuer "localhost
@@ -66,7 +89,7 @@ aufnehmen.
 
 `privileged: true` ergibt alle Capabilities und sichtbare Host-Blockdevices —
 also faktisch Root auf dem Host, mit `/home/webadmin/websites`, den
-MariaDB-Volumes, den TLS-Keys, `portainer.db` und der rclone-Config in
+MariaDB-Volumes, den TLS-Keys und der rclone-Config in
 Reichweite (`code-dev` hat die Docker-CLI und zeigt per `DOCKER_HOST` auf diesen
 Daemon). Rootless lassen.
 
@@ -123,6 +146,11 @@ Siehe §14 — dort steht auch, warum dieser Pfad *nicht* unter
   (`opencode serve`). PID 1 killen = der Container stirbt = `restart:
   unless-stopped` = **die Sitzung ist weg**. Nichts darf hier den PID-1-Pfad
   ausloesen — **ausser dem RAM-Waechter** (siehe unten).
+- **Offene Drift, nicht still aufloesen (2026-11-02):** Der Repo-Default ist
+  `MEMORY_LIMIT=5g` / `MEMSWAP_LIMIT=9g` (Owner-Entscheidung 2026-10-21), der
+  Live-Container `code-dev` hat **7g/12g**. Keine der beiden Zahlen als
+  "aktuellen Sollstand" festschreiben und die Defaults nicht aendern; Stand und
+  Klaerungsbedarf: [`../agents.todo.md`](../agents.todo.md).
 - **Die RAM-Limits dieses Stacks summieren sich gegen einen Host, der zugleich
   Produktion faehrt.** Wer hier "nur ein bisschen mehr" sagt, muss die Summe
   gegenrechnen, nicht den einzelnen Container.
@@ -142,16 +170,15 @@ Regeln fuer `remote/ram-watchdog.sh`:
   oberhalb der MemAvailable-Stufe, bei der der Host im Stoerfall stand — und
   zugleich so niedrig, dass ein normaler Build ihn nicht ausloest. Der
   Codepfad B2/B3 bleibt vollstaendig vorhanden.
-- **Ein Stack-Env-Wert fuer `RAM_WATCHDOG_HOST_AVAILABLE_MB` braucht zwei
-  Dinge, sonst bleibt er wirkungslos:** (1) das Mapping im `environment:`-Block
-  der Compose-Datei (§18) — er erreicht den Container erst, wenn die
-  Compose-Datei aus dem Repo deployed ist; (2) er muss nach **jedem** Paste von
-  `.env.production` als Stack Environment erneut gesetzt werden (§1, §17) —
-  Keys, die nur in der Portainer-DB stehen, werden beim Paste geloescht.
-  Bewusst in der Portainer-UI und nicht dauerhaft in `.env.production`: die
-  Defaults (im Skript) bleiben die einzige Quelle der Wahrheit — der
-  Stack-Env-Wert ist ein bewusster Override mit Pflegepflicht, keine zweite
-  Quelle fuer den Default.
+- **Ein Wert fuer `RAM_WATCHDOG_HOST_AVAILABLE_MB` braucht zwei Dinge, sonst
+  bleibt er wirkungslos:** (1) das Mapping im `environment:`-Block der
+  Compose-Datei (§18) — er erreicht den Container erst, wenn die Compose-Datei
+  aus dem Repo deployed ist; (2) die Zeile in der Host-`.env`
+  (`/opt/stacks/dev-vm/.env`) und danach ein Deploy. Bewusst nicht als zweiter
+  Default: die Defaults im Skript bleiben die einzige Quelle der Wahrheit — der
+  Host-Wert ist ein bewusster Override mit Pflegepflicht.
+- **`RAM_WATCHDOG_*` gehoert nicht in eine UI oder eine Datenbank.** Es gibt
+  keine Stack-Env ausser der Host-`.env` (§1).
 - **Zwei Trigger, zwei Reihenfolgen:**
   - *Container-Trigger* (`anon + slab_unreclaimable` gegen `memory.max`):
     sofort SIGTERM an PID 1. Ersetzt den abrupten Kernel-OOM-Kill, dessen
@@ -192,21 +219,16 @@ Regeln fuer `remote/ram-watchdog.sh`:
   zwei verschiedene Sysctls.** Bei RAM-Diagnosen immer das vorherige Kommando
   mitlesen, sonst wird die naechste Massnahme auf einer Verwechslung gebaut.
 
-### Zwei Faelle, in denen die DB gepatcht wird — und wann NICHT
+### Env-Aenderungen: nur die Host-`.env`
 
-Nach dem Schema in §17.4:
-
-- **Fall 1: Neuer Env-Key, der per SSH-Deploy kam.** Der Stack laeuft korrekt,
-  aber Portainer kennt den Key nicht und schreibt `stack.env` bei jedem
-  UI-Deploy ohne ihn neu.
-- **Fall 2: Sichtbarkeit.** Werte, die bisher nur als Compose-Default
-  existierten, in die Env heben, damit sie in der UI sichtbar und editierbar
-  sind. Nachteil: ab jetzt schlaegt der DB-Wert der Datei still.
-- **Nicht** patchen, wenn nur ein Compose-Default geaendert wurde: der Default
-  greift ohnehin, und der Weg durch die DB erzeugt nur eine zweite Quelle der
-  Wahrheit.
-- **Immer `.env.production` mitziehen** (§1). Stehen die Keys nur in der DB und
-  nicht in der Datei, loescht der naechste Paste sie wieder.
+- **Neuer Env-Key:** in `/opt/stacks/dev-vm/.env` ergaenzen (`root:root 0600`)
+  **und** im `environment:`-Block der Compose-Datei mappen (§18). Danach
+  `remote/deploy.sh`. Es gibt keinen zweiten Speicherort und keinen DB-Patch.
+- **Compose-Default aendern:** nur die Datei aendern. Ein Wert in der Host-`.env`
+  wuerde den Default still ueberschreiben und eine zweite Quelle schaffen —
+  bewusst nur, wenn der Override gewollt ist.
+- **Host-`.env` nie aus dem Repo erzeugen.** Fehlt ein Key, wird er auf dem Host
+  ergaenzt, nicht durch einen neuen Deploy-Lauf.
 
 ### Akute OOM-Lage ohne Recreate entschaerfen
 
@@ -305,9 +327,11 @@ leer.** Messwerte und Performance: [`README.md`](README.md), Abschnitt
 
 `/usr/local/bin/volume-backup.sh` arbeitet mit einer **Allowlist** (4 explizit
 benannte Volumes plus `/home/webadmin/portal`, `/home/webadmin/websites`,
-`/opt/stacks`, `portainer_data/_data/compose`); `dev-vm_*` steht als
+`/opt/stacks`); `dev-vm_*` steht als
 „Dev-Sandbox“ in der Ausschluss-Liste, `/srv` in keiner Quelle. Die 100-GB-Datei
-wird also **bewusst nicht** gesichert — richtig so. Wer das Skript anfasst, darf
+wird also **bewusst nicht** gesichert — richtig so. `portainer_data/_data/compose`
+ist mit dem Portainer-Purge am 2026-11-02 entfernt worden; der Pfad existiert
+nicht mehr, die Erwähnung ist historisch. Wer das Skript anfasst, darf
 die Allowlist **nicht** auf „alles unter /var/lib/docker“ umbauen.
 
 ## 15. Tailscale im Userspace-Modus — sechs Regeln
@@ -329,9 +353,9 @@ sind. Vollstaendige Begruendung: [`TAILSCALE-PLAN.md`](TAILSCALE-PLAN.md).
    `/home/dev/.local/share/tailscale`. Ohne dieses Volume waere die 100.x-Adresse
    nach jedem Recreate eine neue (siehe §8). Der Pfad steht deshalb auch in der
    Chown-Liste des Entrypoints.
-4. **`TS_AUTHKEY` nur aus `.env.production`,** nie ins Image, nie ins Repo. Und
-   **nicht ephemer**: der Node soll seine Tailnet-IP dauerhaft behalten. Leer =
-   der Stack laeuft ohne Tailnet, alles wie bisher.
+4. **`TS_AUTHKEY` nur aus der Host-`.env`** (`/opt/stacks/dev-vm/.env`), nie ins
+   Image, nie ins Repo. Und **nicht ephemer**: der Node soll seine Tailnet-IP
+   dauerhaft behalten. Leer = der Stack laeuft ohne Tailnet, alles wie bisher.
 5. **Ein Tailscale-Problem darf `opencode serve` nie blockieren.** Die Funktion
    gibt in jedem Fehlerfall `return 0` und loggt eine Warnung. Der Weg ist
    additiv, keine Voraussetzung fuer den Betrieb.
@@ -359,8 +383,10 @@ dieselben Werte zusaetzlich per `git config --global`. `/home/dev` ist selbst
 - **`GIT_AUTHOR_*` schlaegt jede `user.name`/`user.email` aus `.git/config`.**
   Wer fuer EINEN Commit einen anderen Autor will, braucht
   `env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL git commit ...` — ein
-  `git config user.name` im Repo genuegt nicht. Wer dauerhaft umstellt, setzt
-  die Variablen im Stack-Env.
+  `git config user.name` im Repo genuegt nicht. Ein Eintrag in der Host-`.env`
+  allein erreicht den Container **nicht**: Die Compose-Datei mappt
+  `GIT_AUTHOR_*` nicht. Dauerhaft umstellen braucht ein explizites
+  `environment:`-Mapping (§18) oder ein neues Image/ENV.
 - **`git push` ohne Prompt:** `gh auth setup-git` schreibt seinen
   Credential-Helper nach `~/.gitconfig`, das keinen Recreate ueberlebt. Der
   Entrypoint setzt den Helper deshalb bei jedem Start neu. Wer das entfernt,
@@ -370,59 +396,22 @@ dieselben Werte zusaetzlich per `git config --global`. `/home/dev` ist selbst
   uid 1000 schreiben kann. Nicht entfernen; im laufenden Container laesst sich
   das einmalig mit `sudo chmod 1777 /tmp/opencode` nachziehen.
 
-## 17. Die Portainer-DB ist eine Quelle der Wahrheit — und die haesslichste
+## 17. Portainer-DB: entfallen (Portainer-Exit 2026-11-02)
 
-Die Datei `/var/lib/docker/volumes/portainer_data/_data/portainer.db` (BoltDB)
-enthaelt **alle** Stacks. Wer hier etwas aendert, beruehrt sie.
+Die frueher hier beschriebene BoltDB (`portainer.db`) ist **keine** Quelle der
+Wahrheit mehr. Heute ist `/opt/stacks/dev-vm/.env` die einzige Env-Quelle und
+`/opt/stacks/dev-vm/compose.yaml` die einzige Compose-Kopie. Keine DB-Patches,
+kein Web-Editor, kein Stack-Env-Paste, kein `bbolt`-Werkzeug.
 
-1. **Bucket-Keys sind 8 Byte Big-Endian, kein ASCII.** `dev-vm` (ID 49) liegt
-   unter `00 00 00 00 00 00 00 31`. Wer `Get([]byte("49"))` benutzt, bekommt
-   **nichts** — immer iterieren und im JSON nach `Name` suchen.
-2. **Fuer Compose-Stacks existiert KEIN `FileContent`.** Die Compose-Datei liegt
-   **nur** auf der Platte (`ProjectPath=/data/compose/<id>`). Wer im Editor
-   `Save` klickt, ohne vorher die Datei aus dem Repo-HEAD einzufuegen, deployt
-   einen **leeren** Stack.
-3. **Portainer sperrt die DB exklusiv** — auch read-only. Zum Lesen: Portainer
-   kurz stoppen, Kopie nehmen, wieder starten. **Und:** `Timeout` in bbolt
-   **blockiert**, es bricht nicht ab; nur ein `db.Close()` vor der naechsten
-   `Open` hilft.
-4. **Der Patch, wenn ein SSH-Deploy neue Env-Keys mitbringt** (§9 Fall 1):
-
-   ```sh
-   D=/var/lib/docker/volumes/portainer_data/_data
-   cp -a "$D/portainer.db" "$D/portainer.db.bak-$(date +%Y%m%d-%H%M%S)"  # VOR dem Stop
-   docker stop portainer
-   cp -a "$D/portainer.db" "$D/portainer.db.bak-$(date +%Y%m%d-%H%M%S)"  # AKTUELLER Stand
-   # Schreib-Container als root auf dem Volume; kein Go auf Mac und VPS
-   docker run --rm -v "$D:/data" -v /w:/w -w /w golang:1.24-alpine \
-     sh -c 'go mod init p >/dev/null 2>&1; go get go.etcd.io/bbolt@v1.4.0 && go run . /data/portainer.db dev-vm KEY=WERT'
-   docker start portainer
-   ```
-
-   **Das `go mod init` ist Pflicht, nicht Kosmetik:** in `golang:1.24-alpine`
-   bricht `go get` ohne Modul ab mit *"'go get' is no longer supported outside a
-   module"*. Der zweite Backup ist nicht ueberfluessig: Portainer schreibt im
-   `SnapshotInterval` (5 min), ein Patch auf einem aelteren Stand rolled seine
-   letzten Writes zurueck.
-5. **Zwei Regeln, die den Patch gefaehrlich machen, wenn man sie nicht kennt:**
-   - **Nur ein Feld anfassen.** Den Datensatz als
-     `map[string]json.RawMessage` lesen und **ausschliesslich** den Schluessel
-     `Env` ersetzen. Ein Unmarshal/Marshal-Roundtrip ueber ein Struct kann Felder
-     umsortieren oder weglassen.
-   - **Vorher/nachher fingerabdrucken.** Ueber **alle** Keys aller uebrigen
-     Buckets einen SHA256 bauen und vergleichen; bei Abweichung abbrechen.
-6. **Werkzeug:** es gibt auf keinem der beiden Rechner Go. `bbolt` als
-   Wegwerf-Container ist der Weg; `strings` findet zwar Klartext, taugt aber
-   nicht zum Schreiben.
-7. **Was der Patch behebt und was nicht:** die **Env** ist danach persistent.
-   Die **Compose-Datei** ist es nicht — sie steht nicht in der DB (Punkt 2).
-   Nach einem UI-Deploy muss `remote/docker-compose.yml` aus dem HEAD trotzdem
-   eingefuegt werden.
+Historische Details (Bucket-Keys, `FileContent`, Snapshot-Intervall) bleiben in
+der Git-Historie; der Migrationsstand ist in
+[`strato-vps#1`](https://github.com/reisi007/strato-vps/issues/1) getrackt.
+Sie sind keine Handlungsanweisung.
 
 ## 18. Ein dokumentierter Env-Key ohne Mapping ist kein Container-Env
 
-`stack.env` (und jede andere Stack-Env-Quelle) liefert **nur
-Interpolationswerte** fuer `${VAR}` in der Compose-Datei. Es erzeugt **kein**
+`/opt/stacks/dev-vm/.env` (und jede andere Env-Quelle) liefert **nur
+Interpolationswerte** fuer `${VAR}` in der Compose-Datei. Sie erzeugt **kein**
 Container-Env. Eine Variable sieht der Container nur, wenn sie im
 `environment:`-Block des Service **explizit gemappt** ist.
 
@@ -477,9 +466,10 @@ Offene Punkte: `agents.todo.md`.
 und ist beim naechsten Recreate weg. Deshalb **drei** Stellen, nicht eine:
 
 1. **`HF_TOKEN` im `environment:`-Block** von `code-dev` (ohne `:-`, leer bleibt
-   leer — §18). Der Wert kommt aus der Stack-Env.
-2. **`HF_TOKEN` in `.env.production`** — Paste-Vorlage fuer die Portainer-UI,
-   gitignored, Klartext. Kein `$$`-Escaping noetig, der Token hat kein `$`.
+   leer — §18). Der Wert kommt aus der Host-`.env`.
+2. **`HF_TOKEN` in der Host-`.env`** (`/opt/stacks/dev-vm/.env`, `root:root
+   0600`) — einzige Env-Quelle, Klartext, gitignored. Kein Escaping noetig, der
+   Token hat kein `$`.
 3. **`huggingface_hub[cli]` im Image** (Dockerfile, per
    `pip --break-system-packages` ins System-Python, nicht pipx) — sonst ist `hf`
    nach jedem Recreate weg.

@@ -88,4 +88,5 @@ if getent hosts "${CODE_DOMAIN:-code.example.com}" >/dev/null 2>&1 || dscacheuti
 else
   echo "WARN: DNS ${CODE_DOMAIN:-code.example.com} loest nicht auf -> A-Record auf VPS setzen"
 fi
-echo "Fertig. Naechste Schritte siehe README (Portainer-Stack + Caddyfile-Fragment + ./local/start-tunnel.command)."
+echo "Fertig. Naechste Schritte siehe README (./local/deploy.sh fuer den Stack, Caddyfile-Fragment, ./local/start-tunnel.command)."
+echo "Hinweis: Dieses Skript schreibt nur die lokale .env. Die Host-.env unter /opt/stacks/ wird nie hier erzeugt."
