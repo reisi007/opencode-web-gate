@@ -1,0 +1,22 @@
+[Unit]
+Description=DinD-OOM-Guard fuer code-remote-dind (nur Label com.agent-tasks.stack)
+Documentation=https://github.com/reisi007/opencode-web-gate/blob/main/remote/README.md
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/dind-guard.sh
+Restart=always
+RestartSec=10
+# journald uebernimmt stdout/stderr; kein eigenes Logfile noetig.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dind-guard
+# Optionales Tuning (Defaults stehen im Skript):
+# Environment=DIND_GUARD_POLL_INTERVAL=10
+# Environment=DIND_GUARD_COOLDOWN_SECONDS=600
+# Environment=DIND_GUARD_RESTART_GRACE_SECONDS=60
+
+[Install]
+WantedBy=multi-user.target

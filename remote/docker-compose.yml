@@ -82,34 +82,23 @@
 #                         Host-.env (root:root 0600) und wird nie aus dem Repo
 #                         erzeugt oder mitgesynct. Es gibt keinen Paste und
 #                         keine Portainer-DB mehr.
-#   DIND_MEMORY_LIMIT   default 1g: RAM-Limit fuer den dind-Daemon
-#                         Historie: 1300m -> 2.5g (2026-09-29, 2 OOM-Kills am
-#                         26.09.: dockerd und dd, beide im DinD-cgroup) -> 2g
-#                         (2026-10-02) -> 1g (2026-10-04).
-#                         2026-10-02 gesenkt, weil das HOST-Budget sonst nicht
-#                         aufgeht: code-dev 5g + dind 2,5g + Rest = 8,7 GB
-#                         bei 7,47 GB nutzbarem Host-RAM.
-#                         Messwerte 2026-10-02, die die Sicherheit belegen:
-#                         memory.peak 419012608 (400 MB), memory.current
-#                         332775424 (317 MB) bei laufendem Daemon = 8,65 %
-#                         des alten 2,5-g-Deckels. Der 2-g-Deckel liegt beim
-#                         5-fachen des gemessenen Peaks.
-#                         2026-10-04 auf 1g GESENKT, weil code-dev auf 7g
-#                         gewachsen ist und das Host-Budget sonst weiter
-#                         ueberschritten wird. Messwerte 2026-10-04: Peak
-#                         656031744 (626 MB) bei laufendem Daemon — der 1-g-Deckel
-#                         liegt nur beim ~1,6-fachen des gemessenen Peaks, also
-#                         deutlich knapper als die 5-fach-Marge der Vorstufen
-#                         (2,5g und 2g). Bewusst so gewaehlt: der Spielraum ist
-#                         kleiner geworden, das Risiko bleibt aber begrenzt,
-#                         weil ein OOM-Kill im DinD-cgroup nur Builds im Daemon
-#                         trifft, nicht die code-dev-Sitzung (siehe unten).
-#   DIND_MEMSWAP_LIMIT  default 2g: RAM+Swap gesamt fuer den dind-Daemon
-#                         (1 GB Swap fuer Builds im Daemon). Gleich mit der
-#                         RAM-Senkung mitgezogen: memswap_limit muss groesser
-#                         bleiben als mem_limit, sonst ist der Swap-Deckel
-#                         exakt mem_limit.
 #   DIND_CPU_CORES      default 2: CPU-Quota fuer den dind-Daemon
+#   dind-RAM            NICHT per Env steuerbar: mem_limit 2g / memswap_limit 4g
+#                         stehen fest in der Compose-Datei. Die frueheren Keys
+#                         DIND_MEMORY_LIMIT und DIND_MEMSWAP_LIMIT sind am
+#                         2026-11-05 entfallen; die Compose-Datei ist die
+#                         einzige Quelle (Issue #2, remote/AGENTS.md §9).
+#                         Historie: 1300m -> 2,5g (2026-09-29, 2 OOM-Kills am
+#                         26.09.: dockerd und dd, beide im DinD-cgroup) -> 2g
+#                         (2026-10-02) -> 1g (2026-10-04) -> 2g (2026-11-05).
+#                         Der 1-g-Deckel war zu knapp: am 2026-11-05 lief der
+#                         rootless Daemon wiederholt in OOM. Der 2-g-Deckel
+#                         gilt fuer Daemon UND innere Container; innere
+#                         cgroups sind in diesem Setup bestaetigt nicht
+#                         moeglich (Alpine ohne systemd, /sys/fs/cgroup
+#                         read-only). Schutz bei erneutem OOM: der
+#                         hostseitige dind-guard.sh stoppt nur markierte
+#                         E2E-Container, siehe remote/README.md.
 #   TS_AUTHKEY          optional: Tailscale-Auth-Key. LEER = Stack laeuft ohne
 #                         Tailnet. Setzen erlaubt den privaten Zugriff auf
 #                         lokal gestartete Dev-Server in code-dev
@@ -191,10 +180,11 @@ services:
     # 7,47 GiB nutzbar), die Swap-Reserve bleibt bei 4 GiB.
     #
     # Der Swapfile auf dem Host ist 16 GB (2026-10-20 von 10 GB auf 16 GB
-    # vergroessert), damit der Swap-Deckel hier real ist: dind darf 1 GB
-    # (2g - 1g), code-dev 4 GB, das sind 5 GB — der Rest ist Reserve fuer
-    # den Portal-Stack. Ohne Swapfile dieser Groesse ist der Deckel hier
-    # eine Liuege und der Host stirbt trotzdem.
+    # vergroessert), damit die Swap-Deckel hier real sind: dind darf 2 GB
+    # (4g - 2g), code-dev 4 GB nach Repo-Fallback (live 5 GB), also 6 GB
+    # (live 7 GB) zusammen — der Rest bleibt Reserve fuer Portal/Host.
+    # Ohne Swapfile dieser Groesse ist der Deckel hier eine Luege und der Host
+    # stirbt trotzdem.
     #
     # GRUND, gemessen am 2026-09-29 (Backup: *.bak-memlimit-20260929-141149):
     # Mit 2g RAM hat der cgroup-OOM-Killer in diesem Container 8x in 24h
@@ -228,7 +218,7 @@ services:
     # konnte diesmal reclaimen statt zu killen. Deshalb 4g.
     #
     # ACHTUNG, die Rechnung geht ab hier deutlich ueber den Host:
-    #   code-dev 7g + dind 1g + Portal ~0,9g + OS/dockerd ~0,7g = ~9,6 GB
+    #   code-dev 7g + dind 1g (damals) + Portal ~0,9g + OS/dockerd ~0,7g = ~9,6 GB
     # bei 7,47 GB nutzbarem Host-RAM — rund 2,1 GB UEBER dem Host. Die beiden
     # Dev-Container erreichen ihre Deckeln moeglichst GLEICHZEITIG, weil der
     # Agent in code-dev per cargo baut und parallel im Daemon per docker baut.
@@ -260,12 +250,17 @@ services:
     #
     # STAND 2026-10-21 (Owner-Entscheidung, s. o.): beides ist anders. Der
     # RAM-Deckel liegt jetzt bei 5g, der Gesamt-Deckel bei 9g, also
-    #   code-dev 5g + dind 1g + Portal ~0,9g + OS/dockerd ~0,7g = ~7,6 GB
+    #   code-dev 5g + dind 1g (damals) + Portal ~0,9g + OS/dockerd ~0,7g = ~7,6 GB
     # bei 7,47 GB nutzbarem Host-RAM — rund 0,1 GB ueber dem Host statt
     # 2,1 GB. Die Restdifferenz faengt der Swap (4 GiB Deckel fuer code-dev),
     # der Host bekommt 2 GiB mehr Luft als mit dem 7g-Deckel. Der RAM-Deckel
     # liegt damit wieder UNTER dem nutzbaren Host-RAM — genau das war das
     # Ziel der Entscheidung ("Host schonen").
+    #
+    # STAND 2026-11-05 (Issue #2): dind liegt jetzt bei 2g/4g statt 1g/2g,
+    # damit sind es mit dem Repo-Default ~8,6 GB (code-dev 5g + dind 2g +
+    # Portal ~0,9g + OS/dockerd ~0,7g). Die offene code-dev-Drift
+    # 5g/9g vs. live 7g/12g wird hier weiterhin nicht entschieden.
     mem_limit: ${MEMORY_LIMIT:-5g}
     memswap_limit: ${MEMSWAP_LIMIT:-9g}
     environment:
@@ -401,40 +396,36 @@ services:
     # Verifiziert mit 1,8 GB tmpfs in einem inneren Container bei mem_limit 600m:
     #   memory.peak   629149696  (genau die Decke)
     #   oom_kill       1
-    # Also ja, das Limit greift. Der OOM-Killer trifft dabei aber den
-    # GROESSTEN Prozess im cgroup — das ist der dind-Daemon, nicht der
-    # schuldige Container. Deshalb ein eigenes Limit fuer den DinD statt
-    # eines gemeinsamen mit code-dev: so stirbt bei einem runaway Build
-    # nur code-remote-dind (restart: unless-stopped, startet neu), waehrend
-    # die code-dev-Session weiterlaeuft.
+    # Also ja, das Limit greift. Historische OOMs trafen den dind-Daemon als
+    # groessten Prozess im cgroup statt den schuldigen Container. Details und
+    # die aktuelle oom_score_adj-Priorisierung stehen unten.
     cpus: ${DIND_CPU_CORES:-2}
-    # 1g RAM + 1g Swap = 2g gesamt. 2026-09-29 von 1300m/3g auf 2,5g/5g
-    # angehoben, am 2026-10-02 auf 2g/4g und am 2026-10-04 auf 1g/2g GESENKT.
-    # Grund der Anhebung am 26.09.: dieser cgroup hat zweimal gefeuert
-    # (dockerd und dd). Der 1300m-Kill ist damit nicht zurueckkehrend — die
-    # damaligen 2g lagen 700 MB ueber der Kill-Schwelle und beim 5-fachen
-    # des gemessenen Peaks (400 MB, 2026-10-02).
-    # Derselbe Haken wie bei code-dev, nur harmloser: der groesste Prozess im
-    # DinD-cgroup ist der dind-Daemon, also stirbt der Daemon und nicht der
-    # schuldige Build — der Agent sieht einen abgebrochenen Build, nicht die
-    # eigene Sitzung. Genau deshalb sind die Limits getrennt (siehe oben).
-    # Rechnung gegen 7,47 GB nutzbares Host-RAM (8 GB RAM minus OS/Docker):
-    # code-dev 7g + dind 1g + Portal ~0,7g + OS ~0,7g = ~9,4 GB. Das ist
-    # ~1,9 GB UEBER dem Host — mehr als vorher (~0,9 GB), weil code-dev von
-    # 5g auf 7g gewachsen ist und die dind-Senkung das nicht ausgleicht.
-    # GELOEST ist das nur mit mehr Host-RAM; hier ist es nur verkleinert.
-    # Beide erreichen ihre Deckel moeglichst GLEICHZEITIG, weil der Agent in
-    # code-dev per cargo baut und parallel im Daemon per docker baut. Wer hier
-    # mehr Luft braucht, muss code-dev senken, nicht dind.
-    #
-    # STAND 2026-10-21: code-dev liegt wieder bei 5g RAM (Owner-Entscheidung,
-    # s. o.), damit summieren sich die RAM-Deckel auf ~7,4 GB bei 7,47 GB
-    # nutzbarem Host-RAM — der dind-Deckel 1g muss also nicht mehr gegen
-    # eine 2-GB-Ueberzeichnung des Hosts verteidigt werden. Die dind-Werte
-    # (1g RAM / 2g gesamt) bleiben unberuehrt, der RAM_WATCHDOG_*-Block
-    # ebenfalls.
-    mem_limit: ${DIND_MEMORY_LIMIT:-1g}
-    memswap_limit: ${DIND_MEMSWAP_LIMIT:-2g}
+    # 2g RAM + 2g Swap = 4g gesamt (2026-11-05, Issue #2). Historie:
+    # 1300m/3g -> 2,5g/5g (2026-09-29) -> 2g/4g (2026-10-02) ->
+    # 1g/2g (2026-10-04) -> 2g/4g (2026-11-05).
+    # Grund der aktuellen Anhebung: der rootless Daemon lief am 2026-11-05
+    # wiederholt in OOM; 1g RAM liess keinen Spielraum fuer parallele Builds.
+    # Die Werte stehen bewusst FEST hier: DIND_MEMORY_LIMIT und
+    # DIND_MEMSWAP_LIMIT sind entfallen, die Compose-Datei ist die einzige
+    # Quelle (remote/AGENTS.md §9).
+    # Host-Docker setzt oom_score_adj=-500 auf den aeusseren Init; der Wert wird
+    # an RootlessKit/dockerd/containerd vererbt. Nested Docker setzt den Score
+    # regulaerer innerer Container explizit (HostConfig.OomScoreAdj, Default 0);
+    # Moby-Rootless hebt nur Scores unter dem aktuellen Daemon-Score an; bei
+    # -500 bleibt der Default 0 also 0. Das soll den DinD-Prozessbaum im aeusseren
+    # cgroups seltener als OOM-Opfer auswaehlen (keine Garantie; live verifizieren).
+    # Ein HOST-weiter OOM kann dadurch relativ code-dev/Portal treffen. Bewusster
+    # Trade-off fuer E2E; kein Host-RAM-Fix. Der Guard beendet markierte E2E-
+    # Container vor/bei OOM. code-dev bleibt unveraendert; Rootless, Capabilities,
+    # Netzwerk und Volumes ebenfalls.
+    # Host-Budget (Stand 2026-11-05, Repo-Default): code-dev 5g + dind 2g +
+    # Portal ~0,9g + OS/dockerd ~0,7g = ~8,6 GB bei 7,47 GB nutzbarem
+    # Host-RAM. Die Differenz faengt der Swap; die offene code-dev-Drift
+    # (Repo 5g/9g vs. live 7g/12g) wird hier NICHT entschieden.
+    # Wer mehr Luft braucht, muss code-dev senken, nicht dind.
+    mem_limit: 2g
+    memswap_limit: 4g
+    oom_score_adj: -500
     # Die drei Eintraege sind NOTWENDIG, nicht Kosmetik — jeweils einzeln
     # getestet, alle drei zusammen laeuft es erst:
     #   seccomp=unconfined     Default-seccomp blockt unshare(CLONE_NEWUSER),
@@ -478,6 +469,11 @@ services:
     # ACHTUNG: "mem_limit"/"cpus" an den INNEREN Containern greifen nicht, weil
     # rootless ohne systemd im Container keine cgroups durchsetzen kann. Die
     # inneren Limits lassen sich also nicht einzeln setzen.
+    # Bestaetigt 2026-11-05 (Issue #2): nicht "noch nicht" — Alpine ohne
+    # systemd, /sys/fs/cgroup ist im Container read-only. Sysbox und
+    # systemd-in-container sind fuer dieses Setup verworfen. Schutz bei
+    # erneutem OOM: der hostseitige dind-guard.sh stoppt nur laufende
+    # Container mit Label com.agent-tasks.stack im DinD.
     #
     # ABER: die Limits hier AM dind-CONTAINER greifen fuer alles, was der Agent
     # in diesem Daemon startet. Die inneren Prozesse teilen sich denselben
@@ -487,11 +483,11 @@ services:
     #   memory.peak  629149696  (= exakt die Decke)
     #   oom_kill     1
     #
-    # Der Haken: bei OOM waehlt der Kernel den GROESSTEN Prozess im cgroup, und
-    # das ist der dind-Daemon, nicht der schuldige Build. Deshalb KEIN
-    # gemeinsames Limit mit code-dev, sondern zwei getrennte — so stirbt ein
-    # runaway Build nur code-remote-dind (restart: unless-stopped) und die
-    # code-dev-Session laeuft weiter.
+    # Historischer Haken: bei OOM war der dind-Daemon der groesste Prozess im
+    # cgroup; die aktuelle oom_score_adj-Priorisierung steht oben.
+    # Der Guard stoppt bei OOM/Druck nur markierte E2E-Container. Deshalb KEIN
+    # gemeinsames Limit mit code-dev, sondern zwei getrennte — ein runaway Build
+    # bleibt auf den wegwerfbaren DinD begrenzt.
 
   # Gleicher Sidecar-Code wie stack/docker-compose.yml (code-auth), aber als eigene
   # Instanz NUR in code-remote -> kein webnet -> kein Prod-Sichtkontakt.

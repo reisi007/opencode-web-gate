@@ -31,9 +31,9 @@ allein aendert auf dem VPS **nichts**.
 - **Env-Schluessel** (nur Namen): `AUTH_USER`, `AUTH_HASH`, `AUTH_SECRET`,
   `SESSION_TTL`, `OPENCODE_PASSWORD`, `CORS_ORIGIN`, `HF_TOKEN`, `IMAGE`,
   `CPU_CORES`, `MEMORY_LIMIT`, `MEMSWAP_LIMIT`, `DIND_CPU_CORES`,
-  `DIND_MEMORY_LIMIT`, `DIND_MEMSWAP_LIMIT`, `TS_AUTHKEY`,
-  `TS_TAILSCALE_HOSTNAME`, `OPENCODE_AUTOUPDATE`, `OPENCODE_UPDATE_INTERVAL`,
-  `OPENCODE_UPDATE_HOURS`, `OPENCODE_UPDATE_RESTART`, `RAM_WATCHDOG_*`.
+  `TS_AUTHKEY`, `TS_TAILSCALE_HOSTNAME`, `OPENCODE_AUTOUPDATE`,
+  `OPENCODE_UPDATE_INTERVAL`, `OPENCODE_UPDATE_HOURS`, `OPENCODE_UPDATE_RESTART`,
+  `RAM_WATCHDOG_*`. Dind-RAM (2g/4g) steht fest in der Compose-Datei, kein Env.
 - **Kein Portainer mehr:** kein UI-Editor, kein Stack-Env-Paste, kein
   DB-Patch. Migrationsstand:
   [`strato-vps#1`](https://github.com/reisi007/strato-vps/issues/1).
@@ -91,7 +91,8 @@ aufnehmen.
 also faktisch Root auf dem Host, mit `/home/webadmin/websites`, den
 MariaDB-Volumes, den TLS-Keys und der rclone-Config in
 Reichweite (`code-dev` hat die Docker-CLI und zeigt per `DOCKER_HOST` auf diesen
-Daemon). Rootless lassen.
+Daemon). Rootless lassen. `oom_score_adj: -500` am dind-Service ist **kein**
+Privilegienwechsel; Capabilities, Netzwerk und Volumes bleiben unveraendert.
 
 ## 5. Die drei `security_opt` sind einzeln noetig
 
@@ -136,12 +137,12 @@ Siehe §14 — dort steht auch, warum dieser Pfad *nicht* unter
   **Verhaeltnis** zu bestimmen; es muss **groesser** als `mem_limit` sein. Die
   beiden Werte gleich zu setzen ist keine "sichere" Wahl, sondern die
   Dokumentation des Fehlers.
-- **Kein gemeinsames Limit fuer code-dev und dind.** Bei OOM waehlt der Kernel
-  den GROSSTEN Prozess im cgroup — das ist der dind-Daemon, nicht der schuldige
-  Build. Deshalb zwei getrennte Limits: ein runaway Build stirbt nur
-  `code-remote-dind`, die `code-dev`-Session laeuft weiter. Limits am
-  dind-Container greifen fuer die inneren Container mit, Limits an inneren
-  Containern nicht.
+- **Kein gemeinsames Limit fuer code-dev und dind.** Innere cgroups sind
+  unmoeglich; Limits am dind greifen fuer innere Container mit, innere Limits
+  nicht. Fester 2g/4g-Deckel in Compose (Issue #2), keine Env-Keys. Der Host
+  setzt `oom_score_adj: -500` auf dind; regulaere innere Docker-Container
+  erhalten standardmaessig Score 0. Das ist keine Garantie; Guard-Schutz:
+  `remote/dind-guard.sh` (§21). `code-dev` bleibt getrennt.
 - **`code-dev` hat kein harmloses Opfer — sein groesster Prozess ist PID 1**
   (`opencode serve`). PID 1 killen = der Container stirbt = `restart:
   unless-stopped` = **die Sitzung ist weg**. Nichts darf hier den PID-1-Pfad
@@ -505,3 +506,10 @@ CLI-Syntax in 2.x: `hf auth login` / `hf auth whoami` / `hf download`; das alte
 `huggingface-cli login` gibt es nicht mehr.
 
 Offene Punkte: `agents.todo.md`.
+
+## 21. DinD-OOM-Guard stoppt nur opt-in E2E-Stacks
+
+`remote/dind-guard.sh` pollt den dind-cgroup und stoppt nur laufende
+`com.agent-tasks.stack`-Container im DinD (nie Host/`code-dev`): neuer
+`oom_kill`, >=85 % Druck ueber 3 Polls oder dind-Neustart; Cooldown 600 s;
+Reboot/Erstinstallation = Baseline; API-Fehler schreiben keinen Zustand fort.

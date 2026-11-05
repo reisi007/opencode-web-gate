@@ -18,6 +18,11 @@
   nicht Reserve**: er fängt Lastspitzen ab, wenn RAM global knapp wird. Der
   Repo-Default liegt seit dem **2026-10-21** bei 5g/9g (Owner-Entscheidung;
   Begründung und Messwerte in *RAM- und Swap-Limits*).
+  Der `dind`-Daemon hat seit **2026-11-05** einen festen Aussen-Deckel von
+  **2 GB RAM + 2 GB Swap (4 GB gesamt)**; die Werte stehen in der Compose-Datei,
+  nicht in der Host-`.env` (Issue #2). Innere Container können in diesem Setup
+  keine eigenen cgroups setzen — siehe *Keine inneren cgroups* und
+  *DinD-OOM-Guard*.
   **Offen (2026-11-02):** der Live-Container `code-dev` läuft mit **7g/12g**,
   also 7 GiB RAM + 5 GiB Swap. Das widerspricht den Repo-Defaults; der
   Widerspruch ist **nicht entschieden**, die Defaults bleiben unverändert.
@@ -30,8 +35,7 @@
   (`root:root 0600`, nicht im Repo). Schlüssel (nur Namen): `AUTH_USER`,
   `AUTH_HASH`, `AUTH_SECRET`, `SESSION_TTL`, `OPENCODE_PASSWORD`,
   `CORS_ORIGIN`, `HF_TOKEN`, `IMAGE`, `CPU_CORES`, `MEMORY_LIMIT`,
-  `MEMSWAP_LIMIT`, `DIND_CPU_CORES`, `DIND_MEMORY_LIMIT`,
-  `DIND_MEMSWAP_LIMIT`, `TS_AUTHKEY`, `TS_TAILSCALE_HOSTNAME`,
+  `MEMSWAP_LIMIT`, `DIND_CPU_CORES`, `TS_AUTHKEY`, `TS_TAILSCALE_HOSTNAME`,
   `OPENCODE_AUTOUPDATE`, `OPENCODE_UPDATE_INTERVAL`, `OPENCODE_UPDATE_HOURS`,
   `OPENCODE_UPDATE_RESTART`, `RAM_WATCHDOG_*`. Nichts davon wird aus dem Repo
   auf den Host übertragen.
@@ -230,18 +234,50 @@ das ist zuerst passiert (gemessen: 11,9 MB im Layer, 0 Byte im Volume).
 Das Volume `dind-data-rootless` ist deshalb auch neu, denn das alte
 `dind-data` war `root:root` und fuer uid 1000 unbeschreibbar.
 
-### Funktionale Einschraenkung: keine cgroups
+### Keine inneren cgroups — bestaetigt, nicht offen
 
 Rootless-Docker kann ohne systemd im Container **keine cgroups** durchsetzen:
 
 > `WARNING: Running in rootless-mode without cgroups. Systemd is required to
 > enable cgroups in rootless-mode.`
 
-Daher greifen `mem_limit`/`cpus` **an den inneren Containern** nicht. Die Limits
-von `code-dev` selbst (`mem_limit`/`memswap_limit`/`cpus`) sind **nicht**
-betroffen — das ist ein eigener Container auf dem Host-Daemon.
+**Das ist in diesem Setup bestaetigt (2026-11-05, Issue #2) und keine offene
+Baustelle:** der Daemon laeuft in einem Alpine-Container ohne systemd, und
+`/sys/fs/cgroup` ist dort **read-only**. Damit gibt es keine
+cgroup-Delegation, kein systemd-in-container und keinen Sysbox-Weg (Sysbox
+scheidet zusaetzlich wegen SELinux enforcing aus). `mem_limit`/`cpus` an
+inneren Containern bleiben wirkungslos. Die Limits von `code-dev` selbst
+(`mem_limit`/`memswap_limit`/`cpus`) sind **nicht** betroffen — das ist ein
+eigener Container auf dem Host-Daemon.
 
-**Ein Limit am `dind`-Container selbst greift aber sehr wohl fuer die inneren
+**Der einzige wirksame Deckel ist der aeussere `dind`-Container: seit
+2026-11-05 `mem_limit: 2g` plus `memswap_limit: 4g` (2 GB RAM + 2 GB Swap,
+gesamt 4 GB).** Die Werte stehen fest in `remote/docker-compose.yml`; die
+frueheren Env-Keys `DIND_MEMORY_LIMIT`/`DIND_MEMSWAP_LIMIT` werden nicht mehr
+gelesen und muessen aus der Host-`.env` entfernt werden (manuell; Deploys
+schreiben die Datei nie).
+`oom_score_adj: -500` setzt der **Host-Docker** auf den Init-Prozess des aeusseren
+dind-Containers; der Wert wird an dessen normale Kindprozesse (RootlessKit,
+dockerd, containerd) vererbt. Bei regulaeren inneren Docker-Containern setzt der
+nested Daemon `HostConfig.OomScoreAdj` (standardmaessig `0`) ausdruecklich neu.
+Die Rootless-Umsetzung in Moby hebt angeforderte innere Scores, die unter dem
+aktuellen Daemon-Score liegen, nur auf diesen an; bei `-500` bleibt der Default
+`0` daher `0`. Damit soll der
+DinD-Prozessbaum im gemeinsamen aeusseren cgroup gegenueber normalen
+E2E-Prozesslasten weniger wahrscheinlich als OOM-Opfer gewaehlt werden — **keine Garantie**,
+und ein innerer Container kann selbst einen anderen Wert anfordern. Nach dem
+Deploy die effektiven Werte an einem inneren Testcontainer verifizieren (siehe
+unten). **Trade-off:** bei einem Host-weiten OOM kann die Priorisierung die
+relative Auswahl weg von dind und hin zu `code-dev`/Portal verschieben. Das ist
+fuer die wegwerfbare E2E-Umgebung bewusst in Kauf genommen, aber **kein
+Host-RAM-Fix**; der Guard bleibt die Schutzreaktion fuer markierte Nutzlast.
+Ein entsprechender Wert auf `code-dev`-PID 1 bleibt verworfen (siehe
+[`../agents.todo.md`](../agents.todo.md): dort wuerde er ohne separaten
+Container-Score auch die Kindprozesse der Sitzung schuetzen und ist aus dem
+unprivilegierten Container nicht setzbar). Rootless-Isolation, Capabilities,
+Netzwerk und Volumes bleiben unveraendert.
+
+**Ein Limit am `dind`-Container selbst greift sehr wohl fuer die inneren
 Container.** Die inneren Prozesse teilen sich denselben cgroup wie der Daemon.
 Live gemessen: der `sleep` eines inneren `alpine`-Containers und der
 dind-Daemon liegen beide in
@@ -255,12 +291,15 @@ oom_kill      1
 
 Also: Limit am DinD = Deckel fuer **alles**, was der Agent darin startet.
 
-**Die Fehlerbehandlung ist der Haken.** Bei OOM waehlt der Kernel den
-**groessten** Prozess im cgroup, und das ist der dind-Daemon, nicht der
-schuldige Build. Deshalb **kein gemeinsames Limit** mit `code-dev`, sondern
-zwei getrennte: so stirbt ein runaway Build nur `code-remote-dind`
-(`restart: unless-stopped`, startet neu) und die `code-dev`-Session laeuft
-weiter.
+**Die Fehlerbehandlung ist der Haken.** Historisch war der groesste Prozess im
+cgroup der dind-Daemon statt des schuldigen Builds. Der Host-seitige
+`oom_score_adj: -500` soll den Daemon-Prozessbaum gegenueber regulaeren inneren
+Containern (deren Score nested Docker standardmaessig auf `0` setzt) weniger
+attraktiv machen; effektive Werte muessen live geprueft werden, und es gibt
+keine Garantie. Deshalb **kein gemeinsames Limit** mit `code-dev`, sondern zwei
+getrennte: `code-remote-dind` begrenzt die Builds, `code-dev` behaelt sein
+eigenes Limit. Die Reaktion auf den wiederholten dind-OOM vom 2026-11-05 ist der
+hostseitige *DinD-OOM-Guard* weiter unten.
 
 ### RAM- und Swap-Limits
 
@@ -289,11 +328,14 @@ Budget — **zwei Stände, offener Widerspruch (2026-11-02)**:
 | Repo-Fallback `remote/docker-compose.yml` | 5120 MB (`5g`) | 4096 MB (`9g` gesamt) | 9216 MB | 3 |
 | `.env.example` | 5120 MB (`5g`) | 4096 MB (`9g` gesamt) | 9216 MB | 3 |
 | **Live-Container `code-dev`** | **7168 MB (`7g`)** | **5120 MB (`12g` gesamt)** | **12288 MB** | 3 |
-| `code-remote-dind` | 1024 MB | 1024 MB | 2048 MB | 2 |
+| `code-remote-dind` | 2048 MB (`2g`) | 2048 MB (`4g` gesamt) | 4096 MB | 2 |
 | `code-auth-remote` | unbegrenzt | — | — | — |
 
 `code-auth-remote` bleibt bewusst unbegrenzt — real 11 MB, und ein Deckel
-wuerde nur Aerger machen.
+wuerde nur Aerger machen. Die `code-remote-dind`-Zeile ist seit dem
+**2026-11-05** aktuell (Issue #2); vorher waren es 1g/2g. Die inneren
+Container haben keinen eigenen Deckel — der aeussere 2g/4g-Deckel gilt fuer
+alle, siehe *Keine inneren cgroups*.
 
 **Der Widerspruch ist nicht entschieden.** Die Owner-Entscheidung vom
 2026-10-21 setzte den Repo-Fallback auf 5g/9g (5 GiB RAM + 4 GiB Swap,
@@ -303,12 +345,12 @@ beiden Zahlen ist bis zur Entscheidung der „Sollstand“; die Defaults bleiben
 unverändert. Offener Punkt: [`../agents.todo.md`](../agents.todo.md).
 
 **Host-Budget, beide Rechnungen:** mit dem Repo-Fallback summieren sich
-`code-dev` 5 GiB + dind 1 GiB + Portal ~0,9 GiB + OS/dockerd ~0,7 GiB auf
-~7,6 GiB bei 7,47 GiB nutzbarem Host-RAM (knapp über dem Host). Mit dem
-Live-Stand 7 GiB + 1 GiB + 0,9 + 0,7 = **~9,6 GiB** — genau die
-Überzeichnung, die am 2026-10-20 in den Host-Hänger lief. Die Restdifferenz
-wird über **Swap** ausgeglichen, nicht über weniger RAM — siehe „Der
-Host-Hänger vom 2026-10-20“ unten.
+`code-dev` 5 GiB + dind 2 GiB + Portal ~0,9 GiB + OS/dockerd ~0,7 GiB auf
+~8,6 GiB bei 7,47 GiB nutzbarem Host-RAM (rund 1,1 GiB über dem Host). Mit dem
+Live-Stand 7 GiB + 2 GiB + 0,9 + 0,7 = **~10,6 GiB** — noch deutlicher über dem
+Host als vor der dind-Anhebung. Die Restdifferenz wird über **Swap**
+ausgeglichen, nicht über weniger RAM — siehe „Der Host-Hänger vom 2026-10-20“
+unten.
 
 #### Die Owner-Entscheidung vom 2026-10-21: Repo-Gesamt-Deckel 9 g
 
@@ -462,7 +504,7 @@ der Container stand beim Auslösen tatsächlich bei 90–95 %:
 **Der Fehler war nicht die Messung, sondern die Prämisse:** der Wächter hielt
 das Erreichen des cgroup-Deckels für einen Punkt, an dem man sich noch
 vergnügen kann. Aber der Deckel (7 GiB) ist **mehr als der nutzbare Host-RAM**
-(7,47 GiB), und daneben laufen dind (1g), der Portal-Stack (~0,9g) und
+(7,47 GiB), und daneben laufen dind (damals 1g), der Portal-Stack (~0,9g) und
 OS/dockerd (~0,7g). Als der Wächter bei 6,3 GiB im code-dev auslöste, stand
 der Host bei **783 MB MemAvailable und 6,3 GB Swap** — er war am Abgrund, und
 das SIGTERM an PID 1 kam zu spät.
@@ -482,7 +524,7 @@ echten Speicher" zählt `anon`, nicht RSS.**
 
 **2. Der Wächter konnte den Host nicht retten, weil seine Schwelle zu hoch war.**
 90 % von 7g = **6,3 GiB** bei **7,47 GiB** nutzbarem Host-RAM. Bei diesem
-Stand war der Host bereits überzeichnet: code-dev 7g + dind 1g + Portal 0,9g +
+Stand war der Host bereits überzeichnet: code-dev 7g + dind 1g (damals) + Portal 0,9g +
 OS 0,7g = 9,6 GiB. Live im Incident: `MemAvailable` **783 MB** bei **6,3 GB**
 Host-Swap. Die „Rettung" kam zu spät — sie rettete den Container und
 trotzdem nicht den Host.
@@ -678,6 +720,146 @@ verweigert den Dienst, wenn ein Volume doch noch benutzt wird.
 Aufruf: `dind-image-gc.sh [--dry-run] [--host-daemon]`.
 Retention über `RETENTION_DAYS` (Default 14). Log nach
 `/var/log/dind-image-gc.log` mit logrotate-Regel (8 Wochen).
+
+## DinD-OOM-Guard: `dind-guard.sh`
+
+Der rootless DinD hat **keine inneren cgroups** (siehe *Keine inneren cgroups —
+bestaetigt, nicht offen*). Der aeussere Deckel ist seit 2026-11-05 **2g RAM +
+2g Swap (4g gesamt)**. `oom_score_adj: -500` gibt dem aeusseren
+DinD-Prozessbaum einen niedrigeren OOM-Score als regulaeren inneren Containern;
+nested Docker setzt deren Score standardmaessig auf `0` (Details und
+Live-Pruefung oben). Der Guard ergaenzt diese Priorisierung: er beobachtet den
+Host-cgroup und stoppt nur die
+E2E-Container, die im verschachtelten Daemon ausdruecklich mit
+`com.agent-tasks.stack` markiert sind.
+
+### Ziele und Grenzen
+
+- **Nur laufende Container INNERHALB von `code-remote-dind`** mit Label
+  `com.agent-tasks.stack`. Nie Host-Container, nie `code-dev`, nie der
+  Host-Daemon.
+- Der Zugriff laeuft ausschliesslich ueber `docker exec` in den DinD
+  (`DOCKER_HOST=unix:///run/user/1000/docker.sock`), erkannt wie in
+  `dind-image-gc.sh`. Fehler und eine nicht erreichbare API fuehren **nie** zu
+  einem breiten Stop.
+- Der Guard ersetzt keine inneren cgroups. Er ist eine Aufraeum-/Schutzreaktion
+  auf den aeusseren Deckel, keine zweite Ressourcenquelle.
+- **Das Label muss im Projekt gesetzt sein.** Am 2026-11-05 trugen die drei
+  vorhandenen Agent-Tasks-E2E-Stacks (`e2e`, `e2e-review`,
+  `agent-tasks-issue-verification`) das Label bereits. Es ist in diesem Repo
+  nicht gesetzt, weil deren Compose-Dateien im separaten `agent-tasks`-Projekt
+  liegen. Dort muss jeder E2E-Service das Label tragen, z. B.:
+
+  ```yaml
+  services:
+    browser-runner:
+      labels:
+        com.agent-tasks.stack: e2e
+  ```
+
+  Bei einzeln gestarteten Containern entsprechend
+  `docker run --label com.agent-tasks.stack=e2e ...`. Ohne das Label bleibt
+  ein Container absichtlich ausserhalb der Guard-Zielmenge.
+
+### Trigger und Cooldown
+
+| Trigger | Bedingung | Reaktion |
+|---|---|---|
+| OOM-Ereignis | `oom_kill` in der Host-cgroup steigt gegenueber dem letzten Stand | markierte E2E-Container stoppen |
+| Speicherdruck | `anon + slab_unreclaimable + memory.swap.current` >= 85 % von (`memory.max` + `memory.swap.max`) ueber **3 aufeinanderfolgende Polls** | markierte E2E-Container stoppen |
+| DinD-Neustart | aeusserer Container wurde neu gestartet/recreated, **waehrend** markierte E2E-Container laufen oder sie starten innerhalb von 60 s danach | markierte E2E-Container stoppen |
+
+Nach einem vollstaendigen Stop gilt ein **Cooldown von 600 s**. Poll-Intervall:
+**10 s**. Ein fehlgeschlagener/teilweiser Stop verbraucht den Trigger nicht und
+startet keinen Cooldown; fehlende Ziele nach einem DinD-Neustart werden fuer 60 s
+nachverfolgt, damit Restart-Container ihre `running`-Phase erreichen koennen.
+Wird ein solcher Trigger waehrend des Cooldowns erkannt, bleibt er solange
+ausstehend, wie Ziele weiterlaufen.
+`max`/fehlende/ungueltige cgroup-Zaehler werden uebersprungen, nicht als
+"unendlich viel Speicher" interpretiert.
+
+**Erstinstallation und Host-Reboot sind eine Baseline fuer historische
+`oom_kill`-/Restart-Zaehler:** sie loesen allein keinen Stop aus. Der
+Speicherdruck-Trigger bleibt aktiv. Der Zustand liegt in
+`/var/lib/dind-guard/state`; ist die
+verschachtelte Docker-API nicht erreichbar, wird er **nicht** fortgeschrieben,
+damit der Neustart-Trigger nach dem Hochkommen des Daemons erneut greifen kann.
+
+### Installation und Aktivierung
+
+Vom Repository-Root aus die beiden Dateien zum VPS kopieren; `remote/deploy.sh`
+überträgt nur die Compose-Datei. Anschließend auf dem VPS als root installieren:
+
+```bash
+scp remote/dind-guard.sh remote/dind-guard.service root@reisinger.pictures:/tmp/
+ssh root@reisinger.pictures '
+  install -m 0755 /tmp/dind-guard.sh /usr/local/bin/dind-guard.sh &&
+  install -m 0644 /tmp/dind-guard.service /etc/systemd/system/dind-guard.service &&
+  rm -f /tmp/dind-guard.sh /tmp/dind-guard.service &&
+  systemctl daemon-reload &&
+  /usr/local/bin/dind-guard.sh --dry-run &&
+  systemctl enable --now dind-guard.service
+'
+```
+
+`--dry-run` stoppt nichts und schreibt keinen Zustand. Er zeigt cgroup-Pfad,
+`oom_kill`, die Speicherwerte, den Prozentwert und die Zielcontainer — genau
+die Werte, mit denen sich die Installation pruefen laesst. Der Dienst laeuft
+als root (Host-Docker-Socket + `/sys/fs/cgroup`), loggt nach journald
+(`SyslogIdentifier=dind-guard`) und wird von systemd bei Absturz neu gestartet.
+
+### Verifikation
+
+```bash
+systemctl status dind-guard.service
+journalctl -u dind-guard.service -n 50 --no-pager
+journalctl -t dind-guard -f
+/usr/local/bin/dind-guard.sh --dry-run
+```
+
+Erwartet: `active (running)`, im Dry-run ein cgroup-Pfad
+`/sys/fs/cgroup/system.slice/docker-<dind-id>.scope`, plausible
+`oom_kill`-/`memory.*`-Werte und entweder eine leere Zielliste oder die
+erwarteten `com.agent-tasks.stack`-Container.
+
+Nach dem Compose-Deploy auch die **Live-HostConfig** pruefen (2 GiB RAM,
+4 GiB RAM+Swap gesamt, `oom_score_adj=-500`):
+
+```bash
+docker inspect code-remote-dind --format \
+  'memory={{.HostConfig.Memory}} memswap={{.HostConfig.MemorySwap}} oom_score_adj={{.HostConfig.OomScoreAdj}}'
+# Erwartet: memory=2147483648 memswap=4294967296 oom_score_adj=-500
+
+# Effektive Scores: outer init -500; bei einem laufenden E2E-Container
+# (Standard HostConfig.OomScoreAdj = 0) dessen PID ebenfalls gegenpruefen:
+docker exec code-remote-dind cat /proc/1/oom_score_adj
+inner_pid="$(docker exec -e DOCKER_HOST=unix:///run/user/1000/docker.sock \
+  code-remote-dind docker inspect -f '{{.State.Pid}}' e2e-api)"
+docker exec code-remote-dind cat "/proc/${inner_pid}/oom_score_adj"
+# Erwartet: -500, danach 0. e2e-api durch einen laufenden E2E-Container ersetzen.
+
+# Label-Zielmenge im verschachtelten Daemon pruefen:
+docker exec -e DOCKER_HOST=unix:///run/user/1000/docker.sock code-remote-dind \
+  docker ps --filter label=com.agent-tasks.stack --format '{{.Names}} {{.Label "com.agent-tasks.stack"}}'
+```
+
+### Tuning
+
+Die Defaults stehen im Skript; der systemd-Dienst kann sie per
+`Environment=` ueberschreiben:
+
+| Variable | Default | Bedeutung |
+|---|---|---|
+| `DIND_GUARD_POLL_INTERVAL` | `10` | Poll-Abstand in Sekunden |
+| `DIND_GUARD_HOLD_COUNT` | `3` | aufeinanderfolgende Druck-Polls |
+| `DIND_GUARD_THRESHOLD_PERCENT` | `85` | Druck-Schwelle |
+| `DIND_GUARD_COOLDOWN_SECONDS` | `600` | Cooldown nach einem Stop |
+| `DIND_GUARD_RESTART_GRACE_SECONDS` | `60` | Wartefenster fuer markierte Container nach dind-Neustart |
+| `DIND_GUARD_STATE_DIR` | `/var/lib/dind-guard` | Zustandsdatei |
+| `DIND_GUARD_LABEL` | `com.agent-tasks.stack` | einziges Stop-Ziel |
+
+Das Label ist die Sicherheitsgrenze. Wer es aendert, aendert den Umfang der
+Stops — nicht ohne bewusste Entscheidung.
 
 ## Verbindung, WebSockets und Healthcheck
 

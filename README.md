@@ -70,7 +70,10 @@ gegen den laufenden Container. Bei Abweichung bricht es ab; die offene
 | Stack | Host-Datei | Schlüssel |
 |---|---|---|
 | `opencode-tunnel` | `/opt/stacks/opencode-tunnel/.env` | `AUTH_USER`, `AUTH_HASH`, `AUTH_SECRET`, `SESSION_TTL`, `AUTH_IP` |
-| `dev-vm` | `/opt/stacks/dev-vm/.env` | `AUTH_USER`, `AUTH_HASH`, `AUTH_SECRET`, `SESSION_TTL`, `OPENCODE_PASSWORD`, `CORS_ORIGIN`, `HF_TOKEN`, `IMAGE`, `CPU_CORES`, `MEMORY_LIMIT`, `MEMSWAP_LIMIT`, `DIND_CPU_CORES`, `DIND_MEMORY_LIMIT`, `DIND_MEMSWAP_LIMIT`, `TS_AUTHKEY`, `TS_TAILSCALE_HOSTNAME`, `OPENCODE_AUTOUPDATE`, `OPENCODE_UPDATE_INTERVAL`, `OPENCODE_UPDATE_HOURS`, `OPENCODE_UPDATE_RESTART`, `RAM_WATCHDOG_*` |
+| `dev-vm` | `/opt/stacks/dev-vm/.env` | `AUTH_USER`, `AUTH_HASH`, `AUTH_SECRET`, `SESSION_TTL`, `OPENCODE_PASSWORD`, `CORS_ORIGIN`, `HF_TOKEN`, `IMAGE`, `CPU_CORES`, `MEMORY_LIMIT`, `MEMSWAP_LIMIT`, `DIND_CPU_CORES`, `TS_AUTHKEY`, `TS_TAILSCALE_HOSTNAME`, `OPENCODE_AUTOUPDATE`, `OPENCODE_UPDATE_INTERVAL`, `OPENCODE_UPDATE_HOURS`, `OPENCODE_UPDATE_RESTART`, `RAM_WATCHDOG_*` |
+
+Die dind-RAM-Limits sind keine Env-Keys: `mem_limit: 2g` / `memswap_limit: 4g`
+stehen fest in `remote/docker-compose.yml` (Issue #2, 2026-11-05).
 
 `RAM_WATCHDOG_*` steht für `RAM_WATCHDOG_ENABLED`,
 `RAM_WATCHDOG_THRESHOLD_PERCENT`, `RAM_WATCHDOG_HOST_AVAILABLE_MB`,

@@ -54,10 +54,11 @@ Zwei Stacks werden aus diesem Repo gepusht und auf `root@reisinger.pictures`
     `AUTH_IP`.
   - `dev-vm`: `AUTH_USER`, `AUTH_HASH`, `AUTH_SECRET`, `SESSION_TTL`,
     `OPENCODE_PASSWORD`, `CORS_ORIGIN`, `HF_TOKEN`, `IMAGE`, `CPU_CORES`,
-    `MEMORY_LIMIT`, `MEMSWAP_LIMIT`, `DIND_CPU_CORES`, `DIND_MEMORY_LIMIT`,
-    `DIND_MEMSWAP_LIMIT`, `TS_AUTHKEY`, `TS_TAILSCALE_HOSTNAME`,
-    `OPENCODE_AUTOUPDATE`, `OPENCODE_UPDATE_INTERVAL`, `OPENCODE_UPDATE_HOURS`,
-    `OPENCODE_UPDATE_RESTART`, `RAM_WATCHDOG_*`.
+    `MEMORY_LIMIT`, `MEMSWAP_LIMIT`, `DIND_CPU_CORES`, `TS_AUTHKEY`,
+    `TS_TAILSCALE_HOSTNAME`, `OPENCODE_AUTOUPDATE`, `OPENCODE_UPDATE_INTERVAL`,
+    `OPENCODE_UPDATE_HOURS`, `OPENCODE_UPDATE_RESTART`, `RAM_WATCHDOG_*`.
+    Die dind-RAM-Limits sind fest in der Compose-Datei (2g/4g, Issue #2) und
+    keine Env-Keys.
 - **Portainer-`$$`-Escaping ist Historie**, keine Paste-Anweisung. Für neue oder
   rotierte Werte `AUTH_HASH` in der Host-`.env` einfach quoten:
   `AUTH_HASH='$2a$14$…'`. Native Compose-`.env`-Dateien interpolieren

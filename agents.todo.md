@@ -495,6 +495,16 @@ unabhängigen Review und erfolgreicher Verifikation entfernt.
   Swap als Puffer. Einzige strukturelle Lösung bleibt mehr Host-RAM
   (16 GB+).
 
+  **Aktualisiert 2026-11-05 (Issue #2):** dind ist nach erneuten OOMs wieder
+  auf 2g RAM + 2g Swap (4g gesamt) angehoben; der Compose-Default ist jetzt
+  fest 2g/4g. Damit liegen die Cap-Summen bei Repo-Fallback
+  `code-dev 5g + dind 2g + Portal 0,9g + OS 0,7g = 8,6 GiB` (ca. 1,1 GiB
+  über 7,47 GiB nutzbarem Host-RAM) und mit dem Live-`code-dev`-Limit
+  `7g + 2g + 0,9g + 0,7g = 10,6 GiB` (ca. 3,1 GiB darüber). Das sind
+  Obergrenzen, nicht die aktuelle Nutzung; die Host-16-GB-Swapdatei bleibt
+  Puffer, keine zusätzliche RAM-Kapazität. Deploy, Entfernung der bisherigen
+  Host-`.env`-Overrides und Guard-Installation sind in Issue #2 getrackt.
+
 - [ ] **Zwei OOM-Kills am 2026-10-02, einer davon hat die Session gerissen.**
   Live aus `dmesg`:
   ```
