@@ -31,8 +31,9 @@
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>10</integer>
   <key>ProcessType</key><string>Background</string>
-  <!-- 077 (dezimal 63): /tmp/code-tunnel.log und das opencode-Log (Session-Inhalte)
-       nur fuer den Besitzer lesbar, nicht world-readable wie sonst in /tmp. -->
+  <!-- 077 (dezimal 63): /tmp/code-tunnel.log (Session-Inhalte, Log von run.sh,
+       ssh/autossh und `opencode service start`) nur fuer den Besitzer lesbar,
+       nicht world-readable wie sonst in /tmp. -->
   <key>Umask</key><integer>63</integer>
   <key>StandardOutPath</key><string>/tmp/code-tunnel.log</string>
   <key>StandardErrorPath</key><string>/tmp/code-tunnel.log</string>

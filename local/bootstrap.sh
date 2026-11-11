@@ -35,7 +35,13 @@ TARGET="${SSH_TARGET:?FEHLER: SSH_TARGET fehlt in .env}"
 PORT="${SSH_PORT:-22}"
 BIND="${REMOTE_BIND:-172.18.0.1}"
 REMOTE="${REMOTE_PORT:-18731}"
-LOCAL="${LOCAL_PORT:-8080}"
+
+# Port des gemeinsamen OpenCode-Dienstes — dieselbe Ableitung wie in run.sh
+# (service-port.sh), damit die Statuszeile den Port nennt, den der Tunnel bindet.
+# Ohne Port bleibt die Zeile bei "unbekannt" statt zu raten.
+# shellcheck source=service-port.sh
+. ./service-port.sh
+LOCAL="$(service_port)"
 DOMAIN="${CODE_DOMAIN:-code.example.com}"
 
 LABEL=com.code-tunnel
@@ -189,7 +195,7 @@ for _ in $(seq 1 30); do
   sleep 2
 done
 if forward_up; then
-  ok "Tunnel steht: VPS $BIND:$REMOTE -> Mac 127.0.0.1:$LOCAL (Key $IDENTITY)"
+  ok "Tunnel steht: VPS $BIND:$REMOTE -> Mac 127.0.0.1:${LOCAL:-unbekannt} (Key $IDENTITY)"
 else
   warn "Forward $BIND:$REMOTE nach 60s nicht auf dem VPS sichtbar -> /tmp/code-tunnel.log"
 fi

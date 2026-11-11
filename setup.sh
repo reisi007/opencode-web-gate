@@ -67,7 +67,7 @@ if [ -z "${OPENCODE_PASSWORD:-}" ]; then
   else
     echo "OPENCODE_PASSWORD=$P" >> .env
   fi
-  echo "OPENCODE_PASSWORD generiert (fuer opencode serve; Caddy injiziert es per Header upstream)."
+  echo "OPENCODE_PASSWORD generiert (Passwort des gemeinsamen OpenCode-Dienstes; run.sh setzt es per 'opencode service set password', Caddy injiziert es per Header upstream)."
   unset P
 fi
 

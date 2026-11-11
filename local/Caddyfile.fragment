@@ -44,8 +44,10 @@ __CODE_DOMAIN__ {
 	# CORS-Preflight (PWA __CORS_ORIGIN__): OPTIONS traegt nie Cookies,
 	# forward_auth antwortete mit 302 und der Browser brach den Preflight ab
 	# (gemessen 2026-10-07). Deshalb hier beantworten, bevor das Catch-all
-	# greift. ACAO an echten Responses SOLL opencode serve --cors liefern
-	# (run.sh, Key CORS_ORIGIN in .env) — unbelegt, s. remote/AGENTS.md §19.
+	# greift. Der Web-Weg selbst laeuft same-origin ueber diese Domain — CORS ist
+	# dort KEINE Voraussetzung. ACAO an echten Responses betrifft nur die PWA und
+	# kommt optional aus dem OpenCode-Dienst (`opencode service set cors`, von
+	# Hand; run.sh setzt es nicht automatisch) — unbelegt, s. remote/AGENTS.md §19.
 	#
 	# Grenze: die pfadspezifischen Handles DARUEBER (/login.html, /api/login,
 	# /api/me, /api/logout, /sw.js) stehen vor diesem Block. Das ist

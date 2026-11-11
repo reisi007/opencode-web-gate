@@ -11,11 +11,16 @@
 #
 #   - launchd SIGTERMt beim Stopp die PROZESSGRUPPE des Jobs. Nach `bootout`
 #     waren weg: run.sh, die Watchdog-Subshell, autossh, dessen ssh und der
-#     superviste `opencode serve` (Kind von run.sh, run.sh:127). Uebrig blieben
-#     nur Prozesse ausserhalb der Gruppe: `opencode serve --service` (PPID 1)
-#     und die TUI-Sessions. Ein blosses `kill` auf die run.sh-PID erreicht
+#     damals von run.sh selbst gestartete `opencode serve` (Kind von run.sh,
+#     damals hinter dem Dienst-Start in run.sh). Uebrig blieben nur Prozesse
+#     ausserhalb der Gruppe: das
+#     Server-Kind der TUI (`opencode serve --service`, PPID 1) und die
+#     TUI-Sessions. Ein blosses `kill` auf die run.sh-PID erreicht
 #     dagegen NUR run.sh, nicht die Subshell (local/AGENTS.md §5) — beides
 #     gleichzeitig ist keine Widerspruchsaussage, es sind zwei Signale.
+#     Diesen eigenen Serve von run.sh gibt es nicht mehr (Issue #3): der
+#     Listener auf :$LOCAL ist jetzt der gemeinsame OpenCode-Dienst, also
+#     derselbe Prozess, den die TUI als `serve --service` startet.
 #   - Was `bootout` nicht kann: den Autostart sperren. Die gerenderte plist
 #     bleibt in ~/Library/LaunchAgents liegen, launchd laedt sie beim naechsten
 #     Login wieder und RunAtLoad feuert den Tunnel erneut an.
@@ -34,11 +39,12 @@
 #      neu verbinden, das ist genau sein Job.
 #   4) Master-Connection schliessen -> /tmp/ssh-code-* weg.
 #
-# Bewusst NICHT angefasst: `opencode serve --service` und laufende TUI-Sessions.
-# Sie gehoeren niemandem ausser dir, ein Stopp des Tunnels darf sie nicht
-# beenden. Der superviste Serve auf :LOCAL faellt dagegen mit — das ist der
-# gewuenschte Zustand (kein Tunnel, kein Server) und der naechste
-# start-tunnel.command holt ihn ueber ensure_opencode zurueck.
+# Bewusst NICHT angefasst: der gemeinsame OpenCode-Dienst auf :$LOCAL und
+# laufende TUI-Sessions. Der Dienst gehoert der TUI — er laeuft waehrend und
+# nach dem Tunnel, ein Stopp des Tunnels darf ihn nicht beenden (der einzige Weg
+# waere `opencode service stop`, und das ist kein Tunnel-Thema). Konsequenz:
+# `:$LOCAL` lauscht nach dem Stopp weiter, und das ist ERFOLG, kein Fehler;
+# der naechste start-tunnel.command findet den Dienst einfach vor.
 set -euo pipefail
 cd "$(dirname "$0")"
 # Auch der Stop braucht den vollen PATH: der Doppelklick aus dem Finder startet
@@ -61,7 +67,16 @@ TARGET="${SSH_TARGET:?FEHLER: SSH_TARGET fehlt in .env}"
 PORT="${SSH_PORT:-22}"
 BIND="${REMOTE_BIND:-172.18.0.1}"
 REMOTE="${REMOTE_PORT:-18731}"
-LOCAL="${LOCAL_PORT:-8080}"
+
+# Port des gemeinsamen OpenCode-Dienstes — dieselbe Ableitung wie in run.sh
+# (service-port.sh). Der Port dient hier NUR der Anzeige/Pruefung: die
+# Forward-Signatur (tunnel_sig) endet am ":" vor dem Mac-Port und trifft die
+# Bindung deshalb auch dann, wenn `opencode service status` gerade "stopped"
+# meldet und der Fallback nicht stimmt. Ein unbekannter Port darf den Stopp
+# also nicht verhindern — sonst bliebe der Forward offen.
+# shellcheck source=service-port.sh
+. ./service-port.sh
+LOCAL="$(service_port)"
 WEB="${CODE_DOMAIN:-code.example.com}"
 
 ok()   { echo "OK   $1"; }
@@ -73,9 +88,13 @@ port_up() { (echo >/dev/tcp/127.0.0.1/"$LOCAL") >/dev/null 2>&1; }
 # Nur die Forward-Signatur: -R BIND:REMOTE -> Mac :LOCAL, Ziel am Zeilenende.
 # Kein pauschales "pkill ssh" — das wuerde fremde ssh-Sitzungen (Git,
 # VS-Code-Remote, andere Tunnel) mitreissen. Das Muster steht absichtlich so
-# in run.sh, damit beide Seiten dieselbe Signatur verwenden (AGENTS.md §2).
-tunnel_sig="-R $BIND:$REMOTE:127.0.0.1:$LOCAL"
-tunnel_pids() { pgrep -f -- "(auto)?ssh .*$tunnel_sig .*$TARGET\$" 2>/dev/null || true; }
+# in run.sh, damit beide Seiten dieselbe Signatur verwenden (AGENTS.md §12).
+# Der Mac-Port ist variabel (Dienst kann gestoppt sein), deshalb signiert das
+# Praefix bis zum ":" und `tunnel_re` verlangt Ziffern — ohne Leerzeichen, sonst
+# traefe das Muster die echte argv nicht (gemessen 2026-11-11).
+tunnel_sig="-R $BIND:$REMOTE:127.0.0.1:"
+tunnel_re="${tunnel_sig}[0-9]+"
+tunnel_pids() { pgrep -f -- "(auto)?ssh .*$tunnel_re .*$TARGET\$" 2>/dev/null || true; }
 # Gezielt der run.sh-Aufruf, nicht jedes Fenster, in dem der Pfad nur vorkommt
 # (deshalb kein `pkill -f run.sh`). Zwei argv-Formen: launchd startet
 # `bash <pfad> --tunnel-only`, der Finder-Fallback laeuft als `bash ./run.sh`.
@@ -143,8 +162,8 @@ fi
 # autossh vor ssh: sonst verbindet autossh das getoetete ssh sofort neu.
 BEFORE="$(tunnel_pids)"
 if [ -n "$BEFORE" ]; then
-  pkill -TERM -f -- "autossh .*$tunnel_sig .*$TARGET\$" 2>/dev/null || true
-  pkill -TERM -f -- "ssh .*$tunnel_sig .*$TARGET\$" 2>/dev/null || true
+  pkill -TERM -f -- "autossh .*$tunnel_re .*$TARGET\$" 2>/dev/null || true
+  pkill -TERM -f -- "ssh .*$tunnel_re .*$TARGET\$" 2>/dev/null || true
   sleep 1
   LEFT="$(tunnel_pids)"
   if [ -n "$LEFT" ]; then
@@ -158,7 +177,7 @@ else
   ok "kein autossh/ssh mit Forward $BIND:$REMOTE gefunden"
 fi
 if [ -n "$(tunnel_pids)" ]; then
-  warn "es laeuft noch ein Forward-Prozess — manuell pruefen: pgrep -fl '$tunnel_sig'"
+  warn "es laeuft noch ein Forward-Prozess — manuell pruefen: pgrep -fl '$tunnel_re'"
 else
   ok "kein Forward-Prozess mehr (VPS-Port $BIND:$REMOTE sollte frei sein)"
 fi
@@ -203,17 +222,24 @@ fi
 
 echo
 echo "Tunnel gestoppt."
-if port_up; then
-  ok ":$LOCAL lauscht noch — der opencode serve kam nicht aus run.sh:127"
+# :$LOCAL gehoert nicht zum Tunnel. Der Listener ist der gemeinsame
+# OpenCode-Dienst (der Server der TUI) und bleibt absichtlich an — nur
+# `opencode service stop` wuerde ihn beenden, und das ist hier nicht der Auftrag.
+if [ -z "$LOCAL" ]; then
+  warn "Dienst-Port unbekannt ('opencode service status' lieferte keinen Port) — Port-Pruefung uebersprungen"
+elif port_up; then
+  ok ":$LOCAL lauscht weiter — erwartet: das ist der gemeinsame OpenCode-Dienst"
+  echo "     (Server der TUI, kein Kind von run.sh mehr). Er bleibt an; beenden liesse"
+  echo "     er sich nur mit 'opencode service stop' — dann verliert die TUI ihren Server."
 else
-  ok ":$LOCAL ist zu: der superviste 'opencode serve' war ein Kind von run.sh und ist mit"
-  echo "     der Prozessgruppe gestorben. Der naechste start-tunnel.command holt ihn"
-  echo "     ueber ensure_opencode zurueck."
+  ok ":$LOCAL lauscht nicht — kein OpenCode-Dienst aktiv"
+  echo "     Der naechste start-tunnel.command holt ihn per 'opencode service start'"
+  echo "     zurueck (run.sh, ensure_service)."
 fi
 echo "  https://$WEB/ ohne Cookie: weiter 302 -> /login.html. Das Gate steht, der Weg zum"
 echo "  Mac fehlt: erst angemeldete Requests sehen es — Caddy bekommt 502 vom Proxy und"
 echo "  liefert tunnel-down.html, der aktive Healthcheck (30s, 3 Fehlschlaege) setzt den"
 echo "  Upstream auf down (Caddyfile.fragment Z. 61-66 und 91-100)."
-echo "  Unberuehrt: 'opencode serve --service' (PPID 1) und laufende TUI-Sessions."
+echo "  Unberuehrt: der gemeinsame OpenCode-Dienst und laufende TUI-Sessions."
 echo "  Wieder starten: ./start-tunnel.command   (hebt das disable wieder auf)"
 echo "  Log: tail -20 /tmp/code-tunnel.log"

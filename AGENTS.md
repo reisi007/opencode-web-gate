@@ -90,7 +90,10 @@ anderen beiden nachgezogen und der jeweilige Stack neu deployed ist.
 | Variable | Wo | Zweck |
 |---|---|---|
 | `AUTH_HASH` | code-auth-Sidecar | Login-Seite (Cookie-Gate), bcrypt, User `AUTH_USER` |
-| `OPENCODE_PASSWORD` | code-dev / `opencode serve` | Server-Passwort, das Caddy per `header_up Authorization` upstream injiziert |
+| `OPENCODE_PASSWORD` | code-dev und Mac-Dienst (`opencode service set password`) | Server-Passwort, das Caddy per `header_up Authorization` upstream injiziert |
+
+- Auf dem Mac muss der **gemeinsame OpenCode-Dienst** dasselbe Passwort tragen wie die `.env`: `opencode service set password` (`local/run.sh` setzt es bei einem 401 selbst). Jedes `set` **stoppt** den Dienst — `run.sh` startet ihn danach wieder, von Hand setzt man `opencode service start` hinterher.
+- Folge bei Rotation von `OPENCODE_PASSWORD`: **vier** Stellen nachziehen — `OPENCODE_PASSWORD` in der lokalen `.env`, den Dienst (`opencode service set password`), die `@api_ok`/`header_up`/`health_headers`-Werte im Tunnel-Block (`__OPENCODE_BASIC__` = `base64("opencode:…")`) und die Host-`.env` von `dev-vm`. `CORS_ORIGIN` ist kein Passwort, sondern optionale PWA-Config (`opencode service set cors`, nur `ocweb.all-the.rest`) und keine Voraussetzung fuer den Tunnel.
 
 - `OPENCODE_PASSWORD` darf pro Weg verschieden sein — Caddy injiziert pro Block den passenden Wert. **Der Login der Login-Seite hat damit nichts zu tun.** Nicht vereinheitlichen.
 - Ein 401 auf `/api/info` ist ein Basic-Problem, ein 401 auf `/api/login` ein `AUTH_HASH`-Problem.

@@ -27,7 +27,13 @@ fi
 TARGET="${SSH_TARGET:-user@vps.example.com}"
 PORT="${SSH_PORT:-22}"
 REMOTE="${REMOTE_PORT:-18731}"
-LOCAL="${LOCAL_PORT:-8080}"
+
+# Port des gemeinsamen OpenCode-Dienstes — dieselbe Ableitung wie in run.sh
+# (service-port.sh), damit die Diagnose denselben Port prueft, den der Tunnel
+# bindet. Ohne Port wird die Port-Pruefung uebersprungen statt geraten.
+# shellcheck source=service-port.sh
+. ./service-port.sh
+LOCAL="$(service_port)"
 QUICK="${1:-}"
 
 ok() { echo "OK   $1"; }
@@ -40,8 +46,13 @@ if [ "${#KEY_OPTS[@]}" -gt 0 ]; then
 else
   warn "kein Key-Auth (SSH_KEY_AUTH != 1) — Checks fragen nach der VPS-Passphrase"
 fi
-(echo >/dev/tcp/127.0.0.1/"$LOCAL") >/dev/null 2>&1 && ok "localhost:$LOCAL lauscht (OpenCode?)" \
-  || warn "localhost:$LOCAL nicht erreichbar -> OpenCode-Web starten?"
+if [ -z "$LOCAL" ]; then
+  warn "Dienst-Port unbekannt ('opencode service status' lieferte nichts) — Port-Pruefung uebersprungen"
+elif (echo >/dev/tcp/127.0.0.1/"$LOCAL") >/dev/null 2>&1; then
+  ok "localhost:$LOCAL lauscht (OpenCode-Dienst)"
+else
+  warn "localhost:$LOCAL nicht erreichbar -> 'opencode service status' / 'opencode service start'"
+fi
 sed -n '/cat > \/app\/auth.py << "PYEOF"/,/^        PYEOF$/p' docker-compose.yml \
   | sed '1d;$d' | sed 's/^        //' | sed 's/\$\$/\$/g' > /tmp/auth-inline-check.py
 python3 -c "import py_compile; py_compile.compile('/tmp/auth-inline-check.py', doraise=True)" \

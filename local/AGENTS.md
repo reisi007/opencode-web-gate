@@ -19,17 +19,41 @@ Bind-Adresse. Zwei ssh-Prozesse auf demselben VPS-Port machen sich mit
 `ExitOnForwardFailure` gegenseitig die Bind kaputt. Die Bereinigung nicht
 entfernen.
 
-## 3. `opencode serve` nie manuell starten
+## 3. Der gemeinsame OpenCode-Dienst ist der einzige Server — kein eigener serve
 
-`ensure_opencode` in `run.sh` ist der einzige Startpfad (Pflicht, nicht optional).
-Ein manuell gestarteter `opencode serve` konkurriert mit dem supervisten um
-`LOCAL_PORT`, und der Watchdog ist nicht der Besitzer des Prozesses — er beendet
-ihn dann ohne Neustart. `OPENCODE_CMD` in `.env` ueberschreibt **nur** die
-Kommandozeile, nicht die Pflicht.
+Der Web-Weg benutzt **denselben** Server wie die TUI: den Hintergrund-Dienst
+`opencode service`. Es gibt keinen zweiten `opencode serve` von `run.sh` und kein
+`OPENCODE_CMD` mehr (entfallen — nicht wieder einfuehren).
 
-Der superviste Serve ist ein Kind von `run.sh` und teilt dessen Prozessgruppe —
-ein `launchctl bootout` nimmt ihn mit (§12). Eine Aussage wie "opencode laeuft
-weiter" nach einem Stopp waere darum falsch.
+- Einziger Startpfad ist `ensure_service` in `run.sh`, darin ausschliesslich
+  `opencode service start`. Ein eigen gestarteter `opencode serve` waere ein
+  zweiter Server: er teilt zwar die DB, aber `/api/session/active` ist
+  **prozessgebunden** — TUI und Web saehen verschiedene `running`-Staende, es
+  gaebe keinen Live-Stream und zwei Schreibquellen auf dieselbe SQLite-DB.
+- Der Port kommt aus `opencode service status` (einzige Quelle); `LOCAL_PORT` aus
+  der `.env` ist nur der Fallback, wenn der Aufruf nichts liefert. `$LOCAL`
+  traegt die `-R`-Bindung, `port_up` und `port_pid`; die Forward-Signatur
+  (`tunnel_sig`) endet dagegen am `:` **vor** dem Port, damit Start und Stopp
+  auch dann dieselbe Instanz treffen, wenn der Port zwischen beiden wechselt
+  (Dienst gestoppt -> `stopped` -> Fallback).
+  **Die Ableitung steht in `local/service-port.sh`** und wird von `run.sh`,
+  `stop-tunnel.command`, `diagnose.sh` und `bootstrap.sh` gesourct — keine Kopie
+  in den Aufrufern, sonst treffen Start und Stopp verschiedene Signaturen.
+- Das **Passwort** des Dienstes ist Pflicht (`opencode service set password`,
+  von `run.sh` nur bei 401 auf `/api/info` gesetzt). Ohne es liefert das Gate
+  komplett 401. Jedes `set` **stoppt** den Dienst (es startet ihn nicht) — `run.sh`
+  startet ihn deshalb direkt danach; bei jedem Boot waere das ein grundloser
+  Verbindungsabriss fuer die TUI. Timeout/5xx ist kein Passwort-Problem und darf
+  kein `set` ausloesen.
+- **CORS ist kein Gate-Bestandteil.** Der Web-Weg laeuft same-origin ueber
+  `https://CODE_DOMAIN` (Basic-Auth-Seite + SSH-Relay); der ACAO-Header betrifft
+  nur die separate PWA (`ocweb.all-the.rest`). `run.sh` setzt `cors` deshalb
+  **nie automatisch** und bricht nie deswegen ab — fehlt der Header bei
+  gesetztem `CORS_ORIGIN`, gibt es nur eine Hinweiszeile mit dem optionalen
+  `opencode service set cors`.
+- Der Dienst laeuft unabhaengig von `run.sh` und dessen Prozessgruppe. Ein
+  `launchctl bootout` nimmt ihn **nicht** mit (§12) — eine Aussage wie "opencode
+  ist nach dem Stopp weg" waere falsch.
 
 ## 4. Watchdog: Prozesserkennung und Schwelle
 
@@ -45,8 +69,10 @@ gegen die **ganze Zeile** pruefen. Beides ist erzwungen:
 - **`pgrep -f` greift auf macOS ins Leere**, wenn argv/Environment am
   Kernel-Textlimit abgeschnitten sind — als Erkennungsbasis unbrauchbar.
 
-Der Anker fasst auch `serve --service` (zweite v2-API-/Web-Server-Instanz,
-PPID 1 — das Server-Kind der laufenden TUI) mit: zaehlen ja, wegkillen nein.
+Der Anker fasst **beides** mit: den gemeinsamen Dienst — den Listener auf
+`$LOCAL`, den die TUI als `serve --service` startet — und den TUI-Client.
+Zaehlen ja; wegkillen nur mit definierter Folge: den Dienst holt der Watchdog per
+`opencode service start` zurueck, den TUI-Client nicht (§6).
 
 ### Die Schwelle liegt im Skript, die `.env` ist nur der Override
 
@@ -59,8 +85,8 @@ und schlaegt den Skript-Default still — sichtbar nur an
 Werte, fuehrende Nullen (`08` waere oktal und reisst unter `set -e` den Start
 mit) und alles unter 256 MiB fallen auf den Default zurueck. Wirksam wird ein
 neuer Wert erst nach `launchctl kickstart -k gui/$(id -u)/com.code-tunnel`
-(nimmt den supervisten Serve als Kind der Prozessgruppe mit, §12 — die TUI und
-ihr `serve --service`-Kind laufen weiter).
+(nimmt `run.sh` samt Watchdog-Subshell, autossh und ssh mit, §12 — der Dienst auf
+`$LOCAL` und die TUI laufen weiter).
 
 - Die Schwelle ist ein Runaway-Waechter, kein RAM-Budget: der RSS folgt der
   **Last der aktiven Session**, nicht der Zeit.
@@ -69,8 +95,8 @@ ihr `serve --service`-Kind laufen weiter).
   -stats mem`.
 - **codegraph ist nicht abgedeckt und darf es auch nicht sein:** zaehlen ja,
   wegkillen nein — das zerstoert die MCP-Verbindungen laufender Runs.
-- Wer hier nachmisst, misst `serve --service` (RSS pro Prozess), nicht die Summe
-  und nicht `codegraph`.
+- Wer hier nachmisst, misst den Dienst (den Listener auf `$LOCAL`) bzw. den
+  TUI-Client — RSS pro Prozess, nicht die Summe und nicht `codegraph`.
 
 ## 5. Watchdog: Bash 3.2 und die PID-Uebergabe
 
@@ -87,14 +113,16 @@ denselben PIDs. Das deckt den Fall `kill`/Ctrl+C im Vordergrund ab; bei
 ## 6. Watchdog: das Restart-Budget ist Absicht
 
 `WATCHDOG_MAX_RESTARTS=3` pro `WATCHDOG_WINDOW=300`, danach pausiert der Watchdog
-statt zu feuern. Ein `serve`, der sofort wieder ueber die Schwelle springt, ist
+statt zu feuern. Ein Dienst, der sofort wieder ueber die Schwelle springt, ist
 ein **Speicherleck-Symptom**, kein Neustart-Bedarf. Die Schwelle nicht
 hochdrehen, damit die Logzeile verschwindet.
 
-TUI-Sessions und die zweite Instanz `serve --service` werden bei Ueberschreitung
-**beendet, nicht neu gestartet** — es gibt kein TTY zum Nachfuellen, und die
-`--service`-Instanz laeuft unabhaengig von `run.sh` (PPID 1), gehoert also nicht
-dem Watchdog. Kein Relaunch erfinden.
+Der Listener auf `$LOCAL` ist der gemeinsame Dienst. Wird er wegen RSS
+abgeschossen, holt der Watchdog ihn per `opencode service start` zurueck — die
+Sitzungen sind persistiert (SQLite), die TUI muss aber **neu verbinden**; das
+steht so in der Logzeile. Alle anderen opencode-PIDs sind der TUI-Client:
+**beendet, nicht neu gestartet** (kein TTY zum Nachfuellen, der Dienst laeuft
+weiter). Kein Relaunch erfinden.
 
 ## 7. LaunchAgent: die gerenderte plist nie editieren
 
@@ -105,8 +133,9 @@ Aenderungen gehoeren in die Vorlage, sonst ueberschreibt der naechste
 
 - `Umask 077` in der plist gilt nur fuer **neue** Dateien. Bestehende Logs aus
   frueheren Laeufen bleiben world-readable — `run.sh` chmod-et sie deshalb
-  explizit auf 600. `/tmp/code-tunnel-opencode.log` kann Session-Inhalte
-  enthalten.
+  explizit auf 600. `/tmp/code-tunnel.log` kann Session-Inhalte enthalten: dort
+  landet jetzt auch die Ausgabe von `opencode service start|set` (das frueher
+  eigene `/tmp/code-tunnel-opencode.log` entfaellt, §3).
 - `RunAtLoad` + `KeepAlive` + `ThrottleInterval` sind die drei Invarianten.
   `ThrottleInterval` ist kein Beiwerk: ohne sie startet launchd nach einem
   Absturz in einer Schleife.
@@ -203,6 +232,12 @@ nicht "vereinfacht" werden duerfen:
   fuer den Finder-Fallback (`run.sh` im Vordergrund) und fuer Waisen
   aeilterer Laeufe noetig. Reihenfolge darin: **erst `autossh`, dann `ssh`** —
   ein allein gekilltes `ssh` im Forward laesst autossh sofort neu verbinden.
+- **Der Dienst bleibt an.** Der Listener auf `$LOCAL` ist der gemeinsame
+  OpenCode-Dienst und gehoert der TUI, nicht dem Tunnel. `stop-tunnel.command`
+  beendet Job, Forward-Traeger und Master-Connection, nie den Dienst; nur
+  `opencode service stop` wuerde ihn beenden, und das ist kein Tunnel-Thema. Die
+  Erfolgspruefung darf `:$LOCAL` deshalb nicht als "muss zu sein" werten und
+  keine Aussage ueber einen `run.sh`-Serve mehr treffen (§3).
 
 Drei Fallen, jeweils mit derselben Ursache — die Erkennung ist absichtlich eng:
 

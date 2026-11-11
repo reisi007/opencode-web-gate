@@ -1,11 +1,20 @@
 # Lokaler Weg (Mac via SSH-Tunnel)
 
-OpenCode läuft auf deinem Mac (`opencode serve :8080`), der VPS stellt nur Login + Reverse-Proxy. Domain: `CODE_DOMAIN` aus `.env`.
+OpenCode läuft auf deinem Mac als **ein** Server: dem gemeinsamen Hintergrund-Dienst
+(`opencode service`, an dem die TUI als `opencode serve --service` hängt). Der Tunnel
+zeigt auf dessen Port — `opencode service status` ist die Quelle, am 2026-11-11 war das
+`49374`. Der VPS stellt nur Login + Reverse-Proxy. Domain: `CODE_DOMAIN` aus `.env`.
+
+Ein Server heisst: ein Live-Stream, ein prozessgebundener `running`-Status für TUI und
+Web, eine Schreibquelle auf die SQLite-DB. Einen eigenen `opencode serve` von `run.sh`
+gibt es nicht mehr (Issue #3): er las dieselbe DB, aber `/api/session/active` ist
+prozessgebunden — die Web-UI sah eine laufende TUI-Sitzung deshalb nur bis zur letzten
+gespeicherten Nachricht.
 
 ```
 Browser -> CODE_DOMAIN (zentrales Caddy)
   /login.html, /api/* -> statisch / Sidecar code-auth:8081
-  / (Rest) -> forward_auth code-auth:8081 (/check) -> 172.18.0.1:18731 (Tunnel -> Mac :8080)
+  / (Rest) -> forward_auth code-auth:8081 (/check) -> 172.18.0.1:18731 (Tunnel -> Mac 127.0.0.1:49374)
   401 -> 302 /login.html (nie Browser-Popup)
 ```
 
@@ -16,7 +25,8 @@ Browser -> CODE_DOMAIN (zentrales Caddy)
 | `start-tunnel.command` | Doppelklick-Start am Mac → ruft `bootstrap.sh` auf, Fenster kann zu |
 | `stop-tunnel.command` | Doppelklick-Stop: `launchctl disable` + `bootout` + Aufräumen, idempotent |
 | `bootstrap.sh` | einmalig/bei jedem Start: autossh, SSH-Key, LaunchAgent, Sync |
-| `run.sh` | OpenCode-Autostart + rsync-Sync + Tunnel (`--sync-only` / `--tunnel-only`) |
+| `run.sh` | Dienst sicherstellen + rsync-Sync + Tunnel (`--sync-only` / `--tunnel-only`) |
+| `service-port.sh` | die eine Ableitung des Dienst-Ports (`opencode service status`, Fallback `LOCAL_PORT`) — gesourct von `run.sh`, `stop-tunnel.command`, `diagnose.sh`, `bootstrap.sh` |
 | `diagnose.sh` | Checks lokal + VPS (`--quick` nur lokal) |
 | `sync.sh` | Login-Seite (`apps/web/dist`) per rsync/ssh auf VPS (`--dry-run` first) |
 | `scripts/com.code-tunnel.plist` | LaunchAgent-**Vorlage** (Pfade rendert `bootstrap.sh`) |
@@ -98,6 +108,36 @@ tail -f /tmp/code-tunnel.log                    # Log (run.sh + ssh/autossh)
 Ohne launchd/Key (Fremd-Mac) fällt `start-tunnel.command` auf `./run.sh` im Vordergrund
 zurück — dann Fenster offen lassen.
 
+### Dienst-Config: Passwort ist Pflicht, CORS ist optional
+
+Der Dienst liest beides nicht aus der `.env`. `run.sh` prüft bei jedem Start und greift
+nur bei Abweichung ein:
+
+```bash
+# Pflicht: Basic-Auth für Caddy (/api/info)
+opencode service set password "$OPENCODE_PASSWORD" && opencode service start
+# optional: nur die PWA (ocweb.all-the.rest)
+opencode service set cors "$CORS_ORIGIN" && opencode service start
+```
+
+`password` ist Pflicht — ohne es antwortet das Gate komplett `401`. `run.sh` prüft
+`/api/info` und setzt das Passwort selbst, wenn der Dienst mit **401** antwortet.
+Jedes `set` **stoppt den Dienst** (es startet ihn nicht): eine laufende TUI verliert
+ihre Verbindung, die Sitzungen selbst sind persistiert (SQLite). `run.sh` reiht
+deshalb `set` → `start` → erneute Prüfung; wer von Hand setzt, muss `opencode service
+start` **selbst** nachziehen, sonst bleibt der Web-Weg auf 502 und die TUI getrennt.
+Genau darum passiert das Setzen nicht bei jedem Boot, sondern nur nach einem
+gemessenen 401.
+
+`cors` ist **kein** Gate-Bestandteil. Der Web-Weg läuft same-origin über
+`https://CODE_DOMAIN` (Basic-Auth-Seite + SSH-Relay); dort ist CORS ohne Bedeutung.
+Der ACAO-Header betrifft ausschliesslich die separate PWA `ocweb.all-the.rest`.
+Fehlt er, schreibt `run.sh` nur eine Hinweiszeile ins Log — kein Set, kein Neustart,
+kein Abbruch.
+
+Der Mac-Port für Tunnel und Prüfungen kommt aus `opencode service status`; `LOCAL_PORT`
+aus der `.env` ist nur der Fallback, wenn dieser Aufruf nichts liefert.
+
 ### Stoppen
 
 `./stop-tunnel.command` macht drei Dinge in dieser Reihenfolge — die Reihenfolge
@@ -109,9 +149,11 @@ ist der Punkt, ein einzelnes `launchctl bootout` reicht nicht:
    nächsten Login erledigt. `start-tunnel.command` hebt das wieder auf:
    `bootstrap.sh` macht `launchctl enable` vor `launchctl bootstrap`.
 2. **`bootout`** nimmt den Job samt `KeepAlive` weg. launchd SIGTERMt dabei die
-   **Prozessgruppe** — das ist auch der superviste `opencode serve` (Kind von
-   `run.sh`, `run.sh:140`), danach ist `:8080` zu. Gewollt: kein Tunnel, kein
-   Server. `serve --service` (PPID 1) und laufende TUI-Sessions bleiben unberührt.
+   **Prozessgruppe** — `run.sh`, Watchdog-Subshell, `autossh` und dessen `ssh`.
+   Der gemeinsame OpenCode-Dienst auf `:$LOCAL` bleibt **an**: er ist der Server
+   der TUI und gehört nicht zur Prozessgruppe des Tunnels. `:$LOCAL` lauscht nach
+   dem Stopp weiter — das ist Erfolg, kein Fehler. Beenden liesse er sich nur mit
+   `opencode service stop`, und das ist kein Tunnel-Thema.
 3. **Aufräumen** der Waisen (`autossh`/`ssh` mit dem Forward, Master-Socket).
    Nach dem Agent-Pfad ist nichts mehr übrig; nötig ist der Schritt für den
    Finder-Fallback (`run.sh` im Vordergrund) und für Reste früherer Läufe.
@@ -127,7 +169,7 @@ angemeldete Requests sehen den Tunnel: Caddy bekommt `502` vom Proxy und
 liefert `tunnel-down.html`, der aktive Healthcheck (30 s, 3 Fehlschläge) setzt
 den Upstream auf `down`.
 
-Fixe Ports statt random: VPS `172.18.0.1:18731` → Mac `127.0.0.1:8080` (`REMOTE_PORT/LOCAL_PORT/REMOTE_BIND` in `.env`). Serverseitig einmalig: `GatewayPorts clientspecified` in `/etc/ssh/sshd_config` + `systemctl reload sshd`.
+Fixe Ports statt random: VPS `172.18.0.1:18731` → Mac `127.0.0.1:49374` (`REMOTE_PORT`/`REMOTE_BIND` in `.env`; den Mac-Port liefert `opencode service status`, `LOCAL_PORT` ist nur der Fallback). Serverseitig einmalig: `GatewayPorts clientspecified` in `/etc/ssh/sshd_config` + `systemctl reload sshd`.
 
 Ohne Key-Auth (kein `bootstrap.sh` gelaufen) nutzen Wächter und `diagnose.sh` **eine** Master-Connection (`ControlMaster`, 1x Passphrase).
 
@@ -135,4 +177,4 @@ Im Caddy-Fragment bleibt Browser→Caddy HTTP/2-fähig; der Upstream Caddy→Mac
 
 ## Credentials
 
-Siehe Root-README + `../setup.sh` (PBKDF2 empfohlen, `AUTH_SECRET` via `openssl rand -hex 32`). `AUTH_HASH` muss bcrypt oder PBKDF2 sein; Klartext wird nicht akzeptiert. OpenCode-Passwort (`OPENCODE_PASSWORD`) injiziert Caddy per `header_up Authorization` upstream — im Browser unsichtbar (Basic siehe Root-README). Echte Werte nie committen.
+Siehe Root-README + `../setup.sh` (PBKDF2 empfohlen, `AUTH_SECRET` via `openssl rand -hex 32`). `AUTH_HASH` muss bcrypt oder PBKDF2 sein; Klartext wird nicht akzeptiert. OpenCode-Passwort (`OPENCODE_PASSWORD`) ist das Passwort des Dienstes (`opencode service set password`, siehe oben) und wird von Caddy per `header_up Authorization` upstream injiziert — im Browser unsichtbar (Basic siehe Root-README). Echte Werte nie committen.

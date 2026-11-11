@@ -29,7 +29,22 @@ PORT="${SSH_PORT:-22}"
 # Braucht serverseitig: GatewayPorts clientspecified (siehe README).
 BIND="${REMOTE_BIND:-172.18.0.1}"
 REMOTE="${REMOTE_PORT:-18731}"
-LOCAL="${LOCAL_PORT:-8080}"
+
+MODE="${1:-all}"
+
+# Port des gemeinsamen OpenCode-Dienstes — des Servers, an dem auch die TUI
+# haengt. Die Ableitung liegt in service-port.sh: Start, Stopp und Diagnose
+# muessen denselben Port treffen, den die -R-Bindung benutzt; vier Kopien waeren
+# stille Drift. Stimmt der Port nicht, zeigt die Bindung ins Leere — deshalb
+# lieber leer zurueckgeben und hier hart abbrechen. Ausnahme: --sync-only baut
+# keinen Tunnel, dort ist der Port irrelevant (der reine Website-Sync darf nicht
+# an einem fehlenden Dienst scheitern).
+# Kein harter Abbruch hier: bei gestopptem Dienst liefert `opencode service
+# status` nur "stopped", und ensure_service startet ihn weiter unten (und zieht
+# den Port danach nach). Erst dort ist ein leerer Port endgueltig ein Fehler.
+# shellcheck source=service-port.sh
+. ./service-port.sh
+LOCAL="$(service_port)" || true
 
 # Key-Auth (setzt bootstrap.sh, Werte in .env): unbeaufsichtigter Betrieb ohne
 # Passphrase-Prompt. UseKeychain=yes ist der Punkt, der den Key ohne TTY
@@ -48,16 +63,20 @@ if [ "${#KEY_OPTS[@]}" -gt 0 ]; then
   TUNNEL_OPTS+=("${KEY_OPTS[@]}")
 fi
 
-MODE="${1:-all}"
 # Logs koennen Session-Inhalte enthalten -> nur fuer den Besitzer lesbar. Die plist
 # setzt Umask 077, das greift aber nur bei NEUEN Dateien; bestehende aus einem
 # frueheren Lauf bleiben sonst world-readable.
 chmod 600 /tmp/code-tunnel.log 2>/dev/null || true
 echo "[$(date '+%F %T')] run.sh start (Modus: $MODE, Key-Auth: $([ "${#KEY_OPTS[@]}" -gt 0 ] && echo ja || echo nein))"
-# OpenCode-eigenes Serverpasswort (Pflicht): serve erzwingt Auth, Caddy injiziert
-# es upstream per Header -> im Browser unsichtbar (de facto deaktiviert).
+# OpenCode-eigenes Serverpasswort (Pflicht): der Dienst erzwingt Auth, Caddy
+# injiziert es upstream per Header -> im Browser unsichtbar (de facto
+# deaktiviert). run.sh setzt es unten per `opencode service set password`, aber
+# nur bei einem echten 401 (jedes `set` STOPPT den Dienst; `run.sh` startet ihn
+# danach wieder).
+# Der frueher hier gesetzte Export OPENCODE_SERVER_PASSWORD entfaellt: der
+# Dienst wird nicht mehr als Kind von run.sh gestartet und liest die Variable
+# deshalb nicht.
 [ -n "${OPENCODE_PASSWORD:-}" ] || { echo "FEHLER: OPENCODE_PASSWORD fehlt in .env -> ./setup.sh"; exit 1; }
-export OPENCODE_SERVER_PASSWORD="$OPENCODE_PASSWORD"
 
 # ---------------------------------------------------------------------------
 # Speicher-Watchdog: opencode beendet, sobald der RSS ueber die Schwelle steigt
@@ -111,12 +130,15 @@ export OPENCODE_SERVER_PASSWORD="$OPENCODE_PASSWORD"
 # 32409, 32892, 33813, 34737, 35203, 36469, 36827), jedes Mal nur knapp ueber
 # der Decel (2051-2543 MiB).
 #
-# Getroffen hat es NIE den supervisten Serve auf :8080 (PID 20243, stabil um
-# 500 MiB, Kind von run.sh), sondern `serve --service` — das Server-Kind der
-# laufenden TUI. Der Waechter startet so einen Prozess bewusst NICHT neu (die
-# Logzeile sagt "manueller Neustart noetig"), und trotzdem stand Sekunden nach
-# jedem Kill ein neuer Prozess mit neuer PID: den respawnt die TUI. Genau das
-# ist die von aussen sichtbare Erscheinung "Session wird staendig neu gestartet".
+# Getroffen hat es damals NIE den von run.sh selbst gestarteten Serve auf :8080
+# (PID 20243, stabil um 500 MiB, Kind von run.sh), sondern `serve --service` —
+# das Server-Kind der laufenden TUI. Diesen zweiten, eigenen Serve gibt es nicht
+# mehr: der Listener auf :$LOCAL ist der gemeinsame Hintergrund-Dienst
+# (`opencode service`), also genau der Prozess, den die TUI als
+# `serve --service` startet. Die Messwerte oben bleiben unveraendert; die
+# damalige Erscheinung "Session wird staendig neu gestartet" kam daher, dass der
+# Waechter den TUI-Server killte und die TUI ihn Sekunden spaeter mit neuer PID
+# respawnte.
 #
 # Der hoehere Wert ist ein bewusster Kompromiss und NICHT durch eine Messung
 # gedeckt: gemessen ist nur, dass die Instanzen unter 2 GiB nicht zur Ruhe
@@ -144,48 +166,151 @@ oc_pids() {
 }
 oc_rss_kib() { ps -o rss= -p "$1" 2>/dev/null | tr -d ' \n'; }
 port_up() { (echo >/dev/tcp/127.0.0.1/"$LOCAL") >/dev/null 2>&1; }
-# PID, der gerade auf :$LOCAL lauscht (der superviste opencode serve).
-port_pid() { lsof -nP -iTCP:"$LOCAL" -sTCP:LISTEN -t 2>/dev/null | head -1; }
-
-# OpenCode-Web sicherstellen (Pflicht — nie manuell starten).
-# Ueber .env aenderbar: OPENCODE_CMD="..."
-OPENCODE_CMD="${OPENCODE_CMD:-opencode serve --hostname 127.0.0.1 --port $LOCAL}"
-# CORS-Opt-in fuer die Browser-PWA (https://ocweb.all-the.rest), Key CORS_ORIGIN
-# in derselben .env, die oben gesourced wird. LEER = kein --cors, der Weg
-# verhaelt sich dann exakt wie bisher. Nur die eigene PWA-Origin, keine Liste.
-# Angehaengt nur, wenn OPENCODE_CMD nicht schon selbst ein --cors traegt, sonst
-# bekommt ein eigener OPENCODE_CMD zwei Origins. Pruefung per POSIX-case, laeuft
-# auch unter sh.
-case "$OPENCODE_CMD" in
-  *--cors*) : ;;
-  *)
-    if [ -n "${CORS_ORIGIN:-}" ]; then
-      OPENCODE_CMD="$OPENCODE_CMD --cors $CORS_ORIGIN"
-      echo "CORS: erlaube Origin ${CORS_ORIGIN} (opencode serve --cors)"
-    fi
-    ;;
-esac
-ensure_opencode() {
-  if port_up; then
-    echo "OpenCode-Web laeuft bereits auf :$LOCAL."
-    return 0
-  fi
-  echo "Starte OpenCode-Web: $OPENCODE_CMD"
-  # shellcheck disable=SC2086
-  $OPENCODE_CMD >>/tmp/code-tunnel-opencode.log 2>&1 &
-  # Log kann Session-Inhalte enthalten -> nur fuer den Besitzer lesbar. Der
-  # LaunchAgent setzt dafuer zusaetzlich Umask 077 in der plist.
-  chmod 600 /tmp/code-tunnel-opencode.log 2>/dev/null || true
-  for _ in $(seq 1 20); do
-    port_up && break
-    sleep 1
-  done
-  port_up || { echo "FEHLER: OpenCode-Web lauscht nicht auf :$LOCAL (Log: /tmp/code-tunnel-opencode.log)"; return 1; }
+# PID, der gerade auf :$LOCAL lauscht (der gemeinsame OpenCode-Dienst).
+# Ohne bekannten Port (nur --sync-only laesst das zu) gibt es nichts zu pruefen:
+# lsof bricht sonst mit "unacceptable port specification" ab und reisst unter
+# `set -e` den Watchdog beim ersten Poll mit. `| head -1 || true` faengt
+# zusaetzlich den SIGPIPE-Fall (pipefail) bei mehreren Listenern ab.
+port_pid() {
+  [ -n "$LOCAL" ] || return 0
+  { lsof -nP -iTCP:"$LOCAL" -sTCP:LISTEN -t 2>/dev/null || true; } | head -1 || true
 }
 
-# Der Watchdog laeuft in ALLEN Modi, auch --tunnel-only: die TUI-Sessions und
-# die zweite Instanz `opencode serve --service` werden nicht von run.sh
-# gestartet, sind aber genau die Speicherfresser.
+# ---------------------------------------------------------------------------
+# Gemeinsamer OpenCode-Hintergrund-Dienst (Pflicht — nie einen eigenen serve
+# starten).
+#
+# Warum der Dienst und kein eigener `opencode serve` mehr: der Tunnel zeigte
+# frueher auf einen zweiten Server, den run.sh selbst startete. Beide Server
+# lasen dieselbe SQLite-DB, aber /api/session/active ist PROZESSGEBUNDEN — die
+# Web-UI sah eine laufende TUI-Sitzung deshalb nur bis zur letzten gespeicherten
+# Nachricht (kein Live-Stream, keine Permission-Dialoge). Jetzt gibt es genau
+# einen Server-Prozess: die TUI haengt per `opencode serve --service` daran, der
+# Tunnel zeigt auf denselben Port. Ein Live-Status, eine DB-Schreibquelle.
+#
+# Der Port kommt aus `opencode service status` (service_port oben), NICHT aus
+# einer zweiten Konfigurationsdatei. Ist der Dienst unten, holt ihn
+# `opencode service start` zurueck; ein eigenes serve-Kommando gibt es nicht
+# mehr, OPENCODE_CMD ist entfallen.
+# ---------------------------------------------------------------------------
+# 20 Versuche a 1 s: der Dienst braucht beim Kaltstart ein paar Sekunden, laenger
+# als 20 s heisst, dass etwas kaputt ist (Konfiguration, DB-Lock).
+wait_port() {
+  local _
+  for _ in $(seq 1 20); do
+    port_up && return 0
+    sleep 1
+  done
+  return 1
+}
+
+# HTTP-Status von /api/info mit Basic-Auth. Nur ein 401 bedeutet "Passwort
+# falsch" und rechtfertigt ein `set`; ein Timeout, Reset oder 5xx ist ein anderer
+# Fehler und darf den Dienst NICHT neu starten. "000" = keine Antwort.
+# Timeouts wie im remote-Teil (remote/Dockerfile, remote/entrypoint.sh): ein
+# Listener, der die Verbindung annimmt und nicht antwortet, wuerde run.sh sonst
+# unbegrenzt vor der -R-Bindung blockieren — launchd KeepAlive greift nicht,
+# weil der Prozess lebt.
+service_auth_code() {
+  curl -s --connect-timeout 2 --max-time 5 -o /dev/null -w '%{http_code}' \
+    -u "opencode:$OPENCODE_PASSWORD" "http://127.0.0.1:$LOCAL/api/info" 2>/dev/null || true
+}
+
+# ACAO-Header der echten Antwort pruefen: der Header kommt aus dem Dienst
+# (`opencode service set cors`), nicht aus Caddy, deshalb wird gegen /api/info
+# mit Origin-Header gemessen. Reine Diagnose fuer die PWA: der Web-Weg laeuft
+# same-origin ueber https://CODE_DOMAIN (Gate + Tunnel), dort ist CORS kein
+# Thema. Ein fehlender Header darf den Tunnel-Start NICHT blockieren.
+# grep -c statt grep -q: unter `set -o pipefail` beendet -q den curl per SIGPIPE,
+# die Pipeline gilt als fehlgeschlagen und ein vorhandener Header wuerde nie
+# erkannt (dieselbe Falle wie beim rsync-Guard in setup.sh/sync.sh). -c liest die
+# Antwort zu Ende und die Trefferzahl ist auswertbar.
+service_cors_ok() {
+  local hits
+  hits="$(curl -s --connect-timeout 2 --max-time 5 -D- -o /dev/null \
+            -u "opencode:$OPENCODE_PASSWORD" \
+            -H "Origin: $CORS_ORIGIN" "http://127.0.0.1:$LOCAL/api/info" 2>/dev/null \
+          | grep -ci -- "^access-control-allow-origin: *$CORS_ORIGIN" || true)"
+  [ "${hits:-0}" -gt 0 ]
+}
+
+ensure_service() {
+  local port_now
+
+  if port_up; then
+    echo "OpenCode-Dienst laeuft bereits auf :$LOCAL."
+  else
+    echo "Starte OpenCode-Dienst (opencode service start)..."
+    # Ausgabe in dasselbe Log wie run.sh: das frueher eigene Log
+    # /tmp/code-tunnel-opencode.log gibt es nicht mehr. Das Log kann
+    # Session-Inhalte enthalten (chmod 600 oben, Umask 077 in der plist).
+    opencode service start >>/tmp/code-tunnel.log 2>&1 || true
+    # Port nachziehen: `opencode service status` ist die einzige Quelle und
+    # liefert erst jetzt die echte Bindung. Der Fallback oben ist nur der
+    # Notnagel, solange der Dienst keine URL ausgibt — mit ihm allein wuerde
+    # wait_port gegen den falschen Port laufen.
+    port_now="$(service_port)" || true
+    [ -z "$port_now" ] || LOCAL="$port_now"
+    if ! wait_port; then
+      echo "FEHLER: OpenCode-Dienst lauscht nach 20 s nicht auf :$LOCAL (opencode service status, /tmp/code-tunnel.log)"
+      return 1
+    fi
+  fi
+
+  # Ohne curl waere die Passwort-Pruefung "fehlgeschlagen" und run.sh wuerde bei
+  # JEDEM Boot per `set` den Dienst neu starten — die laufende TUI verliert dann
+  # grundlos ihre Verbindung. Deshalb hier pruefen statt blind setzen.
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "WARN: curl fehlt — Dienst-Passwort nicht geprueft, Dienst bleibt unveraendert"
+    return 0
+  fi
+
+  # Passwort-Pruefung ist Pflicht: ohne sie antwortet das Gate komplett 401
+  # (Caddy injiziert base64("opencode:$OPENCODE_PASSWORD"), der Dienst kennt es
+  # aber nicht). Nur ein echtes 401 heilt sich selbst; Timeout/5xx sind ein
+  # anderer Fehler und werden gemeldet, statt den Dienst zu stoppen.
+  local code
+  code="$(service_auth_code)"
+  if [ "$code" = "401" ]; then
+    echo "Dienst-Passwort passt nicht (401 auf /api/info): opencode service set password"
+    opencode service set password "$OPENCODE_PASSWORD" >>/tmp/code-tunnel.log 2>&1 || true
+    # Pflicht-Logzeile: `opencode service set` STOPPT den Dienst (es startet ihn
+    # nicht) — laufende TUI-Server verlieren ihre Verbindung (Sitzungen sind
+    # persistiert), deshalb folgt `opencode service start` direkt danach.
+    echo "HINWEIS: 'opencode service set' stoppt den Dienst — laufende TUI-Server verlieren ihre Verbindung, danach folgt 'opencode service start'"
+    opencode service start >>/tmp/code-tunnel.log 2>&1 || true
+    port_now="$(service_port)" || true
+    [ -z "$port_now" ] || LOCAL="$port_now"
+    if ! wait_port; then
+      echo "FEHLER: OpenCode-Dienst lauscht nach dem Neustart nicht auf :$LOCAL"
+      return 1
+    fi
+    # Wiederholen: das Setzen allein ist kein Beleg, dass der Dienst das neue
+    # Passwort uebernommen hat.
+    code="$(service_auth_code)"
+    if [ "$code" != "200" ]; then
+      echo "FEHLER: Dienst-Auth weiterhin fehlerhaft (HTTP $code auf /api/info) — 'opencode service set password' wirkt nicht"
+      return 1
+    fi
+    echo "Dienst-Auth verifiziert."
+  elif [ "$code" != "200" ]; then
+    echo "FEHLER: /api/info antwortet HTTP ${code:-000} statt 200 (Dienst haengt oder antwortet nicht) — kein Passwort-Set"
+    return 1
+  fi
+
+  # CORS betrifft NUR die separate PWA (ocweb.all-the.rest), nicht den Web-Weg
+  # ueber https://CODE_DOMAIN: der laeuft same-origin hinter Gate + Tunnel, ein
+  # ACAO-Header ist dort ohne Bedeutung. Deshalb hier nur ein Hinweis, kein Set,
+  # kein Neustart, kein Abbruch.
+  if [ -n "${CORS_ORIGIN:-}" ] && ! service_cors_ok; then
+    echo "HINWEIS: PWA-Origin ${CORS_ORIGIN} ohne ACAO — nur fuer ocweb relevant, optional (stoppt den Dienst): opencode service set cors \"$CORS_ORIGIN\" && opencode service start"
+  fi
+  return 0
+}
+
+# Der Watchdog laeuft in ALLEN Modi, auch --tunnel-only: der gemeinsame Dienst
+# (der Listener auf :$LOCAL — die TUI haengt per `serve --service` daran) und die
+# TUI-Clients werden nicht von run.sh gestartet, sind aber die Speicherfresser.
 # $1 = PID von run.sh. Bewusst per Parameter und per `kill -0` geprueft statt
 # per PPID-Vergleich: `$$` ist in einer Bash-Subshell die PID des ELTERNprozesses
 # (macOS-Bash 3.2 kennt kein BASHPID), ein `ps -o ppid= -p $$` liefert deshalb
@@ -218,6 +343,12 @@ watchdog_loop() {
     fi
 
     local pid rss listen_pid
+    # Port bei jedem Poll aus der einzigen Quelle nachziehen: die Watchdog-
+    # Subshell hat LOCAL beim Fork geerbt. Wechselt der Dienst seinen Port (oder
+    # war er beim Boot noch unkonfiguriert), wuerde sie sonst gegen den falschen
+    # Port pruefen und den Dienst als TUI-Client behandeln.
+    local svc_port; svc_port="$(service_port)" || true
+    [ -z "$svc_port" ] || LOCAL="$svc_port"
     listen_pid=$(port_pid)
     for pid in $(oc_pids); do
       rss=$(oc_rss_kib "$pid")
@@ -229,19 +360,19 @@ watchdog_loop() {
       restarts=$((restarts + 1))
 
       if [ "$pid" = "$listen_pid" ]; then
-        # Der superviste serve: den Restart koennen wir selbst uebernehmen.
-        sleep 2   # Port muess erst wieder frei sein, sonst EADDRINUSE
-        echo "[$(date '+%F %T')] watchdog: starte OpenCode-Web neu (:$LOCAL)"
-        ensure_opencode || echo "[$(date '+%F %T')] watchdog: Neustart fehlgeschlagen (Log: /tmp/code-tunnel-opencode.log)"
+        # Der gemeinsame Dienst (:LOCAL): `opencode service start` holt ihn
+        # zurueck. Der Port muss erst wieder frei sein, sonst EADDRINUSE.
+        sleep 2
+        echo "[$(date '+%F %T')] watchdog: starte OpenCode-Dienst neu (:$LOCAL)"
+        opencode service start >>/tmp/code-tunnel.log 2>&1 \
+          || echo "[$(date '+%F %T')] watchdog: Neustart fehlgeschlagen (opencode service start, siehe /tmp/code-tunnel.log)"
+        echo "[$(date '+%F %T')] watchdog: Sitzungen sind persistiert, TUI muss neu verbinden"
       else
-        # TUI-Session oder die zweite Instanz `serve --service`: die haengen an
-        # einem TTY bzw. laufen unabhaengig von run.sh (PPID 1, von Hand oder
-        # launchd gestartet). Ein SIGKILL beendet sie, ein Neustart ist von hier
-        # aus NICHT moeglich — dafuer gibt es kein TTY, das man neu befuellen
-        # koennte, und die serve-Instanz gehoert jemand anderem. Wir sagen das
-        # laut im Log, statt einen Relaunch zu erfinden, der in einem fremden
-        # Terminal oder ohne Auth-Env landen wuerde.
-        echo "[$(date '+%F %T')] watchdog: PID $pid war NICHT der :$LOCAL-Serve (TUI bzw. serve --service) — beendet, manueller Neustart noetig"
+        # Alle anderen opencode-PIDs sind der TUI-Client. Er haengt an einem TTY
+        # (bzw. wird von der TUI selbst respawnt) — ein Neustart ist von hier aus
+        # nicht moeglich, und der Dienst laeuft weiter. Also: beenden, nicht
+        # neu starten, und das laut sagen statt einen Relaunch zu erfinden.
+        echo "[$(date '+%F %T')] watchdog: PID $pid war NICHT der Dienst auf :$LOCAL (TUI-Client) — beendet, kein Neustart"
       fi
     done
   done
@@ -268,8 +399,14 @@ if [ "$MODE" != "--sync-only" ]; then
     echo "[$(date '+%F %T')] caffeinate: aktiv (PID $!, verhindert System-Schlaf)"
   fi
 
-  # OpenCode-Web sicherstellen (Pflicht — nie manuell starten).
-  ensure_opencode || exit 1
+  # OpenCode-Dienst sicherstellen (Pflicht — nie einen eigenen serve starten).
+  ensure_service || exit 1
+  # Jetzt ist der Port endgueltig ableitbar (Dienst laeuft, ensure_service hat
+  # LOCAL nachgezogen). Ohne ihn wuerde die -R-Bindung ins Leere zeigen.
+  if [ -z "$LOCAL" ]; then
+    echo "FEHLER: Port des OpenCode-Dienstes unbekannt — 'opencode service status' lieferte nichts und LOCAL_PORT fehlt in .env" >&2
+    exit 1
+  fi
 
   # Alte/verwaiste Tunnel-Instanzen beenden. Zwei ssh-Prozesse auf demselben
   # VPS-Port (BIND:REMOTE) machen sich gegenseitig die Bind kaputt
@@ -277,9 +414,16 @@ if [ "$MODE" != "--sync-only" ]; then
   # Muster nur auf Forward + Ziel, nicht auf die Argumentreihenfolge: der
   # plain-ssh-Fallback hat -N hinter den Optionen, ein "ssh -N"-Muster trifft ihn
   # nicht und die verwaiste Instanz bleibt dann auf dem VPS-Port binden.
-  tunnel_sig="-R $BIND:$REMOTE:127.0.0.1:$LOCAL"
-  pkill -f -- "ssh .*$tunnel_sig .*$TARGET\$" 2>/dev/null || true
-  pkill -f -- "autossh .*$tunnel_sig .*$TARGET\$" 2>/dev/null || true
+  # Der Mac-Port steht NICHT fest: er kann sich zwischen Start und Stopp aendern
+  # (Dienst gestoppt -> `opencode service status` sagt "stopped" -> Fallback).
+  # Deshalb endet die Signatur am ":" vor dem Port, und das Muster verlangt dort
+  # Ziffern. WICHTIG: kein Leerzeichen zwischen Signatur und Port — in der echten
+  # argv folgt der Port direkt auf den Doppelpunkt ("...127.0.0.1:49374 user@…");
+  # ein Muster mit "…: " trifft nichts (am 2026-11-11 gegen echte argv gemessen).
+  tunnel_sig="-R $BIND:$REMOTE:127.0.0.1:"
+  tunnel_re="${tunnel_sig}[0-9]+"
+  pkill -f -- "ssh .*$tunnel_re .*$TARGET\$" 2>/dev/null || true
+  pkill -f -- "autossh .*$tunnel_re .*$TARGET\$" 2>/dev/null || true
   # Master-Connection sauber schliessen -> Control-Socket (/tmp/ssh-code-*) weg.
   # -p MUSS mit: %p im ControlPath wird sonst aus dem Default 22 expandiert und
   # die Bereinigung zeigt bei SSH_PORT != 22 auf den falschen Socket.
