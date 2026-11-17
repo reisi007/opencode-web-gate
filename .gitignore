@@ -1,7 +1,6 @@
 __pycache__/
 .DS_Store
 .bla
-.idea/
 .__caddycheck/
 .__caddy_check
 *.pyc
