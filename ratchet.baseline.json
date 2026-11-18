@@ -17,7 +17,8 @@
       "value": 1
     },
     "unverified-commits": {
-      "value": 85
+      "value": 86,
+      "reason": "pre-existing drift: main commit e8f9e16 (chore(ide)) lacks a Verify: footer and pushed the count past the recorded baseline; predates this v0.8.0 migration. Reducing would require a forbidden history rewrite."
     }
   }
 }
